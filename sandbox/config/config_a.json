@@ -1,0 +1,5 @@
+{
+  "service": "collector",
+  "timeout": 30,
+  "retries": 3
+}

@@ -1,0 +1,6 @@
+# bash 腳本必須 LF：CRLF 的 shebang（#!/bin/bash\r）會讓 hook 直接失效
+*.sh text eol=lf
+# hook/測試腳本跨 shell 引用，一律 LF 保持與現場一致
+*.py text eol=lf
+*.md text eol=lf
+*.json text eol=lf

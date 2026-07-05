@@ -1,0 +1,13 @@
+# hook 觸發 marker（e2e 測試用，專案守則：不進版控）
+.claude/hooks/.last_*
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# 環境變數（機密不進版控）
+.env
+
+# 改檔前時間戳備份（含舊版規則原文，不進版控）
+*.bak.*

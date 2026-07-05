@@ -1,0 +1,5 @@
+{
+  "service": "scheduler",
+  "timeout": 30,
+  "retries": 5
+}
