@@ -2,7 +2,9 @@
 
 > A drop-in behavior protocol that makes Claude Code (Opus / Sonnet / Haiku) work like a disciplined engineer — look before you leap, say your assumptions out loud, get a second opinion before trusting big conclusions, and prove your work with real tests.
 
-[繁體中文](README.zh-TW.md) &nbsp;·&nbsp; ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
+**English** &nbsp;·&nbsp; [繁體中文](README.zh-TW.md) &nbsp;·&nbsp; [简体中文](README.zh-CN.md) &nbsp;·&nbsp; [日本語](README.ja.md) &nbsp;·&nbsp; [한국어](README.ko.md)
+
+![Version: 1.0.0](https://img.shields.io/badge/version-1.0.0-blue.svg) &nbsp; ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 
 ## What is it
 
@@ -21,7 +23,7 @@ To be upfront about the limits: hooks and skills can only transplant the *proced
 - **OODA loop** — before answering, Claude gathers evidence (search/read the actual files, never guess from training memory), states its assumptions out loud, turns the task into something verifiable ("make it work" isn't good enough), then makes small changes and checks each one.
 - **Multi-party adversarial review** — this kit's signature move. Before trusting a big conclusion (an architecture decision, a root-cause diagnosis, anything that could affect production), Claude dispatches three independent "opposition" sub-agents *in parallel*, each with a different job: a **skeptic** who looks for logical holes, a **red-team** who looks for security and failure risks, and a **simplifier** who looks for needless over-engineering. The conclusion only gets trusted if a majority of the three "survive" the challenge.
 - **Model routing** — reasoning, architecture, and root-cause work stays on whichever model is currently driving; coding and refactoring gets routed to Sonnet; batch file work, search, and text cleanup gets routed to Haiku. Right-sized model for the job.
-- **Definition of Done** — if a change touches actual logic, it needs an automated test and evidence that the test failed before the fix and passed after. Eyeballing the output or a stray `console.log` doesn't count as verification.
+- **Definition of Done (TDD)** — if a change touches actual logic, it needs an automated test and evidence that the test failed before the fix and passed after. Eyeballing the output or a stray `console.log` doesn't count as verification.
 - **Honest reporting** — the first sentence of any report is the actual result (not a lead-up); failures get reported as failures, not softened.
 
 ## What's inside
@@ -35,12 +37,22 @@ To be upfront about the limits: hooks and skills can only transplant the *proced
 | Opposition agents | `.claude/agents/{skeptic,red-team,simplifier}.md` | The three independent sub-agent personas used in adversarial review |
 | Model routing | `CLAUDE.md` | The routing table described above |
 | Harness detector | `scripts/detect_harness.py` | Read-only check for whether the project already has its own dev harness (e.g. harnessmith, Superpowers) so Fable knows to step back and just hold the floor |
-| Governance docs | `model_dispatch_rules.md`, `cognitive_rubrics.md` | Sub-agent dispatch templates and when-to-slow-down rules |
+| Governance docs | `diagnostics.md`, `model_dispatch_rules.md`, `cognitive_rubrics.md`, `future_session_letter.md` | Known failure modes, sub-agent dispatch templates, when-to-slow-down rules, and cross-session handoff notes |
 
 ## Quick start
 
 Clone this repo, then just tell your Claude Code: **"Install Fable Harness by following INSTALL.md."** Claude will read the guide and do the install itself, safely (backup first, never overwrite your existing settings). See [INSTALL.md](INSTALL.md) for exactly what that involves.
 
+## Versioning
+
+This kit follows [Semantic Versioning](https://semver.org/) — `MAJOR.MINOR.PATCH`, starting at **1.0.0**:
+
+- **MAJOR** — a breaking change to the protocol contract (a hook/skill/agent removed or renamed, or an incompatible change to how the protocol is injected or how agents are dispatched) that would require users to re-install or change their setup.
+- **MINOR** — a backward-compatible addition (a new hook, skill, agent, or governance rule) that existing installs keep working alongside.
+- **PATCH** — a backward-compatible fix or wording change (a bug fix in a hook, a clarified rule, a typo).
+
+The current version lives in [VERSION](VERSION); notable changes are recorded in [CHANGELOG.md](CHANGELOG.md).
+
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE) (translation: [繁體中文](LICENSE.zh-TW)).
