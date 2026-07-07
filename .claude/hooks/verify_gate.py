@@ -8,7 +8,7 @@ stop_hook_active=true（模型第二次結束）時放行，避免純討論 sess
 任何解析錯誤一律 fail-open（exit 0 無輸出）——gate 絕不可弄壞 session。
 
 介面：stdin 收 hook JSON（transcript_path / stop_hook_active），stdout 輸出 block JSON 或無輸出。
-測試：tests/test_verify_gate.py（十案例，fail-then-pass 已驗證；T9 多生態識別、T10 假放行防護）。
+測試：tests/test_verify_gate.py（十一案例，fail-then-pass 已驗證；T9 多生態識別、T10 假放行防護、T11 --test 自測入口）。
 """
 import json
 import re
@@ -28,7 +28,10 @@ TEST_CMD_RE = re.compile(
     r"|go\s+test|cargo\s+test|\bvitest\b|\bjest\b"
     r"|mvnw?(\.cmd)?\s+(\S+\s+)*test(\s|$)|gradlew?(\.bat)?\s+(\S+\s+)*test(\s|$)|dotnet\s+test(\s|$)"
     r"|\brspec\b|\bphpunit\b|\bctest\b|make\s+test\b|rake\s+(\S+\s+)*test\b|mix\s+test\b"
-    r"|(^|[;&|]\s*)(tox|nox)\b|deno\s+test|rails\s+test)",
+    r"|(^|[;&|]\s*)(tox|nox)\b|deno\s+test|rails\s+test"
+    # 腳本自帶 --test 自測入口（2026-07-05 T11：zh_convert_safe.py --test 真實
+    # session 連續誤攔實證）；(\s|$) 錨定使 --tests/--testing/--test-pypi 不假放行
+    r"|\s--test(\s|$))",
     re.IGNORECASE,
 )
 

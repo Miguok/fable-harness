@@ -15,6 +15,9 @@ Stop hook 驗證 gate（verify_gate.py）行為驗收——對應 Fable Protocol
      （對應 R1 紅隊「全域上線對 Java/C#/Ruby/PHP 專案系統性假攔」發現）
   T10 形似測試的日常指令（cat tox.ini / make testdata / python latest.py 等）→ 仍須 block
      （對應 R4 紅隊「regex 擴充引入假放行面」實證）
+  T11 腳本自帶 `--test` 自測入口（python3 tool.py --test）→ 識別放行；
+     形似旗標（--test-pypi/--testing/--tests）→ 仍須 block
+     （對應 2026-07-05 真實 session 實證：zh_convert_safe.py --test 連續四次被誤攔）
 
 執行命令：
   cd /d/AntiGravity/Fable && python -m pytest tests/test_verify_gate.py -v
@@ -36,6 +39,10 @@ fail-then-pass guard：
   （tox 裸詞、make testdata、npm run testbed、latest/contest.py、mvn test-compile）
   → 收緊（命令位置錨定 tox/nox、test 詞尾邊界、檔名樣式限縮）後全綠 ✅，T9 同時保持綠
 最後執行：2026-07-03 09:56 → 10 passed ✅（全套 33 passed in 1.95s，實測校時）
+  2026-07-05 22:50 T11 對舊 TEST_CMD_RE 執行 → 1 failed：3/3 個 --test 自測指令
+  被誤攔（allow cases 遭 block）→ regex 加 `\s--test(\s|$)` 錨定後全綠 ✅；
+  3 個形似旗標負例（--test-pypi/--testing/--tests）維持 block，T9/T10 保持綠
+最後執行：2026-07-05 22:51 → 11 passed ✅（全套 19 passed in 0.65s）
 
 [關鍵量測值]
   T1 block 輸出: {"decision": "block", "reason": "⛔ FABLE-PROTOCOL 驗證 gate：本輪修改了程式碼（app.py）..."}
@@ -248,3 +255,49 @@ def test_t10_nontest_commands_still_block(tmp_path):
         if rc != 0 or not blocked:
             failures.append(cmd)
     assert not failures, f"以下非測試指令被誤認為測試（假放行）: {failures}"
+
+
+def test_t11_selftest_flag_allow(tmp_path):
+    """T11：腳本自帶 `--test` 自測入口須被識別為測試執行（2026-07-05 實證：
+    zh_convert_safe.py --test 於真實 session 連續四次被 gate 誤攔）；
+    形似旗標（--test-pypi/--testing/--tests）不得因此假放行。"""
+    allow_cases = [
+        ("D:\\proj\\tool.py", "python3 zh_convert_safe.py --test"),
+        ("D:\\proj\\tool.py", "python3 SKILL/pdf-ocr/zh_convert_safe.py --test && git add -u"),
+        ("D:\\proj\\cli.rs", "./target/release/mytool --test"),
+    ]
+    block_cases = [
+        "pip install --test-pypi somepkg",
+        "./deploy.sh --testing",
+        "cargo build --tests",
+    ]
+    failures = []
+    for path, cmd in allow_cases:
+        entries = [
+            _user("幫我修 bug"),
+            _tool_use("Edit", {"file_path": path, "old_string": "a", "new_string": "b"}),
+            _tool_result(),
+            _tool_use("Bash", {"command": cmd}),
+            _tool_result(),
+        ]
+        out, rc = run_gate(tmp_path, entries)
+        if rc != 0 or out != "":
+            failures.append(("應放行未放行", cmd, out[:60]))
+    for cmd in block_cases:
+        entries = [
+            _user("幫我修 bug"),
+            _tool_use("Edit", {"file_path": "D:\\proj\\app.py", "old_string": "a", "new_string": "b"}),
+            _tool_result(),
+            _tool_use("Bash", {"command": cmd}),
+            _tool_result(),
+        ]
+        out, rc = run_gate(tmp_path, entries)
+        blocked = False
+        if out:
+            try:
+                blocked = json.loads(out).get("decision") == "block"
+            except json.JSONDecodeError:
+                blocked = False
+        if not blocked:
+            failures.append(("應攔未攔", cmd, out[:60]))
+    assert not failures, f"T11 失敗: {failures}"
