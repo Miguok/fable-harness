@@ -20,7 +20,7 @@ Stop hook 驗證 gate（verify_gate.py）行為驗收——對應 Fable Protocol
      （對應 2026-07-05 真實 session 實證：zh_convert_safe.py --test 連續四次被誤攔）
 
 執行命令：
-  cd /d/AntiGravity/Fable && python -m pytest tests/test_verify_gate.py -v
+  cd <repo> && python -m pytest tests/test_verify_gate.py -v
 
 ══════════════════════════════════════
 驗收邊界說明 + 執行紀錄（2026-07-03 09:56 GMT+8）

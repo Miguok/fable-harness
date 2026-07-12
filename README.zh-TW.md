@@ -23,6 +23,7 @@ Fable Harness 是一個小型套件——幾個 hooks、一個 skill、幾個子
 - **OODA 迴圈**——回答前，Claude 先蒐集證據（實際搜尋/讀取檔案，不靠訓練記憶亂猜），把假設講出來，把任務轉成一個可驗證的目標（「讓它能動」這種說法不夠），然後小步修改、每一步都驗證。
 - **多方抗辯（adversarial review）**——這個 kit 最具特色的機制。在採信一個重大結論之前（架構決策、根因判定、任何可能影響上線環境的結論），Claude 會**同時**派出三個獨立的「反方」子代理，各自負責不同角度：**skeptic** 專找邏輯漏洞、**red-team** 專找安全與失效風險、**simplifier** 專找不必要的過度工程。三個鏡頭裡要過半「存活」（沒被推翻），結論才算採信。
 - **模型分工**——推理、架構設計、根因分析留給當下主導的模型；寫程式與重構交給 Sonnet；批次檔案處理、搜尋、文字整理交給 Haiku。用剛好合適的模型做剛好合適的事。
+- **省 token 是這套架構的副產品**——成本的節省是同一套架構自然帶出來的，不是外掛的功能。上面那套分級路由已經讓貴模型的 token 只花在推理、把粗重工作推給便宜的模型；在這之上，抗辯三反方與 Explore 式搜尋都跑在**獨立子代理**裡，各自握有一份乾淨的 context、只回收一段精簡結論——過程的大量中間 token 因此被丟棄，不會滾雪球累積進主對話。而這些子代理是**平行** fan-out、各自只帶少量 context，而不是在一條越拉越長的對話裡堆疊。這種「分級路由＋獨立子代理」的形狀，是業界公認能壓低 LLM token 成本的做法——Fable 自己尚未做基準量測，所以這裡講的是「為什麼會省」，不是承諾某個百分比。
 - **完成定義（Definition of Done，TDD）**——只要改到實際邏輯，就要有自動化測試，並且證明「改之前測試會失敗、改之後測試會通過」。單純看輸出順不順眼，或隨手一個 `console.log`，都不算驗證。
 - **誠實回報**——任何回報的第一句話就是實際結果（不是鋪陳），失敗就照實講，不美化。
 
@@ -37,7 +38,7 @@ Fable Harness 是一個小型套件——幾個 hooks、一個 skill、幾個子
 | 反方子代理 | `.claude/agents/{skeptic,red-team,simplifier}.md` | 抗辯流程用的三個獨立子代理角色 |
 | 模型分工 | `CLAUDE.md` | 上面提到的分工表 |
 | harness 偵測器 | `scripts/detect_harness.py` | 只讀檢查——這個專案是不是已經有自己的開發 harness（例如 harnessmith、Superpowers），有的話 Fable 就退居底線角色 |
-| 治理文件 | `diagnostics.md`、`model_dispatch_rules.md`、`cognitive_rubrics.md`、`future_session_letter.md` | 已知失效模式、子代理派工範本、何時該慢下來的判斷準則、跨 session 交接紀錄 |
+| 治理文件 | `model_dispatch_rules.md`、`cognitive_rubrics.md` | 子代理派工範本、何時該慢下來的判斷準則 |
 
 ## 快速開始
 

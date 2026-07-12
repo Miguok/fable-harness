@@ -10,6 +10,16 @@ This kit follows [Semantic Versioning](https://semver.org/) — `MAJOR.MINOR.PAT
 
 The current version is also kept in [VERSION](VERSION).
 
+## [Unreleased]
+
+### Added
+
+- **Maintainer guide** (`MAINTAINING.md`, + 繁體中文 translation): the PR merge SOP for keeping the contributor list clean — squash-merge and drop the `Co-Authored-By: Claude <noreply@…>` trailer so no phantom contributor appears.
+
+### Changed
+
+- **Docs**: the README "How it works" section (all five languages) now documents the token efficiency that falls out of the architecture — tiered model routing plus context-isolated, parallel sub-agents — noting that no Fable-specific benchmark figure is claimed.
+
 ## [1.0.1] — 2026-07-07
 
 ### Fixed

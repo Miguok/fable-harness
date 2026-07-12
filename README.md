@@ -23,6 +23,7 @@ To be upfront about the limits: hooks and skills can only transplant the *proced
 - **OODA loop** — before answering, Claude gathers evidence (search/read the actual files, never guess from training memory), states its assumptions out loud, turns the task into something verifiable ("make it work" isn't good enough), then makes small changes and checks each one.
 - **Multi-party adversarial review** — this kit's signature move. Before trusting a big conclusion (an architecture decision, a root-cause diagnosis, anything that could affect production), Claude dispatches three independent "opposition" sub-agents *in parallel*, each with a different job: a **skeptic** who looks for logical holes, a **red-team** who looks for security and failure risks, and a **simplifier** who looks for needless over-engineering. The conclusion only gets trusted if a majority of the three "survive" the challenge.
 - **Model routing** — reasoning, architecture, and root-cause work stays on whichever model is currently driving; coding and refactoring gets routed to Sonnet; batch file work, search, and text cleanup gets routed to Haiku. Right-sized model for the job.
+- **Token-efficient by design** — the cost savings fall out of the same architecture, not a bolted-on feature. The tiered routing above already keeps the expensive model's tokens on reasoning and pushes bulk work to cheaper models; on top of that, the adversarial reviewers and Explore-style searches run in **isolated sub-agents**, each with its own clean context, returning only a compact conclusion — so most of their intermediate tokens are discarded instead of snowballing into the main conversation. And those sub-agents fan out **in parallel**, each carrying a small context, rather than piling up in one ever-growing thread. This "tiered routing + isolated sub-agents" shape is a widely-recognized way to cut LLM token cost — Fable itself hasn't been benchmarked for a specific figure, so this describes *why* it saves, not a promised percentage.
 - **Definition of Done (TDD)** — if a change touches actual logic, it needs an automated test and evidence that the test failed before the fix and passed after. Eyeballing the output or a stray `console.log` doesn't count as verification.
 - **Honest reporting** — the first sentence of any report is the actual result (not a lead-up); failures get reported as failures, not softened.
 
@@ -37,7 +38,7 @@ To be upfront about the limits: hooks and skills can only transplant the *proced
 | Opposition agents | `.claude/agents/{skeptic,red-team,simplifier}.md` | The three independent sub-agent personas used in adversarial review |
 | Model routing | `CLAUDE.md` | The routing table described above |
 | Harness detector | `scripts/detect_harness.py` | Read-only check for whether the project already has its own dev harness (e.g. harnessmith, Superpowers) so Fable knows to step back and just hold the floor |
-| Governance docs | `diagnostics.md`, `model_dispatch_rules.md`, `cognitive_rubrics.md`, `future_session_letter.md` | Known failure modes, sub-agent dispatch templates, when-to-slow-down rules, and cross-session handoff notes |
+| Governance docs | `model_dispatch_rules.md`, `cognitive_rubrics.md` | Sub-agent dispatch templates and when-to-slow-down rules |
 
 ## Quick start
 
