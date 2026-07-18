@@ -20,6 +20,10 @@ The current version is also kept in [VERSION](VERSION).
 
 - **Docs**: the README "How it works" section (all five languages) now documents the token efficiency that falls out of the architecture — tiered model routing plus context-isolated, parallel sub-agents — noting that no Fable-specific benchmark figure is claimed.
 
+### Fixed
+
+- **verify_gate**: force UTF-8 stdout (`sys.stdout.reconfigure`) so the block JSON — whose reason string opens with "⛔" — survives Windows consoles that default to a legacy codepage (e.g. cp950). Without it the print raised `UnicodeEncodeError`, the fail-open wrapper swallowed it, and the Stop gate silently never blocked. Adds regression test T12 (fail-then-pass verified: cp950 stdout goes from empty output to a correct block JSON).
+
 ## [1.0.1] — 2026-07-07
 
 ### Fixed

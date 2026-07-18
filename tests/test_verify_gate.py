@@ -18,6 +18,9 @@ Stop hook 驗證 gate（verify_gate.py）行為驗收——對應 Fable Protocol
   T11 腳本自帶 `--test` 自測入口（python3 tool.py --test）→ 識別放行；
      形似旗標（--test-pypi/--testing/--tests）→ 仍須 block
      （對應 2026-07-05 真實 session 實證：zh_convert_safe.py --test 連續四次被誤攔）
+  T12 stdout 為 Windows 傳統編碼（PYTHONIOENCODING=cp950）→ block JSON 仍須完整輸出
+     （修復前 reason 首字「⛔」不可編碼 → UnicodeEncodeError 被 fail-open 吞掉
+      → gate 靜默失效；主力機實證，失效數日無人察覺）
 
 執行命令：
   cd <repo> && python -m pytest tests/test_verify_gate.py -v
@@ -65,6 +68,7 @@ fail-then-pass guard：
   以真實互動 session 手動演練一次（改一行 .py 不跑測試即結束，應見擋回訊息）。
 """
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -301,3 +305,28 @@ def test_t11_selftest_flag_allow(tmp_path):
         if not blocked:
             failures.append(("應攔未攔", cmd, out[:60]))
     assert not failures, f"T11 失敗: {failures}"
+
+
+def test_t12_cp950_stdout_still_blocks(tmp_path):
+    """T12：stdout 為 Windows 傳統編碼（cp950）時 block JSON 仍須完整輸出。
+    修復前：reason 首字「⛔」不可編碼 → print 拋 UnicodeEncodeError → fail-open 吞掉
+    → gate 靜默失效（主力機實證）。修復＝main() 開頭 reconfigure utf-8。"""
+    entries = [
+        _user("幫我修 bug"),
+        _tool_use("Edit", {"file_path": "D:\\proj\\app.py", "old_string": "a", "new_string": "b"}),
+        _tool_result(),
+    ]
+    transcript = tmp_path / "transcript.jsonl"
+    transcript.write_text(
+        "\n".join(json.dumps(e, ensure_ascii=False) for e in entries), encoding="utf-8")
+    payload = json.dumps({  # ensure_ascii 預設 → payload 純 ASCII，不受 stdin 編碼影響
+        "session_id": "test", "hook_event_name": "Stop",
+        "stop_hook_active": False, "transcript_path": str(transcript)})
+    env = {**os.environ, "PYTHONIOENCODING": "cp950"}
+    env.pop("PYTHONUTF8", None)
+    proc = subprocess.run([sys.executable, str(GATE)], input=payload.encode("ascii"),
+                          capture_output=True, timeout=30, env=env)
+    assert proc.returncode == 0
+    data = json.loads(proc.stdout.decode("utf-8").strip())
+    assert data["decision"] == "block"
+    assert data["reason"].startswith("⛔")

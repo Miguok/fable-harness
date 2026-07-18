@@ -8,7 +8,8 @@ stop_hook_active=true（模型第二次結束）時放行，避免純討論 sess
 任何解析錯誤一律 fail-open（exit 0 無輸出）——gate 絕不可弄壞 session。
 
 介面：stdin 收 hook JSON（transcript_path / stop_hook_active），stdout 輸出 block JSON 或無輸出。
-測試：tests/test_verify_gate.py（十一案例，fail-then-pass 已驗證；T9 多生態識別、T10 假放行防護、T11 --test 自測入口）。
+測試：tests/test_verify_gate.py（十二案例，fail-then-pass 已驗證；T9 多生態識別、T10 假放行防護、
+T11 --test 自測入口、T12 cp950 stdout 回歸）。
 """
 import json
 import re
@@ -86,6 +87,7 @@ def analyze(entries):
 
 def main():
     try:
+        sys.stdout.reconfigure(encoding="utf-8")
         data = json.loads(sys.stdin.read() or "{}")
         if data.get("stop_hook_active"):
             return 0
