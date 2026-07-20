@@ -86,6 +86,10 @@ def analyze(entries):
 
 def main():
     try:
+        # Claude Code reads hook stdout as UTF-8; on legacy-codepage Windows
+        # (e.g. cp950) the default encoding makes print() raise on "⛔"/CJK,
+        # which the fail-open except swallows — the gate then never blocks.
+        sys.stdout.reconfigure(encoding="utf-8")
         data = json.loads(sys.stdin.read() or "{}")
         if data.get("stop_hook_active"):
             return 0

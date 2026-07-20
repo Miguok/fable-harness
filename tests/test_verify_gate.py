@@ -43,6 +43,12 @@ fail-then-pass guard：
   被誤攔（allow cases 遭 block）→ regex 加 `\s--test(\s|$)` 錨定後全綠 ✅；
   3 個形似旗標負例（--test-pypi/--testing/--tests）維持 block，T9/T10 保持綠
 最後執行：2026-07-05 22:51 → 11 passed ✅（全套 19 passed in 0.65s）
+  2026-07-08 00:08 pre-deploy check on zh-TW Windows (stdout = cp950) → 4 failed:
+  every block case (T1/T8/T10/T11) got empty output — print() of "⛔"/CJK raises
+  UnicodeEncodeError on cp950 stdout and the fail-open except swallows it, so the
+  gate silently never blocks → added sys.stdout.reconfigure(encoding="utf-8") in
+  verify_gate.py main() (Claude Code reads hook stdout as UTF-8 on all platforms)
+最後執行：2026-07-08 00:09 → 11 passed ✅（全套 19 passed in 1.39s）
 
 [關鍵量測值]
   T1 block 輸出: {"decision": "block", "reason": "⛔ FABLE-PROTOCOL 驗證 gate：本輪修改了程式碼（app.py）..."}
