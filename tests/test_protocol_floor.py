@@ -76,6 +76,27 @@ def test_l3_progress_has_no_in_progress_state(floor_text):
     assert "已完成／未開始" in floor_text, "floor §3 缺「只用已完成／未開始兩個值」的要求"
 
 
+def test_l5_evidence_clause_has_a_no_test_harness_branch(floor_text):
+    """L5：§4 的證據要求必須有「專案沒有測試載體」的分支，且不得因此免除證據。
+
+    來由：一個全新的專案通常還沒有測試套件。條文若只寫「至少一個自動化測試」，
+    在那種專案上不是嚴格，是**無法執行**——而無法執行的條文會被整條略過。
+    """
+    assert "沒有測試載體時" in floor_text, "floor §4 缺「專案沒有測試載體」的分支"
+    assert "不得因此免除證據" in floor_text, (
+        "floor §4 的無測試分支被改成豁免——它該換一種證據，不是不要證據"
+    )
+
+
+def test_l6_failure_reporting_is_not_narrowed_to_tests(floor_text):
+    """L6：§3 的「失敗照實報」不得把失敗窄化成「測試紅」。
+
+    沒有測試的專案照樣會有紅燈（檢查、指令、建置）。窄化的措辭讓那些失敗不在射程內。
+    """
+    assert "測試紅就貼" not in floor_text, "floor §3 又把失敗窄化成測試紅"
+    assert "紅燈就貼原始輸出" in floor_text, "floor §3 缺泛化後的失敗回報句"
+
+
 def test_l4_progress_clause_requires_stating_a_fact(floor_text):
     """L4：L3 的配對負向鎖——光有關鍵詞不算，必須保留「已發生的事實」這個要求。
 
