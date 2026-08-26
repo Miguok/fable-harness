@@ -64,6 +64,9 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DOCTOR = REPO_ROOT / "scripts" / "fable_doctor.py"
 
+# 三個 skill 都是「複製」交付，都會隨版本漂移——doctor 必須逐個比對
+SKILL_DIRS = ("adversarial-review", "cognitive-rubrics", "model-dispatch-rules")
+
 HOOK_SCRIPTS = {
     "SessionStart": "inject_protocol.sh",
     "UserPromptSubmit": "prompt_nudge.sh",
@@ -78,9 +81,10 @@ def _make_repo(tmp_path: Path, version: str = "9.9.9") -> Path:
     hooks.mkdir(parents=True)
     for name in HOOK_SCRIPTS.values():
         (hooks / name).write_text("# stub\n", encoding="utf-8")
-    skill = repo / ".claude" / "skills" / "adversarial-review"
-    skill.mkdir(parents=True)
-    (skill / "SKILL.md").write_text("skill body\n", encoding="utf-8")
+    for skill_name in SKILL_DIRS:
+        skill = repo / ".claude" / "skills" / skill_name
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text(f"{skill_name} body\n", encoding="utf-8")
     agents = repo / ".claude" / "agents"
     agents.mkdir(parents=True)
     for a in ("skeptic", "red-team", "simplifier"):
@@ -107,9 +111,10 @@ def _make_home(tmp_path: Path, repo: Path, version: str = "9.9.9") -> Path:
         json.dumps(settings, indent=2), encoding="utf-8"
     )
 
-    dst_skill = claude / "skills" / "adversarial-review"
-    dst_skill.mkdir(parents=True)
-    (dst_skill / "SKILL.md").write_text("skill body\n", encoding="utf-8")
+    for skill_name in SKILL_DIRS:
+        dst_skill = claude / "skills" / skill_name
+        dst_skill.mkdir(parents=True)
+        (dst_skill / "SKILL.md").write_text(f"{skill_name} body\n", encoding="utf-8")
     dst_agents = claude / "agents"
     dst_agents.mkdir(parents=True)
     for a in ("skeptic", "red-team", "simplifier"):
@@ -185,8 +190,8 @@ def test_d4_copy_drift_is_reported(tmp_path):
     """D4：已安裝的 skill 副本與 repo 不同 → 標 copy-drift 並 exit 1（N6 守衛）。"""
     repo = _make_repo(tmp_path)
     home = _make_home(tmp_path, repo)
-    (home / ".claude" / "skills" / "adversarial-review" / "SKILL.md").write_text(
-        "OLD skill body\n", encoding="utf-8"
+    (home / ".claude" / "skills" / "cognitive-rubrics" / "SKILL.md").write_text(
+        "OLD cognitive-rubrics body\n", encoding="utf-8"
     )
 
     rc, payload = _run(home, repo)

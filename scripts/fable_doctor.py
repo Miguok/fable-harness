@@ -41,6 +41,8 @@ HOOK_MARKERS = {
 
 COPIED_ARTIFACTS = [
     Path(".claude/skills/adversarial-review/SKILL.md"),
+    Path(".claude/skills/cognitive-rubrics/SKILL.md"),
+    Path(".claude/skills/model-dispatch-rules/SKILL.md"),
     Path(".claude/agents/skeptic.md"),
     Path(".claude/agents/red-team.md"),
     Path(".claude/agents/simplifier.md"),
@@ -168,11 +170,11 @@ def check(home: Path, repo: Path) -> dict:
         )
     else:
         try:
-            marker = json.loads(marker_path.read_text(encoding="utf-8"))
+            install_marker = json.loads(marker_path.read_text(encoding="utf-8"))
         except (ValueError, UnicodeDecodeError) as exc:
             problems.append({"code": "install-marker-unparsable", "detail": str(exc)})
         else:
-            installed_version = str(marker.get("version", "")).strip()
+            installed_version = str(install_marker.get("version", "")).strip()
             if repo_version and installed_version != repo_version:
                 problems.append(
                     {
