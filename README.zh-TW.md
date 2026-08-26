@@ -33,11 +33,12 @@ Fable Harness 是一個小型套件——幾個 hooks、一個 skill、幾個子
 |---|---|---|
 | 行為協議 | `.claude/hooks/fable_protocol.md` + `inject_protocol.sh` | 每次 session 開始時注入 |
 | 每輪微提醒 | `.claude/hooks/prompt_nudge.sh` | 使用者每則訊息都會被注入一行提醒 |
-| 驗證關卡 | `.claude/hooks/verify_gate.py` | 若這輪改了程式碼卻沒跑測試，擋下收工一次（第二次會放行） |
+| 驗證關卡 | `.claude/hooks/verify_gate.py` | 若這輪改了程式碼卻沒跑測試，擋下收工一次（第二次會放行）。經 shell 改碼（`sed -i`、重導向、`tee`）與 `Edit`／`Write` 同樣算數 |
 | 多方抗辯 | `.claude/skills/adversarial-review/` | 定義上述三反方審查流程的 skill |
 | 反方子代理 | `.claude/agents/{skeptic,red-team,simplifier}.md` | 抗辯流程用的三個獨立子代理角色 |
 | 模型分工 | `CLAUDE.md` | 上面提到的分工表 |
 | harness 偵測器 | `scripts/detect_harness.py` | 只讀檢查——這個專案是不是已經有自己的開發 harness（例如 harnessmith、Superpowers），有的話 Fable 就退居底線角色 |
+| 健檢 | `scripts/fable_doctor.py` | 回報三個 hook 各自解析到哪個直譯器、上次何時真的跑過、已複製的 skill 與 agents 是否仍與 repo 相同、記錄的版本有沒有落後 |
 | 治理文件 | `.claude/skills/model-dispatch-rules/`、`.claude/skills/cognitive-rubrics/` | 子代理派工範本、何時該慢下來的判斷準則 |
 
 ## 快速開始

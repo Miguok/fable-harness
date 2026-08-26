@@ -33,11 +33,12 @@ Fable Harness は小さなキット——いくつかの hook、1 つの skill�
 |---|---|---|
 | 行動プロトコル | `.claude/hooks/fable_protocol.md` + `inject_protocol.sh` | 各セッション開始時に注入 |
 | ターンごとの一言リマインド | `.claude/hooks/prompt_nudge.sh` | ユーザーの各メッセージに一行のリマインドを注入 |
-| 検証ゲート | `.claude/hooks/verify_gate.py` | このターンでコードを変更したのにテストを走らせていない場合、ターン終了を一度だけブロック（2 回目は通す） |
+| 検証ゲート | `.claude/hooks/verify_gate.py` | このターンでコードを変更したのにテストを走らせていない場合、ターン終了を一度だけブロック（2 回目は通す）。シェル経由の変更（`sed -i`、リダイレクト、`tee`）も `Edit`／`Write` と同様に数える |
 | 対抗レビュー | `.claude/skills/adversarial-review/` | 上記の三反対役レビューの流れを定義する skill |
 | 反対役エージェント | `.claude/agents/{skeptic,red-team,simplifier}.md` | 対抗レビューで使う 3 つの独立したサブエージェントの役割 |
 | モデル振り分け | `CLAUDE.md` | 上で述べた振り分け表 |
 | harness 検出器 | `scripts/detect_harness.py` | 読み取り専用チェック——プロジェクトが独自の開発 harness（harnessmith、Superpowers など）を既に持っているかを確認し、あれば Fable は一歩下がって下限だけを担う |
+| ヘルスチェック | `scripts/fable_doctor.py` | 各 hook が実際にどのインタプリタを解決したか、最後に実行された時刻、コピー済みの skill と agents が repo と一致しているか、記録されたバージョンが古くないかを報告 |
 | ガバナンス文書 | `.claude/skills/model-dispatch-rules/`、`.claude/skills/cognitive-rubrics/` | サブエージェント派遣テンプレート、いつ減速すべきかの基準 |
 
 ## クイックスタート
