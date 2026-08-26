@@ -38,7 +38,7 @@ Fable Harness는 작은 키트——몇 개의 hook, 하나의 skill, 몇 개의
 | 반대역 에이전트 | `.claude/agents/{skeptic,red-team,simplifier}.md` | 대립 리뷰에 쓰이는 3개의 독립 서브에이전트 역할 |
 | 모델 배분 | `CLAUDE.md` | 위에서 설명한 배분 표 |
 | harness 감지기 | `scripts/detect_harness.py` | 읽기 전용 확인——프로젝트에 이미 자체 개발 harness(예: harnessmith, Superpowers)가 있는지 확인하고, 있으면 Fable은 한 발 물러나 하한선만 담당 |
-| 거버넌스 문서 | `model_dispatch_rules.md`, `cognitive_rubrics.md` | 서브에이전트 파견 템플릿, 언제 속도를 늦출지에 대한 기준 |
+| 거버넌스 문서 | `.claude/skills/model-dispatch-rules/`, `.claude/skills/cognitive-rubrics/` | 서브에이전트 파견 템플릿, 언제 속도를 늦출지에 대한 기준 |
 
 ## 빠른 시작
 

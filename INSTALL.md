@@ -70,8 +70,9 @@ Claude should then carry out the following steps, in order. If you're Claude rea
 
 7. **Command strings must match exactly if they exist in more than one place.** If this project's own `.claude/settings.json` *also* defines these same three hooks (e.g. because you were developing inside this repo), the command string in the project settings and in the global settings must be **character-for-character identical**. Claude Code's native de-duplication relies on this — a stray difference (like a missing `|| exit 0` fallback) will cause the hook to fire twice per event instead of once.
 
-8. **Copy the skill and the three agents.**
-   - Copy `<repo>/.claude/skills/adversarial-review/` to `~/.claude/skills/adversarial-review/`.
+8. **Copy the three skills and the three agents.**
+   - Copy each of `<repo>/.claude/skills/adversarial-review/`, `<repo>/.claude/skills/cognitive-rubrics/`, and `<repo>/.claude/skills/model-dispatch-rules/` to the matching directory under `~/.claude/skills/`.
+     A personal skill is available across all your projects, and a skill's body loads only when it's used — so the two governance skills (99 and 83 lines) cost nothing until the model actually needs them.
    - Copy `<repo>/.claude/agents/skeptic.md`, `red-team.md`, and `simplifier.md` to `~/.claude/agents/`.
    - If any destination already exists, don't overwrite it — stop and ask the user first.
    - **Then write an install marker** at `~/.claude/fable-harness-install.json` containing the repo's absolute path, the contents of `<repo>/VERSION`, and the install date. The hooks are referenced by path and update themselves when you `git pull`; the skill and agents are **copies** and do not. This marker is the only thing that makes that drift detectable — see [Upgrade](#upgrade).
@@ -92,7 +93,7 @@ Claude should then carry out the following steps, in order. If you're Claude rea
 To upgrade:
 
 1. `git pull` in the cloned repo. The hooks are now current; nothing else is.
-2. **Re-copy the skill and the three agents**, overwriting the existing ones — `<repo>/.claude/skills/adversarial-review/` → `~/.claude/skills/`, and `skeptic.md` / `red-team.md` / `simplifier.md` → `~/.claude/agents/`.
+2. **Re-copy the three skills and the three agents**, overwriting the existing ones — every directory under `<repo>/.claude/skills/` → `~/.claude/skills/`, and `skeptic.md` / `red-team.md` / `simplifier.md` → `~/.claude/agents/`.
    ⚠ This is the one place where overwriting is correct. Step 8's "don't overwrite, stop and ask" protects you from clobbering *someone else's* file during a first install; on an upgrade you are replacing **your own** older copy of this kit's file. If you are not sure which situation you're in, run the doctor below — `copy-drift` means it's yours and it's stale.
 3. **Update the install marker** `~/.claude/fable-harness-install.json` with the new contents of `<repo>/VERSION`.
 4. Run the health check and confirm it comes back clean.

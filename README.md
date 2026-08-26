@@ -38,7 +38,7 @@ To be upfront about the limits: hooks and skills can only transplant the *proced
 | Opposition agents | `.claude/agents/{skeptic,red-team,simplifier}.md` | The three independent sub-agent personas used in adversarial review |
 | Model routing | `CLAUDE.md` | The routing table described above |
 | Harness detector | `scripts/detect_harness.py` | Read-only check for whether the project already has its own dev harness (e.g. harnessmith, Superpowers) so Fable knows to step back and just hold the floor |
-| Governance docs | `model_dispatch_rules.md`, `cognitive_rubrics.md` | Sub-agent dispatch templates and when-to-slow-down rules |
+| Governance docs | `.claude/skills/model-dispatch-rules/`, `.claude/skills/cognitive-rubrics/` | Sub-agent dispatch templates and when-to-slow-down rules |
 
 ## Quick start
 

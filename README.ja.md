@@ -38,7 +38,7 @@ Fable Harness は小さなキット——いくつかの hook、1 つの skill�
 | 反対役エージェント | `.claude/agents/{skeptic,red-team,simplifier}.md` | 対抗レビューで使う 3 つの独立したサブエージェントの役割 |
 | モデル振り分け | `CLAUDE.md` | 上で述べた振り分け表 |
 | harness 検出器 | `scripts/detect_harness.py` | 読み取り専用チェック——プロジェクトが独自の開発 harness（harnessmith、Superpowers など）を既に持っているかを確認し、あれば Fable は一歩下がって下限だけを担う |
-| ガバナンス文書 | `model_dispatch_rules.md`、`cognitive_rubrics.md` | サブエージェント派遣テンプレート、いつ減速すべきかの基準 |
+| ガバナンス文書 | `.claude/skills/model-dispatch-rules/`、`.claude/skills/cognitive-rubrics/` | サブエージェント派遣テンプレート、いつ減速すべきかの基準 |
 
 ## クイックスタート
 

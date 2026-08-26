@@ -38,7 +38,7 @@ Fable Harness 是一個小型套件——幾個 hooks、一個 skill、幾個子
 | 反方子代理 | `.claude/agents/{skeptic,red-team,simplifier}.md` | 抗辯流程用的三個獨立子代理角色 |
 | 模型分工 | `CLAUDE.md` | 上面提到的分工表 |
 | harness 偵測器 | `scripts/detect_harness.py` | 只讀檢查——這個專案是不是已經有自己的開發 harness（例如 harnessmith、Superpowers），有的話 Fable 就退居底線角色 |
-| 治理文件 | `model_dispatch_rules.md`、`cognitive_rubrics.md` | 子代理派工範本、何時該慢下來的判斷準則 |
+| 治理文件 | `.claude/skills/model-dispatch-rules/`、`.claude/skills/cognitive-rubrics/` | 子代理派工範本、何時該慢下來的判斷準則 |
 
 ## 快速開始
 
