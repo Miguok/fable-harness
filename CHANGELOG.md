@@ -12,6 +12,25 @@ The current version is also kept in [VERSION](VERSION).
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-08-27
+
+> **Verified on Windows only.** The install flow, the three hooks and the health check were exercised end to end on Windows. macOS and Linux are expected to work — `INSTALL.md` branches its interpreter detection for them — but neither was run. `scripts/fable_doctor.py` is the way to find out on your own machine.
+
+### Added
+
+- **Health check** (`scripts/fable_doctor.py`): reports which interpreter each of the three hooks actually resolves to, when each last fired, whether the copied skill and agents still match the repo, and whether the recorded install version is behind. Every hook command ends with `|| exit 0`, so a missing or wrong interpreter previously produced no error, no log line, and nothing an install could distinguish from success — this is where that becomes visible. Covered by `tests/test_fable_doctor.py` (9 cases).
+- **Upgrade section** in `INSTALL.md`: the hooks are referenced by path and update on `git pull`, but the skill and agents are copies and do not. That drift was undocumented and undetectable across three released versions. An install marker (`~/.claude/fable-harness-install.json`) now records the installed version so the doctor can flag it.
+- **The two governance docs are now skills** and therefore reach every project. `model_dispatch_rules.md` → `.claude/skills/model-dispatch-rules/SKILL.md`, `cognitive_rubrics.md` → `.claude/skills/cognitive-rubrics/SKILL.md`. Before this they were only reachable through this repo's own `CLAUDE.md` routing table, which is not installed anywhere — so outside this repo they were advertised in the README and unreadable in practice. A personal skill is available across all your projects, and a skill's body loads only when it is used, so the 182 lines cost nothing until the model needs them. `INSTALL.md` step 8 now copies all three skills.
+- **Public governance test** (`tests/test_protocol_floor.py`): a portable content lock on the injected protocol floor, so a fresh clone can re-run at least one governance check rather than none.
+
+### Changed
+
+- **Verification gate** (`.claude/hooks/verify_gate.py`): now counts code changed through the shell — `sed -i`, a redirect, `tee` — not only `Edit`/`Write`/`NotebookEdit`. Measured across the 30 most recent real transcripts: Bash was used 6989 times against 813 `Edit`s and 387 `Write`s, and 887 of those shell calls had the shape of a file write, so roughly a third of all code changes were happening where the gate could not see them. It keys on the *write target's* extension, so `grep -n foo src/bar.py > out.txt` reads Python, writes text, and stays out of scope; writes into a temp or scratchpad path are ignored. False-positive rate on the same data: 149 of 7058 commands, 2.1%. Adds T13–T16. `MultiEdit` was considered and rejected on the same measurement — it appears in 4 of 103 transcripts and 0 of the recent 30.
+- **Health check** now watches all three skill copies, not only `adversarial-review` — the two governance docs became copy-delivered in this release, which is exactly the drift the doctor exists to catch.
+- **Governance skills**: the six remaining clauses that assumed the project already owns test tooling or version control are rewritten so they hold in a project that has neither. The slow-down trigger leads with the general rule (will this run when nobody is watching) instead of a fixed list of tools; acceptance criteria and the report template's evidence field accept any re-runnable verification, not only a test command; out-of-scope recovery names git as the version-controlled path and falls back to the backup the previous step already requires. Locked by `tests/test_skill_delivery.py`, which also locks each skill's frontmatter — a skill's body loads only when its description makes it look relevant, so a blunted description leaves the skill present, the tests green, and the rules never loaded.
+- **Install** (`INSTALL.md`): a missing `settings.json` now creates a minimal one instead of aborting — a brand-new machine is the main case this kit is for, and the old rule (written to protect an existing-but-broken file) caught both situations. Step 5 now requires detecting the interpreters before writing any command string, with OS branches and a template, calling out the two traps seen in practice: only `python3` existing, and a bare `bash` on Windows resolving to the WSL launcher rather than Git Bash. Step 9 now verifies all three hooks instead of only `SessionStart`, using the marker files rather than whether the nudge line happens to be visible in a given client.
+- **Protocol** (`.claude/hooks/fable_protocol.md` §3): progress is reported with two values, done and not started. "In progress" is no longer a permitted state — a reply is written and sent in one moment, so unless something was actually launched there is nothing running behind it. When there is real background work, the rule asks for a statement of what has already happened plus what follows when it returns.
+
 ## [1.0.2] — 2026-07-20
 
 ### Fixed

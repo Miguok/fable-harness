@@ -4,7 +4,7 @@
 
 [English](README.md) &nbsp;·&nbsp; [繁體中文](README.zh-TW.md) &nbsp;·&nbsp; [简体中文](README.zh-CN.md) &nbsp;·&nbsp; [日本語](README.ja.md) &nbsp;·&nbsp; **한국어**
 
-![Version: 1.0.2](https://img.shields.io/badge/version-1.0.2-blue.svg) &nbsp; ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
+![Version: 1.1.0](https://img.shields.io/badge/version-1.1.0-blue.svg) &nbsp; ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 
 ## 이것은 무엇인가
 
@@ -33,16 +33,19 @@ Fable Harness는 작은 키트——몇 개의 hook, 하나의 skill, 몇 개의
 |---|---|---|
 | 행동 프로토콜 | `.claude/hooks/fable_protocol.md` + `inject_protocol.sh` | 각 세션 시작 시 주입 |
 | 매 턴 짧은 리마인드 | `.claude/hooks/prompt_nudge.sh` | 사용자의 각 메시지에 한 줄 리마인드를 주입 |
-| 검증 게이트 | `.claude/hooks/verify_gate.py` | 이번 턴에 코드를 바꿨는데 테스트를 돌리지 않았다면 턴 종료를 한 번 차단(두 번째는 통과) |
+| 검증 게이트 | `.claude/hooks/verify_gate.py` | 이번 턴에 코드를 바꿨는데 테스트를 돌리지 않았다면 턴 종료를 한 번 차단(두 번째는 통과). 셸을 통한 변경(`sed -i`, 리디렉션, `tee`)도 `Edit`/`Write`와 동일하게 계산 |
 | 대립 리뷰 | `.claude/skills/adversarial-review/` | 위의 세 반대역 리뷰 흐름을 정의하는 skill |
 | 반대역 에이전트 | `.claude/agents/{skeptic,red-team,simplifier}.md` | 대립 리뷰에 쓰이는 3개의 독립 서브에이전트 역할 |
 | 모델 배분 | `CLAUDE.md` | 위에서 설명한 배분 표 |
 | harness 감지기 | `scripts/detect_harness.py` | 읽기 전용 확인——프로젝트에 이미 자체 개발 harness(예: harnessmith, Superpowers)가 있는지 확인하고, 있으면 Fable은 한 발 물러나 하한선만 담당 |
-| 거버넌스 문서 | `model_dispatch_rules.md`, `cognitive_rubrics.md` | 서브에이전트 파견 템플릿, 언제 속도를 늦출지에 대한 기준 |
+| 상태 점검 | `scripts/fable_doctor.py` | 각 hook이 실제로 어떤 인터프리터로 해석되는지, 마지막으로 실행된 시각, 복사된 skill과 agents가 repo와 여전히 일치하는지, 기록된 버전이 뒤처졌는지 보고 |
+| 거버넌스 문서 | `.claude/skills/model-dispatch-rules/`, `.claude/skills/cognitive-rubrics/` | 서브에이전트 파견 템플릿, 언제 속도를 늦출지에 대한 기준 |
 
 ## 빠른 시작
 
 이 저장소를 clone한 뒤, 당신의 Claude Code에게 이렇게 말하세요: **“INSTALL.md를 따라 Fable Harness를 설치해 줘.”** Claude가 스스로 가이드를 읽고 안전하게(먼저 백업, 기존 설정은 절대 덮어쓰지 않음) 설치합니다. 구체적인 내용은 [INSTALL.md](INSTALL.md)를 참고하세요.
+
+> **Windows에서만 검증됨.** 설치 절차, 세 개의 hook, `fable_doctor.py`는 현재 Windows에서만 엔드투엔드로 실행했습니다. macOS와 Linux도 동작할 것으로 보이지만([INSTALL.md](INSTALL.md)의 인터프리터 탐지에 분기가 있습니다) 실제로 검증하지는 않았습니다. 두 플랫폼에 설치한다면 `python scripts/fable_doctor.py --home ~ --repo <repo>`로 세 hook이 실제로 발동했는지 확인할 수 있습니다.
 
 ## 버전 규칙
 

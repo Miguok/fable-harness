@@ -39,6 +39,38 @@ TEST_CMD_RE = re.compile(
 
 EDIT_TOOLS = {"Edit", "Write", "NotebookEdit"}
 SHELL_TOOLS = {"Bash", "PowerShell"}
+
+# 改碼不是只走 Edit/Write——2026-08-27 對近 30 份真實 transcript 量測：
+#   Bash 6989 次 vs Edit 813 + Write 387；其中「改檔形態」（sed -i／重導向／tee／cat >）887 次。
+#   也就是說**約三分之一的程式碼變更完全不在 gate 的偵測範圍內**。
+#   （同批量測：MultiEdit 在 103 份 transcript 中只出現在 4 份、近 30 份 0 次，故不納入 EDIT_TOOLS。）
+# 只認「寫入目標」本身是程式碼檔的情形，避免 `grep foo bar.py > out.txt` 這種讀 .py、寫別處的誤攔。
+_REDIRECT_OR_TEE_RE = re.compile(
+    r"(?:>>?|\btee\b(?:\s+-a)?)\s*['\"]?([^\s'\";|&<>]+)"
+)
+# sed -i 的檔名在最後，前面還夾著 script 參數，故單獨抓該片段的尾端 token。
+_SED_INPLACE_RE = re.compile(
+    # 貪婪（非 lazy）是刻意的：sed 的檔名在最後，lazy 會停在 script 參數上（實測 's/a/b/' 被當成檔名）
+    r"\bsed\b(?:\s+-[^\s]+)*\s+-i(?:\.\w+)?\b[^|;&\n]*\s+['\"]?([^\s'\";|&<>]+)"
+)
+# 暫存區不算專案程式碼：寫 scratchpad 的一次性腳本不該觸發 gate。
+_TEMP_MARKERS = ("/tmp/", "\\temp\\", "/temp/", "scratchpad", "appdata", "\\tmp\\")
+
+
+def shell_written_code_files(command):
+    """回傳這道 shell 命令寫入的程式碼檔名（沒有就空列表）。
+
+    只看寫入目標的副檔名，不看命令裡出現過哪些檔——讀 .py 而寫 .txt 不算改碼。
+    """
+    written = []
+    for pattern in (_REDIRECT_OR_TEE_RE, _SED_INPLACE_RE):
+        for target in pattern.findall(command):
+            lowered = target.lower()
+            if any(marker in lowered for marker in _TEMP_MARKERS):
+                continue
+            if PurePath(target).suffix.lower() in CODE_EXTS:
+                written.append(PurePath(target).name)
+    return written
 LOCAL_COMMAND_PREFIXES = (
     "<command-name>", "<local-command-stdout>",
     "<local-command-stderr>", "<local-command-caveat>",
@@ -81,8 +113,10 @@ def analyze(entries):
             if PurePath(path).suffix.lower() in CODE_EXTS:
                 edited.append(PurePath(path).name)
         elif name in SHELL_TOOLS:
-            if TEST_CMD_RE.search(tool_input.get("command", "")):
+            command = tool_input.get("command", "")
+            if TEST_CMD_RE.search(command):
                 test_seen = True
+            edited.extend(shell_written_code_files(command))
     return edited, test_seen
 
 

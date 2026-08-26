@@ -17,7 +17,7 @@
 - 抗辯三反方的 model 底線規則見協議 §5 與 adversarial-review skill（正本），此處不重複。
 - 「當前模型」＝主迴圈直接做，或委派時省略 model 參數讓子代理繼承——推理力跟著 session 走，不降級到寫死的型號（指表格推理列；反方底線見協議 §5）。
 - 改此表時必須同步改 `.claude/hooks/fable_protocol.md` §5（雙源同步）。
-- 派工包 7 欄、回報模板、升級/降級規則見 `model_dispatch_rules.md`——委派時強制使用。
+- 派工包 7 欄、回報模板、升級/降級規則見 `model-dispatch-rules` skill——委派時強制使用。
 
 ## 不可妥協守則（Non-negotiable Guardrails）
 
@@ -31,8 +31,8 @@
 
 | 情境 | 讀這份 |
 |---|---|
-| 委派子代理（派工包 / 回報格式 / 升級降級） | `model_dispatch_rules.md` |
-| 何時慢下來 / 問用戶 / 換路 / 升級模型；輸出前自我抗辯模組 | `cognitive_rubrics.md` |
+| 委派子代理（派工包 / 回報格式 / 升級降級） | `model-dispatch-rules` skill |
+| 何時慢下來 / 問用戶 / 換路 / 升級模型；輸出前自我抗辯模組 | `cognitive-rubrics` skill |
 
 ## 專案守則
 

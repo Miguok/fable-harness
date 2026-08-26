@@ -4,7 +4,7 @@
 
 [English](README.md) &nbsp;·&nbsp; [繁體中文](README.zh-TW.md) &nbsp;·&nbsp; **简体中文** &nbsp;·&nbsp; [日本語](README.ja.md) &nbsp;·&nbsp; [한국어](README.ko.md)
 
-![Version: 1.0.2](https://img.shields.io/badge/version-1.0.2-blue.svg) &nbsp; ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
+![Version: 1.1.0](https://img.shields.io/badge/version-1.1.0-blue.svg) &nbsp; ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 
 ## 这是什么
 
@@ -33,16 +33,19 @@ Fable Harness 是一个小型工具包——几个 hook、一个 skill、几个�
 |---|---|---|
 | 行为协议 | `.claude/hooks/fable_protocol.md` + `inject_protocol.sh` | 每次会话开始时注入 |
 | 每轮微提醒 | `.claude/hooks/prompt_nudge.sh` | 用户每条消息都会被注入一行提醒 |
-| 验证关卡 | `.claude/hooks/verify_gate.py` | 若这一轮改了代码却没跑测试，拦下收尾一次（第二次会放行） |
+| 验证关卡 | `.claude/hooks/verify_gate.py` | 若这一轮改了代码却没跑测试，拦下收尾一次（第二次会放行）。经 shell 改码（`sed -i`、重定向、`tee`）与 `Edit`／`Write` 同样算数 |
 | 多方对抗审查 | `.claude/skills/adversarial-review/` | 定义上述三反方审查流程的 skill |
 | 反方子代理 | `.claude/agents/{skeptic,red-team,simplifier}.md` | 对抗审查流程用的三个独立子代理角色 |
 | 模型分工 | `CLAUDE.md` | 上面提到的分工表 |
 | harness 检测器 | `scripts/detect_harness.py` | 只读检查——这个项目是不是已经有自己的开发 harness（例如 harnessmith、Superpowers），有的话 Fable 就退居底线角色 |
-| 治理文档 | `model_dispatch_rules.md`、`cognitive_rubrics.md` | 子代理派工模板、何时该慢下来的判断准则 |
+| 健检 | `scripts/fable_doctor.py` | 回报三个 hook 各自解析到哪个解释器、上次何时真的跑过、已复制的 skill 与 agents 是否仍与 repo 相同、记录的版本有没有落后 |
+| 治理文档 | `.claude/skills/model-dispatch-rules/`、`.claude/skills/cognitive-rubrics/` | 子代理派工模板、何时该慢下来的判断准则 |
 
 ## 快速开始
 
 把这个仓库 clone 下来，然后跟你的 Claude Code 说：**「照 INSTALL.md 安装 Fable Harness。」** Claude 会自己读说明并安全地完成安装（先备份、绝不覆盖你已有的设置）。详细会做什么请看 [INSTALL.md](INSTALL.md)。
+
+> **仅在 Windows 实测。** 安装流程、三个 hook 与 `fable_doctor.py` 目前只在 Windows 跑过端到端；macOS 与 Linux 预期可用（[INSTALL.md](INSTALL.md) 的解释器探测有对应分支），但尚未实跑验证。若你在这两个平台安装，`python scripts/fable_doctor.py --home ~ --repo <repo>` 会告诉你三个 hook 是不是真的都有触发。
 
 ## 版本规则
 

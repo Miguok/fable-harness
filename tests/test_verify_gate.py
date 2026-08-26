@@ -361,3 +361,68 @@ def test_t12_internal_failure_writes_sanitized_gate_fail(tmp_path):
     lines = body.strip().splitlines()
     assert len(lines) == 1 and "KeyError" in lines[0]    # 屍檢寫入且標明例外類別
     assert sentinel not in body                          # sanitize：不倒整包 payload
+
+
+def test_t13_shell_write_to_code_file_blocks(tmp_path):
+    """T13：經 Bash 的 `sed -i` 改程式碼、整輪沒跑測試 → 必須擋。
+
+    2026-08-27 量測：近 30 份真實 transcript 中 Bash 6989 次 vs Edit 813 + Write 387，
+    其中「改檔形態」887 次——約三分之一的程式碼變更走 shell，原本完全不在 gate 射程內。
+    """
+    entries = [
+        _user("把那個常數改掉"),
+        _tool_use("Bash", {"command": "cd /proj && sed -i 's/OLD/NEW/' src/app.py"}),
+        _tool_result(),
+    ]
+    out, rc = run_gate(tmp_path, entries)
+    assert rc == 0
+    data = json.loads(out)
+    assert data["decision"] == "block", f"shell 改碼未被擋：{out!r}"
+    assert "app.py" in data["reason"]
+
+
+def test_t14_shell_write_then_test_allows(tmp_path):
+    """T14：T13 的配對——shell 改碼後有跑測試就要放行。
+
+    只有 T13 的話，一個「看到 shell 就擋」的 gate 也會通過，而那會擋死正常流程。
+    """
+    entries = [
+        _user("把那個常數改掉"),
+        _tool_use("Bash", {"command": "cd /proj && sed -i 's/OLD/NEW/' src/app.py"}),
+        _tool_result(),
+        _tool_use("Bash", {"command": "python -m pytest tests/ -q"}),
+        _tool_result(),
+    ]
+    out, rc = run_gate(tmp_path, entries)
+    assert rc == 0
+    assert out == "", f"改碼後有測試卻仍被擋：{out!r}"
+
+
+def test_t15_shell_reading_code_and_writing_elsewhere_allows(tmp_path):
+    """T15：讀 .py 但寫到別處（`grep foo bar.py > out.txt`）不算改碼，不得誤攔。
+
+    判準是**寫入目標**的副檔名，不是命令裡出現過哪些檔名——否則每次 grep 原始碼都會被擋。
+    """
+    entries = [
+        _user("看一下有幾處"),
+        _tool_use("Bash", {"command": "grep -n foo src/bar.py > /proj/out.txt"}),
+        _tool_result(),
+    ]
+    out, rc = run_gate(tmp_path, entries)
+    assert rc == 0
+    assert out == "", f"唯讀 grep 被誤攔：{out!r}"
+
+
+def test_t16_shell_write_into_temp_area_allows(tmp_path):
+    """T16：寫到暫存區的一次性腳本不算專案改碼。
+
+    2026-08-27 量測：887 筆改檔形態中 18 筆落在 tmp/scratchpad。把它們也擋下來只會製造雜訊。
+    """
+    entries = [
+        _user("跑個實驗"),
+        _tool_use("Bash", {"command": "cat > /tmp/probe.py << 'EOF'\nprint(1)\nEOF"}),
+        _tool_result(),
+    ]
+    out, rc = run_gate(tmp_path, entries)
+    assert rc == 0
+    assert out == "", f"暫存區腳本被誤攔：{out!r}"

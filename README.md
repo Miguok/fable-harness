@@ -4,7 +4,7 @@
 
 **English** &nbsp;·&nbsp; [繁體中文](README.zh-TW.md) &nbsp;·&nbsp; [简体中文](README.zh-CN.md) &nbsp;·&nbsp; [日本語](README.ja.md) &nbsp;·&nbsp; [한국어](README.ko.md)
 
-![Version: 1.0.2](https://img.shields.io/badge/version-1.0.2-blue.svg) &nbsp; ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
+![Version: 1.1.0](https://img.shields.io/badge/version-1.1.0-blue.svg) &nbsp; ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 
 ## What is it
 
@@ -33,16 +33,19 @@ To be upfront about the limits: hooks and skills can only transplant the *proced
 |---|---|---|
 | Behavior protocol | `.claude/hooks/fable_protocol.md` + `inject_protocol.sh` | Injected at the start of every session |
 | Per-turn nudge | `.claude/hooks/prompt_nudge.sh` | A one-line reminder injected on every user message |
-| Verification gate | `.claude/hooks/verify_gate.py` | Blocks the agent from ending a turn where it changed code but never ran a test (once — a second attempt is allowed through) |
+| Verification gate | `.claude/hooks/verify_gate.py` | Blocks the agent from ending a turn where it changed code but never ran a test (once — a second attempt is allowed through). Counts changes made through the shell (`sed -i`, a redirect, `tee`) as well as `Edit`/`Write` |
 | Adversarial review | `.claude/skills/adversarial-review/` | The skill that defines the three-opponent review flow above |
 | Opposition agents | `.claude/agents/{skeptic,red-team,simplifier}.md` | The three independent sub-agent personas used in adversarial review |
 | Model routing | `CLAUDE.md` | The routing table described above |
 | Harness detector | `scripts/detect_harness.py` | Read-only check for whether the project already has its own dev harness (e.g. harnessmith, Superpowers) so Fable knows to step back and just hold the floor |
-| Governance docs | `model_dispatch_rules.md`, `cognitive_rubrics.md` | Sub-agent dispatch templates and when-to-slow-down rules |
+| Health check | `scripts/fable_doctor.py` | Reports which interpreter each hook actually resolves to, when it last fired, whether your copied skills and agents still match the repo, and whether the recorded version is behind |
+| Governance docs | `.claude/skills/model-dispatch-rules/`, `.claude/skills/cognitive-rubrics/` | Sub-agent dispatch templates and when-to-slow-down rules |
 
 ## Quick start
 
 Clone this repo, then just tell your Claude Code: **"Install Fable Harness by following INSTALL.md."** Claude will read the guide and do the install itself, safely (backup first, never overwrite your existing settings). See [INSTALL.md](INSTALL.md) for exactly what that involves.
+
+> **Tested on Windows.** The install flow, the three hooks and `fable_doctor.py` are exercised on Windows only; macOS and Linux are expected to work (the interpreter detection in [INSTALL.md](INSTALL.md) branches for them) but have not been run end to end. If you install on either, `python scripts/fable_doctor.py --home ~ --repo <repo>` will tell you whether all three hooks really fired.
 
 ## Versioning
 
