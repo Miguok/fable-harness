@@ -4,7 +4,7 @@
 
 [English](README.md) &nbsp;·&nbsp; [繁體中文](README.zh-TW.md) &nbsp;·&nbsp; [简体中文](README.zh-CN.md) &nbsp;·&nbsp; **日本語** &nbsp;·&nbsp; [한국어](README.ko.md)
 
-![Version: 1.0.2](https://img.shields.io/badge/version-1.0.2-blue.svg) &nbsp; ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
+![Version: 1.1.0](https://img.shields.io/badge/version-1.1.0-blue.svg) &nbsp; ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 
 ## これは何か
 
@@ -44,6 +44,8 @@ Fable Harness は小さなキット——いくつかの hook、1 つの skill�
 ## クイックスタート
 
 このリポジトリを clone し、あなたの Claude Code にこう伝えるだけです：**「INSTALL.md に従って Fable Harness をインストールして。」** Claude が自らガイドを読み、安全に（まずバックアップ、既存の設定は決して上書きしない）インストールします。具体的な内容は [INSTALL.md](INSTALL.md) を参照してください。
+
+> **Windows でのみ検証済み。** インストール手順、3 つの hook、`fable_doctor.py` はいまのところ Windows でのみエンドツーエンドに実行しています。macOS と Linux でも動作する見込みですが（[INSTALL.md](INSTALL.md) のインタプリタ検出に分岐があります）、実際には未検証です。どちらかにインストールする場合は `python scripts/fable_doctor.py --home ~ --repo <repo>` で 3 つの hook が本当に発火したか確認できます。
 
 ## バージョニング
 

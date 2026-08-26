@@ -4,7 +4,7 @@
 
 [English](README.md) &nbsp;·&nbsp; **繁體中文** &nbsp;·&nbsp; [简体中文](README.zh-CN.md) &nbsp;·&nbsp; [日本語](README.ja.md) &nbsp;·&nbsp; [한국어](README.ko.md)
 
-![Version: 1.0.2](https://img.shields.io/badge/version-1.0.2-blue.svg) &nbsp; ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
+![Version: 1.1.0](https://img.shields.io/badge/version-1.1.0-blue.svg) &nbsp; ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 
 ## 這是什麼
 
@@ -44,6 +44,8 @@ Fable Harness 是一個小型套件——幾個 hooks、一個 skill、幾個子
 ## 快速開始
 
 把這個 repo clone 下來，然後跟你的 Claude Code 說：**「照 INSTALL.md 安裝 Fable Harness。」** Claude 會自己讀說明並安全地完成安裝（先備份、絕不覆蓋你既有的設定）。詳細會做什麼請看 [INSTALL.md](INSTALL.md)。
+
+> **僅在 Windows 實測。** 安裝流程、三個 hook 與 `fable_doctor.py` 目前只在 Windows 跑過端到端；macOS 與 Linux 預期可用（[INSTALL.md](INSTALL.md) 的直譯器探測有對應分支），但尚未實跑驗證。若你在這兩個平台安裝，`python scripts/fable_doctor.py --home ~ --repo <repo>` 會告訴你三個 hook 是不是真的都有觸發。
 
 ## 版本規則
 

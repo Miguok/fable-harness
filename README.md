@@ -4,7 +4,7 @@
 
 **English** &nbsp;·&nbsp; [繁體中文](README.zh-TW.md) &nbsp;·&nbsp; [简体中文](README.zh-CN.md) &nbsp;·&nbsp; [日本語](README.ja.md) &nbsp;·&nbsp; [한국어](README.ko.md)
 
-![Version: 1.0.2](https://img.shields.io/badge/version-1.0.2-blue.svg) &nbsp; ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
+![Version: 1.1.0](https://img.shields.io/badge/version-1.1.0-blue.svg) &nbsp; ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 
 ## What is it
 
@@ -44,6 +44,8 @@ To be upfront about the limits: hooks and skills can only transplant the *proced
 ## Quick start
 
 Clone this repo, then just tell your Claude Code: **"Install Fable Harness by following INSTALL.md."** Claude will read the guide and do the install itself, safely (backup first, never overwrite your existing settings). See [INSTALL.md](INSTALL.md) for exactly what that involves.
+
+> **Tested on Windows.** The install flow, the three hooks and `fable_doctor.py` are exercised on Windows only; macOS and Linux are expected to work (the interpreter detection in [INSTALL.md](INSTALL.md) branches for them) but have not been run end to end. If you install on either, `python scripts/fable_doctor.py --home ~ --repo <repo>` will tell you whether all three hooks really fired.
 
 ## Versioning
 
