@@ -129,7 +129,8 @@ def _result_text(block):
     return ""
 
 
-PIPELINE_TAIL_RE = re.compile(r"\s*[|>].*$", re.S)
+# 也要吃掉重導向前面的檔案描述元（`2>&1` 的那個 2），否則它會留在鍵尾。
+PIPELINE_TAIL_RE = re.compile(r"\s*[0-9]?\s*[|>].*$", re.S)
 
 
 def test_key(command):
@@ -141,11 +142,22 @@ def test_key(command):
     ratchets. Observed twice on this gate's own author (2026-09-05): a genuinely
     failing run, fixed, then re-run with a different `tail` count.
 
+    The same applies to what comes *before* it. `cd x && sed -i … && pytest t.py`
+    and a bare `pytest t.py` are one target reached twice, and keying on the
+    whole line put the red one and the green one under different keys — the
+    streak then never cleared. Observed a third time on this gate's own author
+    (2026-09-05), after the pipeline-suffix fix had already landed.
+
     This honours what the per-command rule was written for — "the last result of
-    each distinct test command" — rather than changing it: a pipeline suffix is
-    not part of the test command.
+    each distinct test command" — rather than changing it: neither the shell
+    plumbing around a test run nor the window you view it through is part of the
+    test command.
     """
-    return " ".join(PIPELINE_TAIL_RE.sub("", command).split())
+    stripped = PIPELINE_TAIL_RE.sub("", command)
+    m = TEST_CMD_RE.search(stripped)
+    if m:
+        stripped = stripped[m.start():]
+    return " ".join(stripped.split())
 
 
 def _verdict(text):
@@ -227,6 +239,7 @@ def analyze_turn(turn):
     # Per command rather than "the last run in the turn": otherwise any quick
     # green run afterwards would mask a target that is genuinely still red.
     last_by_cmd = {}
+    raw_by_key = {}
     for e in turn:
         if e.get("type") != "user":
             continue
@@ -239,7 +252,12 @@ def analyze_turn(turn):
             tid = b.get("tool_use_id")
             if tid not in test_ids:
                 continue
-            last_by_cmd[test_key(commands.get(tid, ""))] = _verdict(_result_text(b))
+            raw = commands.get(tid, "")
+            key = test_key(raw)
+            last_by_cmd[key] = _verdict(_result_text(b))
+            # 鍵是用來「認出同一個目標」的，回報時要給的是使用者實際下的那條指令：
+            # 擱置紀錄的用途就是讓人看出當時卡在哪，存截短過的鍵等於把它丟掉。
+            raw_by_key[key] = raw
 
     # A run that reported no result at all is dropped rather than counted as a
     # pass: otherwise one filtered-out pytest between two real failures resets
@@ -248,7 +266,7 @@ def analyze_turn(turn):
     if not verdicts:
         return False, False, ""
     still_red = [c for c, v in verdicts.items() if v == "fail"]
-    return True, bool(still_red), still_red[-1] if still_red else ""
+    return True, bool(still_red), raw_by_key.get(still_red[-1], "") if still_red else ""
 
 
 # ── state ─────────────────────────────────────────────────────────────────

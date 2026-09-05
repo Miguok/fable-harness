@@ -12,6 +12,12 @@ The current version is also kept in [VERSION](VERSION).
 
 ## [Unreleased]
 
+## [1.3.1] — 2026-09-05
+
+### Fixed
+
+- **The goal gate counted one target as two whenever the shell plumbing differed.** It keys each test run so it can keep the *last* result per target, but the key was the whole command line — so `cd x && sed -i … && pytest t.py` and a later bare `pytest t.py | tail -4` landed under different keys, the red one never received its green, and the streak climbed on a goal that had already been reached. It blocked this gate's own author three times in one day, each time on work that was finished. The key is now the test invocation itself: the pipeline or redirection you view it through and the `cd`/`sed` you reached it with are not part of it. The shelf entry still records the command as it was actually typed — the key exists to recognise a target, not to describe it.
+
 ### Changed
 
 - **This repo now opts itself into its own wiring gate.** Up to 1.3.0 the gate guarded other people's repositories and not the one that ships it — which is the failure it exists to catch. `.claude/wiring-guards` lists the two general guards (every hook must appear in the health check's list; INSTALL step 5's table must match that list) and runs in about 1.2 seconds on commit. The full suite stays a pre-push responsibility; this gate only promises that the wiring class cannot slip through.

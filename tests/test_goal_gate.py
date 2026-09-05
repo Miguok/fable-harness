@@ -282,6 +282,22 @@ def test_g21_same_target_through_a_different_pipe_is_one_target(tmp_path):
     assert streak == 0, "同一個目標修好了，連敗數卻沒歸零"
 
 
+def test_g22_same_target_wrapped_in_shell_plumbing_is_one_target(tmp_path):
+    """G22：`cd x && sed -i … && pytest t.py` 與單獨的 `pytest t.py` 是同一個目標。
+
+    G21 只切掉了管線尾巴，前綴仍然進鍵——於是「改完順手重跑」與「單獨重跑」
+    落在兩個鍵上，紅的那個永遠留著。2026-09-05 第三次擋到這道閘自己的作者，
+    就是這個形態。
+    """
+    repo = _repo(tmp_path)
+    _run(repo, _multi_turn([
+        ('cd d:/x && sed -i "s/a/b/" t.py && python -m pytest tests/t.py -q', FAIL_OUT),
+        ('python -m pytest tests/t.py -q 2>&1 | tail -4', PASS_OUT),
+    ]))
+    streak = _state(repo)["streak"] if (repo / STATE_REL).exists() else 0
+    assert streak == 0, "同一個目標修好了，連敗數卻沒歸零"
+
+
 def test_g3_a_later_green_on_another_target_does_not_mask_a_red_one(tmp_path):
     """每個測試指令各看自己最後一次——否則事後跑一支必綠的測試就能蓋掉真失敗。"""
     repo = _repo(tmp_path)
