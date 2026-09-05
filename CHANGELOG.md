@@ -12,6 +12,85 @@ The current version is also kept in [VERSION](VERSION).
 
 ## [Unreleased]
 
+## [1.2.0] — 2026-09-05
+
+> **Verified on Windows only**, same as 1.1.0. Both new gates are unit-tested against real files and real transcripts; neither has been exercised on macOS or Linux.
+
+### Added
+
+- **Wiring gate** (component 4, `.claude/hooks/wiring_gate.py` + `wiring_runner.sh`, `PreToolUse` on `Bash|PowerShell`) — a second rung on the same ladder as `verify_gate`. `verify_gate` catches *changed code, no test run*; this catches the next failure along: **the test ran, it passed, and the thing it guards is not on any execution path.**
+
+  That failure is worse than not doing the work at all. Undone work stays on the list; work that shipped gets ticked off, and the gap it was supposed to cover is then unwatched. Four instances surfaced in one repository in a single day (2026-09-05): a rate limiter carrying a `WIRING_TODO` with zero production calls for two months; a script to remove a deprecated scheduled task that never ran once because it lacked a BOM; a maintenance-lease guard covering one of two restart paths; a rebuild primitive with no callers. All four had passed review.
+
+  The gate is **opt-in per repository** and costs one `exists()` check in repos that have not opted in. Where a repo ships `.claude/wiring-guards`, a `git commit` is blocked when the installed pre-commit hook would never run that declaration (`.git/hooks/` is not version controlled, so after a re-clone every guard file is present and none of them execute), and `--no-verify` is refused because it skips the hook without leaving a trace in git history. `ALLOW_UNWIRED=1 git commit ...` states an exception on the record.
+
+  **The two halves enforce differently, and the difference matters.** `wiring_runner.sh` is a git hook: git runs it, so it covers every committer — the agent's Bash tool, its PowerShell tool, a human's terminal, a subagent — and no way of phrasing the command avoids it. The `PreToolUse` half reads a command string before it runs, which is a best-effort reading and cannot be complete: three rounds of adversarial review found it missing multi-line commands, leading global options (`git --no-pager commit`), quoted flags, prefix abbreviations (`--no-veri`) and per-invocation `-C`/`-c`. All of those are fixed and tested, and the ones that remain are structural — a commit reached through `eval`, `sh -c`, `xargs`, `Start-Process` or a git alias is invisible to any string inspection. Treat it as an early warning that saves you a round trip, not as the enforcement.
+
+  `wiring_runner.sh` is the per-repo pre-commit runner. It closes three silent-skip holes found in review, each of which made the runner report **green while skipping guards**: `eval` inheriting the declaration file as stdin (one guard that reads stdin swallowed every remaining line), a final line with no trailing newline (last guard skipped), and a `pytest` invocation exiting 0 having run nothing (bad path, all skipped, over-filtered by `-k`).
+
+- **Goal gate** (component 5, `.claude/hooks/goal_gate.py`, `Stop` + `UserPromptSubmit`) — the rung after that: **it is wired, it runs, and the goal still is not met.**
+
+  The first failure is normal work — find the cause, fix, retest. The second is the interesting one: it means the root cause you named is probably not the root cause, and a third attempt built on the same reading is the same attempt wearing different clothes. So at two consecutive failures the gate blocks once and requires an adversarial review of the root-cause claim before the next attempt. At three it stops the item outright, writes the shelf entry itself, and tells you to move to work that does not depend on it.
+
+  Two design points, both learned the hard way:
+
+  - **The gate writes the shelf entry, the agent does not.** Anything that depends on an agent remembering to record something is the exact failure this ladder exists to remove.
+  - **The nag is bounded.** Blocking is triggered by a shelved entry whose `note` is still empty, not by "this turn didn't mention it". The latter fires on every unrelated turn until the shelf is cleared, and a gate that nags gets bypassed. Filling in the note is a one-time act that ends the blocking permanently, which is what makes it enforceable.
+
+  Failure detection keys on **the last test summary line in the output** (`12 passed in 1.2s`, `1 failed, 11 passed`, `3 errors in 0.5s`), not on "did anything fail anywhere in this turn". That earlier reading fired on the two practices this protocol itself mandates, both red-then-green by construction: mutation testing and fail-then-pass evidence. It blocked its own author twice on the day it was written — once on three deliberate mutations of a working guard, and again when a whole break-run-restore-run cycle arrived as **one** shell call with its outputs concatenated, which no per-command keying can split. Where there is no summary line at all — script-style tests that raise and print only a traceback — it falls back to soft markers (`AssertionError`, `FAILED …`), which also occur in passing runs and therefore only decide when nothing better is available. It errs toward "not failed": a false positive fires during normal work, and that is how gates get disabled.
+
+  Thresholds are configurable (`FABLE_GOAL_ADVERSARIAL_AT`, `FABLE_GOAL_SHELVE_AT`) because a suite that takes 3 seconds and one that takes 30 minutes do not deserve the same patience. State lives in `<repo>/.fable/goal_state.json`, now gitignored.
+
+  This counter is about **the goal** and is deliberately a fourth counter, separate from the three already in the governance skills — same method twice (`cognitive-rubrics`), same error twice (same skill), a subagent's first substantively wrong result (`model-dispatch-rules`). Those skills state three times that the counters must not be merged; this one honours that.
+
+- **Protocol §4b** — the behavioural half of the goal ladder, including "when the user comes back, raise the shelved items before resuming anything". §4 also gains the behavioural half of the wiring gate: shipping something that only matters when it is called requires a test asserting **it is on an execution path**. Both are locked by `tests/test_protocol_floor.py` (L7–L9, mutation-verified).
+
+- **tests/test_wiring_gate.py** (27 cases) and **tests/test_goal_gate.py** (26 cases), all driving the real hook files and real JSONL transcripts rather than a copy of their logic. Nine mutations verified between them — for the wiring gate: un-stripping commit message bodies (a commit whose *message* mentions `--amend` silently disarmed the whole gate, and the commit that shipped this mechanism was exactly that), removing the wiring check, removing `</dev/null`, removing the trailing-newline handling; for the goal gate: not resetting the streak on green (the counter becomes a ratchet and eventually fires on unrelated work), not writing the shelf entry, not resetting after shelving (the next goal starts already at strike three), nagging on "didn't mention it" instead of the empty note, and dropping the `stop_hook_active` pass-through (which could deadlock a session).
+
+### Fixed
+
+Both gates were put through the kit's own three-opponent review before release — twice, because the first round's fixes turned out to need a review of their own. Sixteen defects between them, each fix shipping with a test and a verified mutation.
+
+The most serious was found in the second round: **a `git commit` on any line but the first was invisible to the wiring gate.** The pattern that recognises the command accepted `;`, `&&` and a pipe as what precedes it, but not a newline — so `git add -A` followed by a newline and `git commit --no-verify` was not examined at all. Multi-line shell is the ordinary way an agent writes a command, which means the gate had been closer to decorative than to enforcing. Continuations (`\` and a backtick before a newline) join their lines before analysis for the same reason.
+
+- **The wiring gate read flags from the whole command line, and short flags only in their unclustered form.** Three consequences, all reproduced: `git commit -nm "x"` was let through (`-nm` *is* `-n -m`); `git commit --amend --no-verify` was let through because `--amend` was tested first and returned early; and `git commit -m "x" && git log -n 1` was **denied** — the `-n` belonged to `git log`. The false deny was the worst of the three: a gate that fires on ordinary work gets switched off. Flags are now read from the `git commit` segment only, clusters are decoded, and `--no-verify` is checked before `--amend`.
+
+- **The wiring gate assembled `<root>/.git/hooks/pre-commit` as a string.** In a worktree or submodule `.git` is a *file*, so that path never exists: every commit in an opted-in repo was denied, and the remedy the denial printed (`cp … .git/hooks/pre-commit`) could not be carried out there. With `core.hooksPath` set (husky, lefthook) the error runs the other way — the path exists while git reads a different one, passing a repo whose guards never run. It now asks git: `git rev-parse --git-path hooks/pre-commit`.
+
+- **The runner reported green when it had run nothing.** An unreadable declaration made the read loop execute zero times and still exit 0; a declaration containing only comments did the same while looking like a gate. Both are red now — the same rule the runner already applied to a pytest run with nothing passed.
+
+- **The goal gate overwrote a state file it could not read.** `load_state` returned an empty state on any error and the next write replaced the whole file, so a truncated or locked `goal_state.json` silently discarded the shelf, including notes written by hand. A missing file is still a fresh start; an unreadable one is now left alone.
+
+- **A run with no tests cleared the streak.** `pytest -k nomatch` prints `no tests ran` and exits 0; counting that as a pass reset the ladder, so a goal that failed, ran something vacuous, then failed again never reached the second rung. A vacuous run is now neither a pass nor a failure.
+
+- **Mentioning a shelved item's id satisfied the shelf gate without writing the note.** Since §4b instructs the agent to raise shelved items when the user returns, the protocol's own instruction was the unlock code, and the note was never written. The empty note is now the only trigger — as this changelog already described it.
+
+- **Every `key=value` in a stored command is masked.** `GITHUB_TOKEN=… pytest` matches the test-command pattern, and the command is both written to a file inside the user's repo and read back into the conversation on the next turn. Masking only the leading assignment left `cd r && TOKEN=… pytest`, `env TOKEN=… pytest` and `pytest --db-url=postgres://u:p@h/db` in the clear. Keys stay visible so the command is still recognisable.
+
+- **The state directory now ignores itself.** `.fable/` holds the user's failing commands and lands in *their* repository; telling them to add it to `.gitignore` (INSTALL step 11) only helps the people who read that step, and a repo without a `.gitignore` would have committed it on the next `git add -A`. The directory now carries its own `.gitignore`. The temp file used for atomic writes also carries the process id — two sessions in one repo shared a single `goal_state.json.tmp`.
+
+- **Short flags are decoded as flags, not searched as text.** `-nm` is `-n -m`, but `-Sjohn` is `-S` with a key id that merely contains an `n`, and matching the letter anywhere denied that commit. The scan now walks each token and stops at the first value-taking flag.
+
+- **A one-shot `-c` is honoured when asking git where hooks live.** `git -c core.hooksPath=/dev/null commit` points git at a directory with no pre-commit and leaves no configuration behind; asking `git rev-parse` *without* that same `-c` answered for a different configuration and passed the commit. `git -C <path> commit` likewise acts on `<path>`, not on the session's directory, and the declaration that matters is the one over there.
+
+- **The runner's new red states route through the existing escape.** An unreadable or guard-less declaration made it exit non-zero *before* the `ALLOW_UNWIRED=1` check — and since `--no-verify` is blocked too, that combination left a repository with no way to commit at all. A gate with no exit is a gate people delete.
+
+- **An unreadable state file now says so.** Refusing to overwrite it protects the shelf, but staying silent about it left the whole component doing nothing with no way to find out — precisely the failure this ladder exists to remove.
+
+- **A vacuous run is judged on the same line as everything else.** Reading "no tests ran" from anywhere in the output meant a guard printing `[wiring] no tests ran` before `12 passed` counted as vacuous, so a genuine green stopped clearing the streak. Fail, pass and vacuous are now all decided by the last summary line.
+
+### Changed
+
+- **Health check** (`scripts/fable_doctor.py`) now tracks **(event, script) pairs instead of one script per event** — `goal_gate.py` is registered on two events, and `UserPromptSubmit` now hosts two scripts. Keyed by event alone, the second script on an event is invisible to the doctor: not reported as missing, simply never looked at. Trigger markers are keyed by script for the same reason — otherwise `goal_gate.py` would inherit `prompt_nudge.sh`'s "last ran" timestamp and appear verified on another script's evidence.
+
+- **Health check also reports which clone a hook runs from** (`hook-elsewhere`). Matching on the file name alone called a hook "registered" while the command pointed at a *different* checkout of this kit — the reported version and copied skills then describe one directory while the executing code lives in another, with nothing in the report showing it. That state existed on the author's own machine while this release was being assembled.
+
+- **New general guards** in `tests/test_fable_doctor.py`: `test_d9` — every Claude hook script in `.claude/hooks/` must appear in the doctor's list; `test_d11` — the six rows of INSTALL.md step 5 must match that list exactly, so the document and the health check cannot drift apart when a component is added. Written as a rule rather than an assertion about these two hooks, so the *next* component cannot ship invisible to the health check; `wiring_runner.sh` is excluded because it is a git hook, not a registered Claude hook.
+
+- **The default README is now Traditional Chinese** (`README.md`); the English text moved to `README.en.md`. The language switcher at the top of all five translations points at the new locations, and the badges read 1.2.0.
+
+- **INSTALL.md**: step 5 now registers six entries (five scripts, `goal_gate.py` twice) with an explicit matcher column; new steps 10 and 11 cover the per-repo wiring opt-in and the goal-gate thresholds, each with a way to verify it that does not require waiting for a real failure. Uninstall gains the per-repo leftovers (`.claude/wiring-guards`, `.git/hooks/pre-commit`, `.fable/`) that removing `~/.claude` alone does not clean up.
+
 ## [1.1.0] — 2026-08-27
 
 > **Verified on Windows only.** The install flow, the three hooks and the health check were exercised end to end on Windows. macOS and Linux are expected to work — `INSTALL.md` branches its interpreter detection for them — but neither was run. `scripts/fable_doctor.py` is the way to find out on your own machine.

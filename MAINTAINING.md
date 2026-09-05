@@ -2,7 +2,7 @@
 
 **English** &nbsp;·&nbsp; [繁體中文](MAINTAINING.zh-TW.md)
 
-Notes for maintainers of this repository. You don't need this to *use* the kit — see [README](README.md) and [INSTALL.md](INSTALL.md) for that.
+Notes for maintainers of this repository. You don't need this to *use* the kit — see [README](README.en.md) and [INSTALL.md](INSTALL.md) for that.
 
 ## Keeping the contributor list clean (no `noreply` / Claude phantom)
 

@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Fable Harness health check — reports the failure modes an install can hide.
 
-Three hooks are registered by absolute path and each one ends with ``|| exit 0``.
-That keeps a broken hook from wedging a session, but it also makes "the interpreter
-does not exist" look exactly like "the hook ran fine". Nothing is printed and nothing
-is logged. This script is the place where that becomes visible.
+Five hook scripts are registered by absolute path — across six event slots, since
+``goal_gate.py`` sits on two — and each command ends with ``|| exit 0``. That keeps a
+broken hook from wedging a session, but it also makes "the interpreter does not exist"
+look exactly like "the hook ran fine". Nothing is printed and nothing is logged. This
+script is the place where that becomes visible.
 
 It also compares the *copied* artifacts (skill, agents) against the repo. The hooks
 update themselves on ``git pull`` because they are referenced by path; the copies do
@@ -27,16 +28,24 @@ import shutil
 import sys
 from pathlib import Path
 
-HOOK_SCRIPTS = {
-    "SessionStart": "inject_protocol.sh",
-    "UserPromptSubmit": "prompt_nudge.sh",
-    "Stop": "verify_gate.py",
-}
+# (event, script) pairs rather than one script per event: an event can host several
+# scripts, and goal_gate.py is registered on two events. Keying by event alone would
+# check one of the registrations and report on all of them.
+HOOK_SCRIPTS = [
+    ("SessionStart", "inject_protocol.sh"),
+    ("UserPromptSubmit", "prompt_nudge.sh"),
+    ("UserPromptSubmit", "goal_gate.py"),
+    ("Stop", "verify_gate.py"),
+    ("Stop", "goal_gate.py"),
+    ("PreToolUse", "wiring_gate.py"),
+]
 
-# Only these two hooks write a trigger marker; verify_gate.py does not.
+# Only these two scripts write a trigger marker. Keyed by script, not by event:
+# UserPromptSubmit now hosts two scripts and only one of them leaves a marker, so
+# keying by event would credit goal_gate.py with prompt_nudge.sh's evidence.
 HOOK_MARKERS = {
-    "SessionStart": ".last_sessionstart",
-    "UserPromptSubmit": ".last_promptsubmit",
+    "inject_protocol.sh": ".last_sessionstart",
+    "prompt_nudge.sh": ".last_promptsubmit",
 }
 
 COPIED_ARTIFACTS = [
@@ -73,6 +82,19 @@ def _resolves(interpreter: str) -> bool:
     return shutil.which(interpreter) is not None
 
 
+def _registered_script_path(command: str, script_name: str) -> Path | None:
+    """The script path the command actually runs, or None if it can't be read."""
+    try:
+        tokens = shlex.split(command, posix=False)
+    except ValueError:
+        return None
+    for token in tokens:
+        bare = token.strip('"').strip("'")
+        if bare.replace("\\", "/").endswith("/" + script_name) or bare == script_name:
+            return Path(bare)
+    return None
+
+
 def _find_hook_command(settings: dict, event: str, script_name: str) -> str | None:
     """Find the registered command for one event that points at this repo's script."""
     for group in settings.get("hooks", {}).get(event, []):
@@ -104,7 +126,7 @@ def check(home: Path, repo: Path) -> dict:
             )
 
     hooks_dir = repo / ".claude" / "hooks"
-    for event, script_name in HOOK_SCRIPTS.items():
+    for event, script_name in HOOK_SCRIPTS:
         command = _find_hook_command(settings, event, script_name)
         row = {"event": event, "script": script_name, "command": command}
         if command is None:
@@ -113,6 +135,32 @@ def check(home: Path, repo: Path) -> dict:
             )
             hooks_report.append(row)
             continue
+
+        # Which clone does this registration actually run? Matching on the file
+        # name alone says "registered" for a command pointing at a *different*
+        # checkout of this kit — the reported version, the copied skills and the
+        # code being executed then come from two different places, and nothing
+        # in the report shows it. That is the class of silent mis-install this
+        # tool exists for, so it cannot be exempt from it.
+        registered = _registered_script_path(command, script_name)
+        expected = (hooks_dir / script_name).resolve()
+        # A relative registration is resolved against whatever directory the
+        # hook runs in, which this script cannot know — comparing it against
+        # our own cwd reported a false `hook-elsewhere`. Say nothing instead.
+        if registered is not None and registered.is_absolute():
+            try:
+                same = registered.resolve() == expected
+            except OSError:
+                same = False
+            if not same:
+                row["runs"] = str(registered)
+                problems.append(
+                    {
+                        "code": "hook-elsewhere",
+                        "detail": f"{event}/{script_name} is registered from {registered} — "
+                        f"not this repo ({expected})",
+                    }
+                )
 
         interpreter = _interpreter_of(command)
         row["interpreter"] = interpreter
@@ -125,7 +173,7 @@ def check(home: Path, repo: Path) -> dict:
                 }
             )
 
-        marker_name = HOOK_MARKERS.get(event)
+        marker_name = HOOK_MARKERS.get(script_name)
         if marker_name:
             marker = hooks_dir / marker_name
             if not marker.exists():
@@ -191,13 +239,14 @@ def _render(report: dict) -> str:
     lines = [f"Fable Harness doctor — repo version {report.get('repo_version') or 'unknown'}", ""]
     for row in report["hooks"]:
         state = "not registered" if row.get("command") is None else row.get("interpreter", "?")
-        # Only two hooks write a marker. Saying "never" for the third would report
+        # Only two scripts write a marker. Saying "never" for the others would report
         # "we do not track this" as "this never fired" — the exact confusion this tool exists to remove.
-        if row["event"] not in HOOK_MARKERS:
+        if row["script"] not in HOOK_MARKERS:
             last = "not tracked"
         else:
             last = row.get("last_ran", "never")
-        lines.append(f"  {row['event']:<18} interpreter={state}  last ran={last}")
+        slot = f"{row['event']}/{row['script']}"
+        lines.append(f"  {slot:<38} interpreter={state}  last ran={last}")
     lines.append("")
     if not report["problems"]:
         lines.append("No problems found.")

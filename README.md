@@ -1,62 +1,64 @@
 # Fable Harness
 
-> A drop-in behavior protocol that makes Claude Code (Opus / Sonnet / Haiku) work like a disciplined engineer — look before you leap, say your assumptions out loud, get a second opinion before trusting big conclusions, and prove your work with real tests.
+> 一套隨插即用的行為協議，讓 Claude Code（Opus / Sonnet / Haiku）像個有紀律的工程師一樣工作——動手前先查證、把假設講清楚、重大結論先找人挑戰過再採信、用真正的測試證明改動有效。
 
-**English** &nbsp;·&nbsp; [繁體中文](README.zh-TW.md) &nbsp;·&nbsp; [简体中文](README.zh-CN.md) &nbsp;·&nbsp; [日本語](README.ja.md) &nbsp;·&nbsp; [한국어](README.ko.md)
+[English](README.en.md) &nbsp;·&nbsp; **繁體中文** &nbsp;·&nbsp; [简体中文](README.zh-CN.md) &nbsp;·&nbsp; [日本語](README.ja.md) &nbsp;·&nbsp; [한국어](README.ko.md)
 
-![Version: 1.1.0](https://img.shields.io/badge/version-1.1.0-blue.svg) &nbsp; ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
+![Version: 1.2.0](https://img.shields.io/badge/version-1.2.0-blue.svg) &nbsp; ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 
-## What is it
+## 這是什麼
 
-Fable Harness is a small kit — a few hooks, a skill, and some sub-agents — that gets injected into every Claude Code session automatically. It doesn't teach Claude new tricks. It makes sure Claude *follows a disciplined process* every single time: gather evidence before answering, state assumptions instead of guessing, challenge its own big conclusions before trusting them, and show real proof (not just "looks good to me") that a change actually works.
+Fable Harness 是一個小型套件——幾個 hooks、一個 skill、幾個子代理——會在每次開啟 Claude Code session 時自動注入。它不會教 Claude 新招式，而是確保 Claude **每一次都照著一套有紀律的流程走**：先蒐集證據再回答、把假設講出來而不是用猜的、對自己的重大結論先自我挑戰，並且拿出真正的證據（而不是「看起來沒問題」）證明改動真的有效。
 
-Think of it as a behavioral floor, not a framework. It doesn't plan your sprints or run your CI pipeline — it just keeps the agent honest, careful, and verifiable while it works.
+可以把它想成是「行為的底線」，不是完整的開發框架。它不會幫你排 sprint、不會幫你跑 CI 流程——它做的是在 agent 工作的過程中，讓它保持誠實、謹慎、可驗證。
 
-## Why
+## 為什麼會有這個 kit
 
-This kit is distilled from the second open release of Fable (Anthropic's Fable model) — the careful, disciplined way that model approached tasks. Rather than keep that discipline locked inside one model, this kit extracts it into a reusable protocol and uses it to reinforce the working harness around Opus (and other Claude models), so they operate the same disciplined way, session after session, regardless of which model happens to be driving.
+本專案蒸餾自第二次的 Fable 開放版本（Anthropic 的 Fable 模型）——那種謹慎、有紀律的做事方式。與其把這份紀律鎖在單一模型裡，這個 kit 把它提煉成一套可重複使用的協議，用來強化 Opus（以及其他 Claude 模型）身邊的工作架構，讓不管是哪個模型在主導，都能維持同一套紀律。
 
-To be upfront about the limits: hooks and skills can only transplant the *procedure* (observe first, state assumptions, cross-examine conclusions, demand verification evidence) — not a model's innate judgment. But in practice, most of the gap between "good" and "sloppy" agent behavior comes from skipped procedure, not missing judgment. That's the gap this kit closes.
+誠實說在前面：hooks 和 skill 只能移植「程序」本身（先蒐證、講假設、交叉質疑結論、要求驗證證據），沒辦法移植一個模型天生的判斷力。但實務上，「表現得好」跟「表現得隨便」之間的落差，大多來自程序被跳過，而不是判斷力不足。這正是這個 kit 想補上的落差。
 
-## How it works
+## 運作機制
 
-- **OODA loop** — before answering, Claude gathers evidence (search/read the actual files, never guess from training memory), states its assumptions out loud, turns the task into something verifiable ("make it work" isn't good enough), then makes small changes and checks each one.
-- **Multi-party adversarial review** — this kit's signature move. Before trusting a big conclusion (an architecture decision, a root-cause diagnosis, anything that could affect production), Claude dispatches three independent "opposition" sub-agents *in parallel*, each with a different job: a **skeptic** who looks for logical holes, a **red-team** who looks for security and failure risks, and a **simplifier** who looks for needless over-engineering. The conclusion only gets trusted if a majority of the three "survive" the challenge.
-- **Model routing** — reasoning, architecture, and root-cause work stays on whichever model is currently driving; coding and refactoring gets routed to Sonnet; batch file work, search, and text cleanup gets routed to Haiku. Right-sized model for the job.
-- **Token-efficient by design** — the cost savings fall out of the same architecture, not a bolted-on feature. The tiered routing above already keeps the expensive model's tokens on reasoning and pushes bulk work to cheaper models; on top of that, the adversarial reviewers and Explore-style searches run in **isolated sub-agents**, each with its own clean context, returning only a compact conclusion — so most of their intermediate tokens are discarded instead of snowballing into the main conversation. And those sub-agents fan out **in parallel**, each carrying a small context, rather than piling up in one ever-growing thread. This "tiered routing + isolated sub-agents" shape is a widely-recognized way to cut LLM token cost — Fable itself hasn't been benchmarked for a specific figure, so this describes *why* it saves, not a promised percentage.
-- **Definition of Done (TDD)** — if a change touches actual logic, it needs an automated test and evidence that the test failed before the fix and passed after. Eyeballing the output or a stray `console.log` doesn't count as verification.
-- **Honest reporting** — the first sentence of any report is the actual result (not a lead-up); failures get reported as failures, not softened.
+- **OODA 迴圈**——回答前，Claude 先蒐集證據（實際搜尋/讀取檔案，不靠訓練記憶亂猜），把假設講出來，把任務轉成一個可驗證的目標（「讓它能動」這種說法不夠），然後小步修改、每一步都驗證。
+- **多方抗辯（adversarial review）**——這個 kit 最具特色的機制。在採信一個重大結論之前（架構決策、根因判定、任何可能影響上線環境的結論），Claude 會**同時**派出三個獨立的「反方」子代理，各自負責不同角度：**skeptic** 專找邏輯漏洞、**red-team** 專找安全與失效風險、**simplifier** 專找不必要的過度工程。三個鏡頭裡要過半「存活」（沒被推翻），結論才算採信。
+- **模型分工**——推理、架構設計、根因分析留給當下主導的模型；寫程式與重構交給 Sonnet；批次檔案處理、搜尋、文字整理交給 Haiku。用剛好合適的模型做剛好合適的事。
+- **省 token 是這套架構的副產品**——成本的節省是同一套架構自然帶出來的，不是外掛的功能。上面那套分級路由已經讓貴模型的 token 只花在推理、把粗重工作推給便宜的模型；在這之上，抗辯三反方與 Explore 式搜尋都跑在**獨立子代理**裡，各自握有一份乾淨的 context、只回收一段精簡結論——過程的大量中間 token 因此被丟棄，不會滾雪球累積進主對話。而這些子代理是**平行** fan-out、各自只帶少量 context，而不是在一條越拉越長的對話裡堆疊。這種「分級路由＋獨立子代理」的形狀，是業界公認能壓低 LLM token 成本的做法——Fable 自己尚未做基準量測，所以這裡講的是「為什麼會省」，不是承諾某個百分比。
+- **完成定義（Definition of Done，TDD）**——只要改到實際邏輯，就要有自動化測試，並且證明「改之前測試會失敗、改之後測試會通過」。單純看輸出順不順眼，或隨手一個 `console.log`，都不算驗證。
+- **誠實回報**——任何回報的第一句話就是實際結果（不是鋪陳），失敗就照實講，不美化。
 
-## What's inside
+## 裡面有什麼
 
-| Piece | File | What it does |
+| 元件 | 檔案 | 作用 |
 |---|---|---|
-| Behavior protocol | `.claude/hooks/fable_protocol.md` + `inject_protocol.sh` | Injected at the start of every session |
-| Per-turn nudge | `.claude/hooks/prompt_nudge.sh` | A one-line reminder injected on every user message |
-| Verification gate | `.claude/hooks/verify_gate.py` | Blocks the agent from ending a turn where it changed code but never ran a test (once — a second attempt is allowed through). Counts changes made through the shell (`sed -i`, a redirect, `tee`) as well as `Edit`/`Write` |
-| Adversarial review | `.claude/skills/adversarial-review/` | The skill that defines the three-opponent review flow above |
-| Opposition agents | `.claude/agents/{skeptic,red-team,simplifier}.md` | The three independent sub-agent personas used in adversarial review |
-| Model routing | `CLAUDE.md` | The routing table described above |
-| Harness detector | `scripts/detect_harness.py` | Read-only check for whether the project already has its own dev harness (e.g. harnessmith, Superpowers) so Fable knows to step back and just hold the floor |
-| Health check | `scripts/fable_doctor.py` | Reports which interpreter each hook actually resolves to, when it last fired, whether your copied skills and agents still match the repo, and whether the recorded version is behind |
-| Governance docs | `.claude/skills/model-dispatch-rules/`, `.claude/skills/cognitive-rubrics/` | Sub-agent dispatch templates and when-to-slow-down rules |
+| 行為協議 | `.claude/hooks/fable_protocol.md` + `inject_protocol.sh` | 每次 session 開始時注入 |
+| 每輪微提醒 | `.claude/hooks/prompt_nudge.sh` | 使用者每則訊息都會被注入一行提醒 |
+| 驗證關卡 | `.claude/hooks/verify_gate.py` | 若這輪改了程式碼卻沒跑測試，擋下收工一次（第二次會放行）。經 shell 改碼（`sed -i`、重導向、`tee`）與 `Edit`／`Write` 同樣算數 |
+| 接線關卡 | `.claude/hooks/wiring_gate.py` + `wiring_runner.sh` | 各專案自行 opt-in：當 `.claude/wiring-guards` 裡列出的守衛永遠不會真的被執行時，擋下 commit。測試會過、卻從來不在任何執行路徑上的東西，不算完成 |
+| 目標關卡 | `.claude/hooks/goal_gate.py` | 計數同一個目標連續失敗的測試執行次數：達到 2 次時要求在下一次嘗試前進行抗辯審查；達到 3 次時擱置該項目、由關卡自己寫下擱置紀錄，並在你一回來時就擺到你面前 |
+| 多方抗辯 | `.claude/skills/adversarial-review/` | 定義上述三反方審查流程的 skill |
+| 反方子代理 | `.claude/agents/{skeptic,red-team,simplifier}.md` | 抗辯流程用的三個獨立子代理角色 |
+| 模型分工 | `CLAUDE.md` | 上面提到的分工表 |
+| harness 偵測器 | `scripts/detect_harness.py` | 只讀檢查——這個專案是不是已經有自己的開發 harness（例如 harnessmith、Superpowers），有的話 Fable 就退居底線角色 |
+| 健檢 | `scripts/fable_doctor.py` | 回報五個 hook 各自解析到哪個直譯器、上次何時真的跑過、已複製的 skill 與 agents 是否仍與 repo 相同、記錄的版本有沒有落後 |
+| 治理文件 | `.claude/skills/model-dispatch-rules/`、`.claude/skills/cognitive-rubrics/` | 子代理派工範本、何時該慢下來的判斷準則 |
 
-## Quick start
+## 快速開始
 
-Clone this repo, then just tell your Claude Code: **"Install Fable Harness by following INSTALL.md."** Claude will read the guide and do the install itself, safely (backup first, never overwrite your existing settings). See [INSTALL.md](INSTALL.md) for exactly what that involves.
+把這個 repo clone 下來，然後跟你的 Claude Code 說：**「照 INSTALL.md 安裝 Fable Harness。」** Claude 會自己讀說明並安全地完成安裝（先備份、絕不覆蓋你既有的設定）。詳細會做什麼請看 [INSTALL.md](INSTALL.md)。
 
-> **Tested on Windows.** The install flow, the three hooks and `fable_doctor.py` are exercised on Windows only; macOS and Linux are expected to work (the interpreter detection in [INSTALL.md](INSTALL.md) branches for them) but have not been run end to end. If you install on either, `python scripts/fable_doctor.py --home ~ --repo <repo>` will tell you whether all three hooks really fired.
+> **僅在 Windows 實測。** 安裝流程、五個 hook 與 `fable_doctor.py` 目前只在 Windows 跑過端到端；macOS 與 Linux 預期可用（[INSTALL.md](INSTALL.md) 的直譯器探測有對應分支），但尚未實跑驗證。若你在這兩個平台安裝，`python scripts/fable_doctor.py --home ~ --repo <repo>` 會告訴你每個 hook 各自解析到哪個直譯器、是不是從這一份 clone 註冊的，以及會留下 marker 的那兩支上次何時觸發。
 
-## Versioning
+## 版本規則
 
-This kit follows [Semantic Versioning](https://semver.org/) — `MAJOR.MINOR.PATCH`, starting at **1.0.0**:
+本 kit 採用[語意化版本（Semantic Versioning）](https://semver.org/lang/zh-TW/)——`主版本.次版本.修訂號`，自 **1.0.0** 起：
 
-- **MAJOR** — a breaking change to the protocol contract (a hook/skill/agent removed or renamed, or an incompatible change to how the protocol is injected or how agents are dispatched) that would require users to re-install or change their setup.
-- **MINOR** — a backward-compatible addition (a new hook, skill, agent, or governance rule) that existing installs keep working alongside.
-- **PATCH** — a backward-compatible fix or wording change (a bug fix in a hook, a clarified rule, a typo).
+- **主版本（MAJOR）**——協議契約的破壞性改動（移除或改名 hook／skill／agent，或改變協議注入方式、子代理派工方式且不相容），使用者需重裝或調整設定。
+- **次版本（MINOR）**——向後相容的新增（新的 hook、skill、agent 或治理規則），既有安裝可照常運作。
+- **修訂號（PATCH）**——向後相容的修正或措辭調整（hook 修 bug、規則講清楚、錯字）。
 
-The current version lives in [VERSION](VERSION); notable changes are recorded in [CHANGELOG.md](CHANGELOG.md).
+目前版本記在 [VERSION](VERSION)；重要變更記於 [CHANGELOG.md](CHANGELOG.md)。
 
-## License
+## 授權
 
-MIT — see [LICENSE](LICENSE) (translation: [繁體中文](LICENSE.zh-TW)).
+MIT — 詳見 [LICENSE](LICENSE)（翻譯版：[繁體中文](LICENSE.zh-TW)）。

@@ -2,9 +2,9 @@
 
 > 一套即插即用的行为协议，让 Claude Code（Opus / Sonnet / Haiku）像个有纪律的工程师一样工作——动手前先查证、把假设讲清楚、重大结论先让人挑战过再采信、用真正的测试证明改动有效。
 
-[English](README.md) &nbsp;·&nbsp; [繁體中文](README.zh-TW.md) &nbsp;·&nbsp; **简体中文** &nbsp;·&nbsp; [日本語](README.ja.md) &nbsp;·&nbsp; [한국어](README.ko.md)
+[English](README.en.md) &nbsp;·&nbsp; [繁體中文](README.md) &nbsp;·&nbsp; **简体中文** &nbsp;·&nbsp; [日本語](README.ja.md) &nbsp;·&nbsp; [한국어](README.ko.md)
 
-![Version: 1.1.0](https://img.shields.io/badge/version-1.1.0-blue.svg) &nbsp; ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
+![Version: 1.2.0](https://img.shields.io/badge/version-1.2.0-blue.svg) &nbsp; ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 
 ## 这是什么
 
@@ -34,18 +34,20 @@ Fable Harness 是一个小型工具包——几个 hook、一个 skill、几个�
 | 行为协议 | `.claude/hooks/fable_protocol.md` + `inject_protocol.sh` | 每次会话开始时注入 |
 | 每轮微提醒 | `.claude/hooks/prompt_nudge.sh` | 用户每条消息都会被注入一行提醒 |
 | 验证关卡 | `.claude/hooks/verify_gate.py` | 若这一轮改了代码却没跑测试，拦下收尾一次（第二次会放行）。经 shell 改码（`sed -i`、重定向、`tee`）与 `Edit`／`Write` 同样算数 |
+| 接线关卡 | `.claude/hooks/wiring_gate.py` + `wiring_runner.sh` | 各项目自行 opt-in：当 `.claude/wiring-guards` 里列出的守卫永远不会真的被执行时，拦下 commit。测试会过、却从来不在任何执行路径上的东西，不算完成 |
+| 目标关卡 | `.claude/hooks/goal_gate.py` | 计数同一个目标连续失败的测试执行次数：达到 2 次时要求在下一次尝试前进行对抗审查；达到 3 次时搁置该项目、由关卡自己写下搁置记录，并在你一回来时就摆到你面前 |
 | 多方对抗审查 | `.claude/skills/adversarial-review/` | 定义上述三反方审查流程的 skill |
 | 反方子代理 | `.claude/agents/{skeptic,red-team,simplifier}.md` | 对抗审查流程用的三个独立子代理角色 |
 | 模型分工 | `CLAUDE.md` | 上面提到的分工表 |
 | harness 检测器 | `scripts/detect_harness.py` | 只读检查——这个项目是不是已经有自己的开发 harness（例如 harnessmith、Superpowers），有的话 Fable 就退居底线角色 |
-| 健检 | `scripts/fable_doctor.py` | 回报三个 hook 各自解析到哪个解释器、上次何时真的跑过、已复制的 skill 与 agents 是否仍与 repo 相同、记录的版本有没有落后 |
+| 健检 | `scripts/fable_doctor.py` | 回报五个 hook 各自解析到哪个解释器、上次何时真的跑过、已复制的 skill 与 agents 是否仍与 repo 相同、记录的版本有没有落后 |
 | 治理文档 | `.claude/skills/model-dispatch-rules/`、`.claude/skills/cognitive-rubrics/` | 子代理派工模板、何时该慢下来的判断准则 |
 
 ## 快速开始
 
 把这个仓库 clone 下来，然后跟你的 Claude Code 说：**「照 INSTALL.md 安装 Fable Harness。」** Claude 会自己读说明并安全地完成安装（先备份、绝不覆盖你已有的设置）。详细会做什么请看 [INSTALL.md](INSTALL.md)。
 
-> **仅在 Windows 实测。** 安装流程、三个 hook 与 `fable_doctor.py` 目前只在 Windows 跑过端到端；macOS 与 Linux 预期可用（[INSTALL.md](INSTALL.md) 的解释器探测有对应分支），但尚未实跑验证。若你在这两个平台安装，`python scripts/fable_doctor.py --home ~ --repo <repo>` 会告诉你三个 hook 是不是真的都有触发。
+> **仅在 Windows 实测。** 安装流程、五个 hook 与 `fable_doctor.py` 目前只在 Windows 跑过端到端；macOS 与 Linux 预期可用（[INSTALL.md](INSTALL.md) 的解释器探测有对应分支），但尚未实跑验证。若你在这两个平台安装，`python scripts/fable_doctor.py --home ~ --repo <repo>` 会告诉你每个 hook 各自解析到哪个解释器、是不是从这一份 clone 注册的，以及会留下 marker 的那两支上次何时触发。
 
 ## 版本规则
 

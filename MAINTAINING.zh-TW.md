@@ -2,7 +2,7 @@
 
 [English](MAINTAINING.md) &nbsp;·&nbsp; **繁體中文**
 
-給本 repo 維護者的備註。使用這個 kit 不需要這份文件——那請看 [README](README.zh-TW.md) 與 [INSTALL.md](INSTALL.md)。
+給本 repo 維護者的備註。使用這個 kit 不需要這份文件——那請看 [README](README.md) 與 [INSTALL.md](INSTALL.md)。
 
 ## 讓貢獻者名單保持乾淨（不長 `noreply` / Claude phantom）
 

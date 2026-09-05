@@ -2,9 +2,9 @@
 
 > Claude Code（Opus / Sonnet / Haiku）を規律あるエンジニアのように働かせる、すぐ導入できる行動プロトコル——飛びつく前に確認し、前提を声に出し、大きな結論を信じる前に第三者に検証させ、本物のテストで成果を証明する。
 
-[English](README.md) &nbsp;·&nbsp; [繁體中文](README.zh-TW.md) &nbsp;·&nbsp; [简体中文](README.zh-CN.md) &nbsp;·&nbsp; **日本語** &nbsp;·&nbsp; [한국어](README.ko.md)
+[English](README.en.md) &nbsp;·&nbsp; [繁體中文](README.md) &nbsp;·&nbsp; [简体中文](README.zh-CN.md) &nbsp;·&nbsp; **日本語** &nbsp;·&nbsp; [한국어](README.ko.md)
 
-![Version: 1.1.0](https://img.shields.io/badge/version-1.1.0-blue.svg) &nbsp; ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
+![Version: 1.2.0](https://img.shields.io/badge/version-1.2.0-blue.svg) &nbsp; ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 
 ## これは何か
 
@@ -34,6 +34,8 @@ Fable Harness は小さなキット——いくつかの hook、1 つの skill�
 | 行動プロトコル | `.claude/hooks/fable_protocol.md` + `inject_protocol.sh` | 各セッション開始時に注入 |
 | ターンごとの一言リマインド | `.claude/hooks/prompt_nudge.sh` | ユーザーの各メッセージに一行のリマインドを注入 |
 | 検証ゲート | `.claude/hooks/verify_gate.py` | このターンでコードを変更したのにテストを走らせていない場合、ターン終了を一度だけブロック（2 回目は通す）。シェル経由の変更（`sed -i`、リダイレクト、`tee`）も `Edit`／`Write` と同様に数える |
+| 配線ゲート | `.claude/hooks/wiring_gate.py` + `wiring_runner.sh` | リポジトリごとの opt-in：`.claude/wiring-guards` に列挙された守衛が実際には決して実行されない場合、コミットをブロック。テストは通るのに実行経路に一度も乗らないものは、完了ではない |
+| ゴールゲート | `.claude/hooks/goal_gate.py` | 同じゴールに対する連続テスト実行失敗をカウント：2 回で次の試行前に対抗レビューを要求；3 回でそのアイテムをシェルフに移し、シェルフエントリを自分で書き込み、戻ってきた瞬間にあなたの前に置く |
 | 対抗レビュー | `.claude/skills/adversarial-review/` | 上記の三反対役レビューの流れを定義する skill |
 | 反対役エージェント | `.claude/agents/{skeptic,red-team,simplifier}.md` | 対抗レビューで使う 3 つの独立したサブエージェントの役割 |
 | モデル振り分け | `CLAUDE.md` | 上で述べた振り分け表 |
@@ -45,7 +47,7 @@ Fable Harness は小さなキット——いくつかの hook、1 つの skill�
 
 このリポジトリを clone し、あなたの Claude Code にこう伝えるだけです：**「INSTALL.md に従って Fable Harness をインストールして。」** Claude が自らガイドを読み、安全に（まずバックアップ、既存の設定は決して上書きしない）インストールします。具体的な内容は [INSTALL.md](INSTALL.md) を参照してください。
 
-> **Windows でのみ検証済み。** インストール手順、3 つの hook、`fable_doctor.py` はいまのところ Windows でのみエンドツーエンドに実行しています。macOS と Linux でも動作する見込みですが（[INSTALL.md](INSTALL.md) のインタプリタ検出に分岐があります）、実際には未検証です。どちらかにインストールする場合は `python scripts/fable_doctor.py --home ~ --repo <repo>` で 3 つの hook が本当に発火したか確認できます。
+> **Windows でのみ検証済み。** インストール手順、5 つの hook、`fable_doctor.py` はいまのところ Windows でのみエンドツーエンドに実行しています。macOS と Linux でも動作する見込みですが（[INSTALL.md](INSTALL.md) のインタプリタ検出に分岐があります）、実際には未検証です。どちらかにインストールする場合は `python scripts/fable_doctor.py --home ~ --repo <repo>` で、各 hook がどのインタプリタに解決されるか、この clone から登録されているか、そしてマーカーを残す 2 つについては最後に発火した時刻を確認できます。
 
 ## バージョニング
 
