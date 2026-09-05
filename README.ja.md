@@ -4,7 +4,7 @@
 
 [English](README.en.md) &nbsp;·&nbsp; [繁體中文](README.md) &nbsp;·&nbsp; [简体中文](README.zh-CN.md) &nbsp;·&nbsp; **日本語** &nbsp;·&nbsp; [한국어](README.ko.md)
 
-![Version: 1.2.0](https://img.shields.io/badge/version-1.2.0-blue.svg) &nbsp; ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
+![Version: 1.3.0](https://img.shields.io/badge/version-1.3.0-blue.svg) &nbsp; ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 
 ## これは何か
 
@@ -34,7 +34,7 @@ Fable Harness は小さなキット——いくつかの hook、1 つの skill�
 | 行動プロトコル | `.claude/hooks/fable_protocol.md` + `inject_protocol.sh` | 各セッション開始時に注入 |
 | ターンごとの一言リマインド | `.claude/hooks/prompt_nudge.sh` | ユーザーの各メッセージに一行のリマインドを注入 |
 | 検証ゲート | `.claude/hooks/verify_gate.py` | このターンでコードを変更したのにテストを走らせていない場合、ターン終了を一度だけブロック（2 回目は通す）。シェル経由の変更（`sed -i`、リダイレクト、`tee`）も `Edit`／`Write` と同様に数える |
-| 配線ゲート | `.claude/hooks/wiring_gate.py` + `wiring_runner.sh` | リポジトリごとの opt-in：`.claude/wiring-guards` に列挙された守衛が実際には決して実行されない場合、コミットをブロック。テストは通るのに実行経路に一度も乗らないものは、完了ではない |
+| 配線ゲート | `.claude/hooks/wiring_gate.py` + `wiring_runner.sh` | リポジトリごとの opt-in：`.claude/wiring-guards` に列挙された守衛が実際には決して実行されない場合、コミットをブロック。テストは通るのに実行経路に一度も乗らないものは、完了ではない。opt-in していないリポジトリでも、この形の守衛を既に書いていれば次のセッション開始時に一度だけ知らせる（ブロックはしない） |
 | ゴールゲート | `.claude/hooks/goal_gate.py` | 同じゴールに対する連続テスト実行失敗をカウント：2 回で次の試行前に対抗レビューを要求；3 回でそのアイテムをシェルフに移し、シェルフエントリを自分で書き込み、戻ってきた瞬間にあなたの前に置く |
 | 対抗レビュー | `.claude/skills/adversarial-review/` | 上記の三反対役レビューの流れを定義する skill |
 | 反対役エージェント | `.claude/agents/{skeptic,red-team,simplifier}.md` | 対抗レビューで使う 3 つの独立したサブエージェントの役割 |

@@ -4,7 +4,7 @@
 
 [English](README.en.md) &nbsp;·&nbsp; [繁體中文](README.md) &nbsp;·&nbsp; **简体中文** &nbsp;·&nbsp; [日本語](README.ja.md) &nbsp;·&nbsp; [한국어](README.ko.md)
 
-![Version: 1.2.0](https://img.shields.io/badge/version-1.2.0-blue.svg) &nbsp; ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
+![Version: 1.3.0](https://img.shields.io/badge/version-1.3.0-blue.svg) &nbsp; ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 
 ## 这是什么
 
@@ -34,7 +34,7 @@ Fable Harness 是一个小型工具包——几个 hook、一个 skill、几个�
 | 行为协议 | `.claude/hooks/fable_protocol.md` + `inject_protocol.sh` | 每次会话开始时注入 |
 | 每轮微提醒 | `.claude/hooks/prompt_nudge.sh` | 用户每条消息都会被注入一行提醒 |
 | 验证关卡 | `.claude/hooks/verify_gate.py` | 若这一轮改了代码却没跑测试，拦下收尾一次（第二次会放行）。经 shell 改码（`sed -i`、重定向、`tee`）与 `Edit`／`Write` 同样算数 |
-| 接线关卡 | `.claude/hooks/wiring_gate.py` + `wiring_runner.sh` | 各项目自行 opt-in：当 `.claude/wiring-guards` 里列出的守卫永远不会真的被执行时，拦下 commit。测试会过、却从来不在任何执行路径上的东西，不算完成 |
+| 接线关卡 | `.claude/hooks/wiring_gate.py` + `wiring_runner.sh` | 各项目自行 opt-in：当 `.claude/wiring-guards` 里列出的守卫永远不会真的被执行时，拦下 commit。测试会过、却从来不在任何执行路径上的东西，不算完成。未 opt-in 的 repo 若已经在写这类守卫，会在下次会话开场提示一次（只提示，不拦） |
 | 目标关卡 | `.claude/hooks/goal_gate.py` | 计数同一个目标连续失败的测试执行次数：达到 2 次时要求在下一次尝试前进行对抗审查；达到 3 次时搁置该项目、由关卡自己写下搁置记录，并在你一回来时就摆到你面前 |
 | 多方对抗审查 | `.claude/skills/adversarial-review/` | 定义上述三反方审查流程的 skill |
 | 反方子代理 | `.claude/agents/{skeptic,red-team,simplifier}.md` | 对抗审查流程用的三个独立子代理角色 |

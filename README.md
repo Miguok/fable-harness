@@ -4,7 +4,7 @@
 
 [English](README.en.md) &nbsp;·&nbsp; **繁體中文** &nbsp;·&nbsp; [简体中文](README.zh-CN.md) &nbsp;·&nbsp; [日本語](README.ja.md) &nbsp;·&nbsp; [한국어](README.ko.md)
 
-![Version: 1.2.0](https://img.shields.io/badge/version-1.2.0-blue.svg) &nbsp; ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
+![Version: 1.3.0](https://img.shields.io/badge/version-1.3.0-blue.svg) &nbsp; ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 
 ## 這是什麼
 
@@ -34,7 +34,7 @@ Fable Harness 是一個小型套件——幾個 hooks、一個 skill、幾個子
 | 行為協議 | `.claude/hooks/fable_protocol.md` + `inject_protocol.sh` | 每次 session 開始時注入 |
 | 每輪微提醒 | `.claude/hooks/prompt_nudge.sh` | 使用者每則訊息都會被注入一行提醒 |
 | 驗證關卡 | `.claude/hooks/verify_gate.py` | 若這輪改了程式碼卻沒跑測試，擋下收工一次（第二次會放行）。經 shell 改碼（`sed -i`、重導向、`tee`）與 `Edit`／`Write` 同樣算數 |
-| 接線關卡 | `.claude/hooks/wiring_gate.py` + `wiring_runner.sh` | 各專案自行 opt-in：當 `.claude/wiring-guards` 裡列出的守衛永遠不會真的被執行時，擋下 commit。測試會過、卻從來不在任何執行路徑上的東西，不算完成 |
+| 接線關卡 | `.claude/hooks/wiring_gate.py` + `wiring_runner.sh` | 各專案自行 opt-in：當 `.claude/wiring-guards` 裡列出的守衛永遠不會真的被執行時，擋下 commit。測試會過、卻從來不在任何執行路徑上的東西，不算完成。未 opt-in 的 repo 若已經在寫這類守衛，會在下次 session 開場提示一次（只提示，不擋） |
 | 目標關卡 | `.claude/hooks/goal_gate.py` | 計數同一個目標連續失敗的測試執行次數：達到 2 次時要求在下一次嘗試前進行抗辯審查；達到 3 次時擱置該項目、由關卡自己寫下擱置紀錄，並在你一回來時就擺到你面前 |
 | 多方抗辯 | `.claude/skills/adversarial-review/` | 定義上述三反方審查流程的 skill |
 | 反方子代理 | `.claude/agents/{skeptic,red-team,simplifier}.md` | 抗辯流程用的三個獨立子代理角色 |

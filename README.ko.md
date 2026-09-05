@@ -4,7 +4,7 @@
 
 [English](README.en.md) &nbsp;·&nbsp; [繁體中文](README.md) &nbsp;·&nbsp; [简体中文](README.zh-CN.md) &nbsp;·&nbsp; [日本語](README.ja.md) &nbsp;·&nbsp; **한국어**
 
-![Version: 1.2.0](https://img.shields.io/badge/version-1.2.0-blue.svg) &nbsp; ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
+![Version: 1.3.0](https://img.shields.io/badge/version-1.3.0-blue.svg) &nbsp; ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 
 ## 이것은 무엇인가
 
@@ -34,7 +34,7 @@ Fable Harness는 작은 키트——몇 개의 hook, 하나의 skill, 몇 개의
 | 행동 프로토콜 | `.claude/hooks/fable_protocol.md` + `inject_protocol.sh` | 각 세션 시작 시 주입 |
 | 매 턴 짧은 리마인드 | `.claude/hooks/prompt_nudge.sh` | 사용자의 각 메시지에 한 줄 리마인드를 주입 |
 | 검증 게이트 | `.claude/hooks/verify_gate.py` | 이번 턴에 코드를 바꿨는데 테스트를 돌리지 않았다면 턴 종료를 한 번 차단(두 번째는 통과). 셸을 통한 변경(`sed -i`, 리디렉션, `tee`)도 `Edit`/`Write`와 동일하게 계산 |
-| 배선 게이트 | `.claude/hooks/wiring_gate.py` + `wiring_runner.sh` | 리포지토리당 opt-in: `.claude/wiring-guards`에 나열된 가드가 절대 실제로 실행되지 않을 때 커밋을 차단. 테스트는 통과하지만 실행 경로에 한 번도 오르지 않는 것은 완료가 아님 |
+| 배선 게이트 | `.claude/hooks/wiring_gate.py` + `wiring_runner.sh` | 리포지토리당 opt-in: `.claude/wiring-guards`에 나열된 가드가 절대 실제로 실행되지 않을 때 커밋을 차단. 테스트는 통과하지만 실행 경로에 한 번도 오르지 않는 것은 완료가 아님. opt-in 하지 않은 저장소라도 이런 형태의 가드를 이미 쓰고 있다면 다음 세션 시작 시 한 번 알린다(차단이 아니라 안내) |
 | 목표 게이트 | `.claude/hooks/goal_gate.py` | 같은 목표에 대한 연속 실패 테스트 실행을 계수: 2회에 다음 시도 전에 대립 리뷰를 요청; 3회에 해당 항목을 선반으로 이동하고 선반 항목을 스스로 작성한 뒤, 당신이 돌아오면 즉시 앞에 놓음 |
 | 대립 리뷰 | `.claude/skills/adversarial-review/` | 위의 세 반대역 리뷰 흐름을 정의하는 skill |
 | 반대역 에이전트 | `.claude/agents/{skeptic,red-team,simplifier}.md` | 대립 리뷰에 쓰이는 3개의 독립 서브에이전트 역할 |

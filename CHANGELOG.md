@@ -12,6 +12,16 @@ The current version is also kept in [VERSION](VERSION).
 
 ## [Unreleased]
 
+## [1.3.0] — 2026-09-05
+
+### Added
+
+- **The wiring gate now finds the repos nobody opted in.** Opt-in has a failure mode that mirrors the one the gate exists for: it does nothing, forever, in every repository somebody meant to enable it in and forgot. When a `git commit` happens in a repo with **no** declaration, the gate now asks `git ls-files` whether that repo already contains guards of the shape it protects — a test file whose name carries both a test word and a wiring word (`test_*_gate.py`, `test_wired_*.ts`, …). If it finds some, it leaves a note; the `SessionStart` hook reads that note and says so once, in the session where you can act on it. Opting the repo in clears the note.
+
+  **It is a note on disk rather than a message from the gate itself, and that is not an implementation detail.** A `PreToolUse` hook has no way to say anything without also blocking: `permissionDecision: "allow"` discards its reason, and stderr on exit 0 is thrown away. An earlier version of this idea did write to stderr — the hint reached nobody while the "already hinted" stamp was written anyway, which is a mechanism that looks like it is protecting you and is not there at all. `SessionStart` output does reach the model, so that is where it goes.
+
+  The scan runs only on a commit command in a repo without a declaration, keys on file names rather than contents, and caps at eight results. Failing to write the note never affects the commit.
+
 ## [1.2.0] — 2026-09-05
 
 > **Verified on Windows only**, same as 1.1.0. Both new gates are unit-tested against real files and real transcripts; neither has been exercised on macOS or Linux.

@@ -4,7 +4,7 @@
 
 **English** &nbsp;·&nbsp; [繁體中文](README.md) &nbsp;·&nbsp; [简体中文](README.zh-CN.md) &nbsp;·&nbsp; [日本語](README.ja.md) &nbsp;·&nbsp; [한국어](README.ko.md)
 
-![Version: 1.2.0](https://img.shields.io/badge/version-1.2.0-blue.svg) &nbsp; ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
+![Version: 1.3.0](https://img.shields.io/badge/version-1.3.0-blue.svg) &nbsp; ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 
 ## What is it
 
@@ -34,7 +34,7 @@ To be upfront about the limits: hooks and skills can only transplant the *proced
 | Behavior protocol | `.claude/hooks/fable_protocol.md` + `inject_protocol.sh` | Injected at the start of every session |
 | Per-turn nudge | `.claude/hooks/prompt_nudge.sh` | A one-line reminder injected on every user message |
 | Verification gate | `.claude/hooks/verify_gate.py` | Blocks the agent from ending a turn where it changed code but never ran a test (once — a second attempt is allowed through). Counts changes made through the shell (`sed -i`, a redirect, `tee`) as well as `Edit`/`Write` |
-| Wiring gate | `.claude/hooks/wiring_gate.py` + `wiring_runner.sh` | Opt-in per repo: blocks a commit when the guards listed in `.claude/wiring-guards` would never actually run. A test that passes but is never on an execution path is not done |
+| Wiring gate | `.claude/hooks/wiring_gate.py` + `wiring_runner.sh` | Opt-in per repo: blocks a commit when the guards listed in `.claude/wiring-guards` would never actually run. A test that passes but is never on an execution path is not done. A repo that hasn't opted in but already writes guards of this shape gets one hint at the next session start — a hint, not a block |
 | Goal gate | `.claude/hooks/goal_gate.py` | Counts consecutive failing test runs against the same goal: at 2 it demands an adversarial review before the next attempt; at 3 it shelves the item, writes the shelf entry itself, and puts it in front of you the moment you return |
 | Adversarial review | `.claude/skills/adversarial-review/` | The skill that defines the three-opponent review flow above |
 | Opposition agents | `.claude/agents/{skeptic,red-team,simplifier}.md` | The three independent sub-agent personas used in adversarial review |

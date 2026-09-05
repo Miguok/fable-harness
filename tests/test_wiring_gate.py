@@ -16,6 +16,10 @@
   W10 `git -c core.hooksPath=<空目錄> commit` 的一次性繞道 → 問 git 時要帶上同一個 -c
   W11 `git -C <path> commit` 提交的是 <path>，宣告檔要看那邊的
   W12 續行字元依 shell 而異：PowerShell 的 `` ` `` 是續行，bash 的行尾反引號是命令替換
+  W13 未 opt-in 但已有接線型守衛的 repo → 留下提示檔（不擋 commit）
+  W14 W13 的配對：補上宣告檔後提示必須被收掉，否則每次開場都嘮叨
+  W15 一般 repo（沒有接線型守衛）→ 不留提示
+  W16 提示必須真的被講出來——驅動真實 inject_protocol.sh 斷言它輸出提示內容
   R6 宣告檔存在卻一條守衛都沒有（空檔／只有註解）→ 紅，不得回綠
   R7 新增的紅燈也要走 ALLOW_UNWIRED 逃生口，否則 repo 會被完全鎖死
   R1 runner：會讀 stdin 的守衛不得吃掉宣告檔後續行（eval 必須 </dev/null）
@@ -54,6 +58,24 @@
   M-D 寫死 .git/hooks/pre-commit      → W9 翻紅
   M-E 拿掉零守衛偵測                  → R6 翻紅
 每次突變只翻自己那一條，其餘保持綠；還原後 36 passed。
+──────────────────────────────────────
+2026-09-05 15:5x GMT+8：自動偵測未 opt-in 的 repo（W13～W16，v1.3.0）
+──────────────────────────────────────
+來由：`~/.claude/CLAUDE.md:347-348` 早已定案「hook 在沒有宣告檔時會掃 repo 內的
+接線型守衛，有守衛卻沒宣告就出一句提示（不擋 commit）」，但實作它的
+`pre_commit_wiring_gate.sh` 在今天的收斂（commit 494d3cc）被刪除，而 Fable 版
+從來沒有這段——決議還在、行為沒了。本批補回。
+
+提示走「寫檔＋SessionStart 注入」而不是 hook 自己說話，理由有兩份獨立證據：
+被刪那支的檔頭記著外審實測「CC 在 exit 0 時直接丟棄 stderr，提示從未出現過」，
+官方文件亦載明 PreToolUse 的 allow 不顯示理由、且無 additionalContext 欄位。
+
+三個突變（各只翻自己那條，還原後 200 passed）：
+  M-a 拿掉掃描（回到純 opt-in）→ W13、W14 翻紅
+  M-b 補上宣告後不清提示        → W14 翻紅
+  M-c SessionStart 不注入提示    → W16 翻紅
+最後執行：2026-09-05 15:5x → 61 passed ✅
+
 最後執行：2026-09-05 14:59 → 57 passed ✅（13:09 曾連跑 5 次皆綠，
 未複現 skeptic 回報的 R1 偶發紅燈，該現象標 UNVERIFIED，見下方 ⏳）
 
@@ -76,6 +98,7 @@ R1/R2/R3 同理：拿掉 `</dev/null`、拿掉 `|| [ -n "$line" ]`、拿掉假�
   對一個已 opt-in 的 repo 下 `git commit --no-verify` 並觀察它被拒（INSTALL.md 步驟 10）。
 """
 import json
+import re
 import os
 import subprocess
 import sys
@@ -274,6 +297,90 @@ def test_r7_allow_unwired_also_escapes_the_zero_guard_red(tmp_path):
     """
     rc, out = _run_runner(tmp_path, "# 只有註解\n", env={"ALLOW_UNWIRED": "1"})
     assert rc == 0 and "accepted on the record" in out
+
+
+def _note_path(state_dir, repo):
+    safe = re.sub(r"[^A-Za-z0-9]", "_", str(repo))
+    return state_dir / f"wiring_unregistered_{safe}.txt"
+
+
+def _commit_with_state(repo, state_dir):
+    out = subprocess.run(
+        [sys.executable, GATE], input=json.dumps(_bash('git commit -m "x"')),
+        capture_output=True, text=True, cwd=str(repo), timeout=30,
+        env=dict(os.environ, FABLE_STATE_DIR=str(state_dir)))
+    assert out.returncode == 0
+    return out.stdout.strip()
+
+
+def test_w13_repo_with_guards_but_no_declaration_leaves_a_note(tmp_path):
+    """W13：opt-in 的反面失效——沒人記得 opt-in 的 repo 裡，這道閘什麼都不做。
+
+    所以看到「這個 repo 已經在寫接線型守衛」時要留下一句提示。提示走檔案、
+    由 SessionStart 注入，因為 PreToolUse 沒有「不擋人又能說話」的輸出：
+    allow 會丟掉理由、exit 0 的 stderr 被丟棄。
+    """
+    repo = _git_repo(tmp_path / "r", declare=False)
+    (repo / "tests").mkdir()
+    (repo / "tests" / "test_gate_entrypoints.py").write_text("x\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    state = tmp_path / "state"
+
+    assert _commit_with_state(repo, state) == "", "未 opt-in 的 repo 不得被擋"
+    note = _note_path(state, repo)
+    assert note.exists(), "有守衛卻沒宣告，卻沒有留下任何提示"
+    body = note.read_text(encoding="utf-8")
+    # git 回的路徑用正斜線，Windows 的 Path 用反斜線——比對前先正規化
+    assert "test_gate_entrypoints.py" in body
+    assert str(repo).replace("\\", "/") in body.replace("\\", "/")
+
+
+def test_w14_note_is_cleared_once_the_repo_opts_in(tmp_path):
+    """W14：W13 的配對——宣告檔補上了就要把提示收掉。
+
+    否則它會永遠掛在每次 session 開場，而每次都出現的提示會被當成雜訊略過。
+    """
+    repo = _git_repo(tmp_path / "r", precommit="#!/bin/sh\n# .claude/wiring-guards\n")
+    state = tmp_path / "state"
+    state.mkdir()
+    note = _note_path(state, repo)
+    note.write_text("repo: x\nstale\n", encoding="utf-8")
+
+    _commit_with_state(repo, state)
+    assert not note.exists(), "已經 opt-in 了，提示卻還留著"
+
+
+def test_w15_ordinary_repo_gets_no_note(tmp_path):
+    """W15：一般 repo 不留提示——會對每個專案說話的東西，很快就會被關掉。"""
+    repo = _git_repo(tmp_path / "r", declare=False)
+    (repo / "tests").mkdir()
+    (repo / "tests" / "test_math.py").write_text("x\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    state = tmp_path / "state"
+
+    _commit_with_state(repo, state)
+    assert not _note_path(state, repo).exists(), "對沒有接線型守衛的 repo 也出聲"
+
+
+def test_w16_sessionstart_actually_surfaces_the_note(tmp_path):
+    """W16：提示必須真的被講出來——寫了沒人讀，正是這道閘要抓的病。
+
+    驅動真實的 inject_protocol.sh，斷言它把提示內容輸出出來（SessionStart 的
+    輸出會進模型上下文，這是唯一已驗證可達的路徑）。
+    """
+    repo = _git_repo(tmp_path / "r", declare=False)
+    home = tmp_path / "home"
+    (home / ".claude" / "state").mkdir(parents=True)
+    note = _note_path(home / ".claude" / "state", repo)
+    note.write_text("repo: %s\ntests/test_gate_entrypoints.py\n" % repo, encoding="utf-8")
+
+    inject = os.path.join(ROOT, ".claude", "hooks", "inject_protocol.sh")
+    out = subprocess.run(["sh", inject], capture_output=True, encoding="utf-8",
+                         errors="replace", cwd=str(repo), timeout=60,
+                         env=dict(os.environ, HOME=str(home)))
+    assert "FABLE-PROTOCOL" in out.stdout, "協議本體沒被注入"
+    assert "尚未 opt-in" in out.stdout, "提示檔存在，SessionStart 卻沒講出來"
+    assert "test_gate_entrypoints.py" in out.stdout
 
 
 def test_w7_other_tools_are_ignored():

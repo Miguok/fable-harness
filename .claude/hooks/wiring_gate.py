@@ -272,6 +272,53 @@ def precommit_path(root, config_args=()):
     return path if os.path.isabs(path) else os.path.join(root, path)
 
 
+# 接線型守衛的形狀：檔名同時帶「測試」與「接線」兩種詞。掃檔名而不是內容，
+# 因為這只是提示，代價必須接近零。
+GUARD_FILE_RE = re.compile(
+    r"(^|/)[^/]*(test|spec)[^/]*(wired|wiring|single_source|_gate|gated)[^/]*"
+    r"\.(py|ts|js|sh)$", re.I)
+# FABLE_STATE_DIR 只為測試而存在：提示檔寫在使用者真正的 ~/.claude/state，
+# 測試不得碰它。
+NOTE_DIR = os.environ.get(
+    "FABLE_STATE_DIR", os.path.join(os.path.expanduser("~"), ".claude", "state"))
+
+
+def note_unregistered(root, declared):
+    """Leave a note when a repo has wiring-shaped guards but no declaration.
+
+    The gate is opt-in, and opt-in has a matching failure: it does nothing in
+    every repo nobody remembered to opt in. So when a repo looks like it
+    *already writes* this kind of guard, say so once — as a note on disk, read
+    and injected by the SessionStart hook.
+
+    It is a note rather than a message from here because a PreToolUse hook has
+    no way to say anything without also blocking: `permissionDecision: allow`
+    discards its reason, and stderr on exit 0 is thrown away. A hint that never
+    reaches anyone is the same disease this gate exists to catch.
+    """
+    safe = re.sub(r"[^A-Za-z0-9]", "_", root)
+    note = os.path.join(NOTE_DIR, "wiring_unregistered_%s.txt" % safe)
+    if declared:
+        # 宣告檔補上了就把提示收掉，否則它會永遠掛在每次 session 開場
+        try:
+            os.remove(note)
+        except OSError:
+            pass
+        return
+    try:
+        out = subprocess.run(["git", "ls-files"], capture_output=True, text=True,
+                             timeout=5, cwd=root)
+        found = [f for f in out.stdout.splitlines() if GUARD_FILE_RE.search(f)][:8]
+        if not found:
+            return
+        os.makedirs(NOTE_DIR, exist_ok=True)
+        with open(note, "w", encoding="utf-8", newline="") as fh:
+            fh.write("repo: %s\n" % root)
+            fh.write("\n".join(found) + "\n")
+    except (OSError, subprocess.SubprocessError):
+        return  # 提示失敗絕不影響 commit
+
+
 def check_wiring(root, config_args=()):
     """Return a deny reason, or None when the repo's guards are properly wired."""
     decl = os.path.join(root, DECL_REL)
@@ -341,9 +388,11 @@ def main(argv=None):
         root = repo_root(cwd=target_dir(options))
         if not root:
             return 0
+        declared = os.path.isfile(os.path.join(root, DECL_REL))
+        note_unregistered(root, declared)
         # W1 only applies to repos that opted in, so an unrelated repo using
         # --no-verify is none of this gate's business.
-        if not os.path.isfile(os.path.join(root, DECL_REL)):
+        if not declared:
             return 0
         if verdict == "NOVERIFY":
             deny(W1_REASON)

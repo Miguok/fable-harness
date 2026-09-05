@@ -91,7 +91,9 @@ Claude should then carry out the following steps, in order. If you're Claude rea
 
    If any of the three doesn't fire, run `python <repo>/scripts/fable_doctor.py` — it reports which interpreter each hook resolved to, when each hook last ran, and whether the installed copies match the repo.
 
-10. **Optional, per repository: turn on the wiring gate.** The `PreToolUse` hook from step 5 does *nothing at all* until a repository opts in — it is one `exists()` check on repos that haven't. This is deliberate: a gate that switched itself on in repos whose conventions it doesn't know would be guessing, and a wrong guess here blocks commits.
+10. **Optional, per repository: turn on the wiring gate.** The `PreToolUse` hook from step 5 does not enforce anything until a repository opts in. This is deliberate: a gate that switched itself on in repos whose conventions it doesn't know would be guessing, and a wrong guess here blocks commits.
+
+    It does, however, **look**. On a commit in a repo with no declaration it checks whether that repo already contains guards of the shape it protects (a test file whose name carries both a test word and a wiring word). If it finds some, the next session opens with one line saying which — because "opt-in" otherwise means "does nothing in every repo you forgot". Opting in clears the notice; so does deleting the notice file it names.
 
     To opt a repository in:
 
