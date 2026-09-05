@@ -12,6 +12,10 @@ The current version is also kept in [VERSION](VERSION).
 
 ## [Unreleased]
 
+### Changed
+
+- **This repo now opts itself into its own wiring gate.** Up to 1.3.0 the gate guarded other people's repositories and not the one that ships it — which is the failure it exists to catch. `.claude/wiring-guards` lists the two general guards (every hook must appear in the health check's list; INSTALL step 5's table must match that list) and runs in about 1.2 seconds on commit. The full suite stays a pre-push responsibility; this gate only promises that the wiring class cannot slip through.
+
 ## [1.3.0] — 2026-09-05
 
 ### Added
