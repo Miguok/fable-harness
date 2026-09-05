@@ -4,6 +4,14 @@
 
 Notes for maintainers of this repository. You don't need this to *use* the kit — see [README](README.en.md) and [INSTALL.md](INSTALL.md) for that.
 
+## Reviewing a PR that touches `.claude/wiring-guards`
+
+That file is a list of shell commands, and the pre-commit runner `eval`s every
+line of it. A change to it is a change to what runs on the machine of everyone
+who commits after merging — read it the way you would read a change to a build
+script, not the way you would read a config value. The same applies to
+`.claude/hooks/wiring_runner.sh` itself.
+
 ## Keeping the contributor list clean (no `noreply` / Claude phantom)
 
 By default, Claude Code appends a `Co-Authored-By: Claude <noreply@anthropic.com>` trailer to commits it helps write. GitHub renders that trailer as a contributor, which shows up in the repo's **Contributors** sidebar as a `noreply` / `claude` entry that isn't a real person. Two layers keep it out.

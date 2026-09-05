@@ -1,8 +1,8 @@
 # 這個 repo 自己的接線守衛（組件 4；用法見 INSTALL.md 步驟 10）
 #
 # 只放「斷言某個東西在執行路徑上」的檢查，不放功能測試——整份清單要留在秒的
-# 量級，慢的閘門會被繞過，而被繞過的閘門等於沒有。全套 200 條測試約 10 秒，
-# 太慢；這裡只列兩條通則守衛（實測約 1.9 秒）：
+# 量級，慢的閘門會被繞過，而被繞過的閘門等於沒有。公開 clone 的全套測試是
+# 159 條、約 12 秒，太慢；這裡只列兩條通則守衛（乾淨 clone 實測 1.3~1.8 秒）：
 #
 #   D9  .claude/hooks/ 下每一支 Claude hook 都必須出現在健檢清單裡
 #       ——少一支，那支 hook 對健檢就是隱形的
@@ -14,4 +14,6 @@
 # 為什麼這個 repo 自己也要接：它到 v1.3.0 為止都在守別人、自己沒接線——
 # 而「做了沒接線」正是這道閘存在的理由。
 
-python -m pytest tests/test_fable_doctor.py -q -k "d9 or d11"
+# python3 優先：macOS／Linux 常常只有 python3，寫死 python 會讓那些平台
+# 的每一次 commit 都變紅（fail-closed，但等於把貢獻者全擋在門外）。
+python3 -m pytest tests/test_fable_doctor.py -q -k "d9 or d11" || python -m pytest tests/test_fable_doctor.py -q -k "d9 or d11"

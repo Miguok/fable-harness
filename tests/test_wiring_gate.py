@@ -300,7 +300,13 @@ def test_r7_allow_unwired_also_escapes_the_zero_guard_red(tmp_path):
 
 
 def _note_path(state_dir, repo):
-    safe = re.sub(r"[^A-Za-z0-9]", "_", str(repo))
+    """提示檔路徑——刻意用 **shell 端** 的算法算，不是抄生產端那份。
+
+    抄生產端的話，這個 helper 永遠會跟 wiring_gate.py 一致，於是「寫入端與
+    讀取端算出不同檔名」這種分歧它一輩子測不到（2026-09-05 抗辯實證：
+    Python 逐字元 vs `tr` 逐位元組，非 ASCII 路徑上兩端就是不同的檔名）。
+    """
+    safe = re.sub(rb"[^A-Za-z0-9]", b"_", str(repo).encode("utf-8")).decode("ascii")
     return state_dir / f"wiring_unregistered_{safe}.txt"
 
 
@@ -372,7 +378,9 @@ def test_w16_sessionstart_actually_surfaces_the_note(tmp_path):
     home = tmp_path / "home"
     (home / ".claude" / "state").mkdir(parents=True)
     note = _note_path(home / ".claude" / "state", repo)
-    note.write_text("repo: %s\ntests/test_gate_entrypoints.py\n" % repo, encoding="utf-8")
+    # git rev-parse 回的是正斜線，第一行要與它逐字相同才會被印出（見 W18）
+    note.write_text("repo: %s\ntests/test_gate_entrypoints.py\n"
+                    % str(repo).replace("\\", "/"), encoding="utf-8")
 
     inject = os.path.join(ROOT, ".claude", "hooks", "inject_protocol.sh")
     out = subprocess.run(["sh", inject], capture_output=True, encoding="utf-8",
@@ -381,6 +389,75 @@ def test_w16_sessionstart_actually_surfaces_the_note(tmp_path):
     assert "FABLE-PROTOCOL" in out.stdout, "協議本體沒被注入"
     assert "尚未 opt-in" in out.stdout, "提示檔存在，SessionStart 卻沒講出來"
     assert "test_gate_entrypoints.py" in out.stdout
+
+
+def test_w17_note_survives_a_non_ascii_repo_path(tmp_path):
+    """W17：路徑含非 ASCII 時，寫入端與讀取端必須算出**同一個**檔名。
+
+    Python 的 `re.sub` 逐字元、shell 的 `tr` 逐位元組——中文目錄下
+    `d_____repo` vs `d_________repo`，提示寫得出來卻永遠讀不到。
+    本條**同時驅動兩端**（gate 寫、inject_protocol.sh 讀），這是唯一能抓到
+    分歧的做法；只驗其中一端等於拿自己的算法跟自己比。
+    """
+    repo = _git_repo(tmp_path / "測試專案", declare=False)
+    (repo / "tests").mkdir()
+    (repo / "tests" / "test_gate_entrypoints.py").write_text("x\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    home = tmp_path / "home"
+    (home / ".claude" / "state").mkdir(parents=True)
+
+    _commit_with_state(repo, home / ".claude" / "state")
+
+    inject = os.path.join(ROOT, ".claude", "hooks", "inject_protocol.sh")
+    out = subprocess.run(["sh", inject], capture_output=True, encoding="utf-8",
+                         errors="replace", cwd=str(repo), timeout=60,
+                         env=dict(os.environ, HOME=str(home)))
+    assert "test_gate_entrypoints.py" in out.stdout, (
+        "非 ASCII 路徑下提示讀不到——寫入端與讀取端的檔名算法分歧"
+    )
+
+
+def test_w18_a_note_from_another_repo_is_not_printed(tmp_path):
+    """W18：檔名把非英數字元全換成底線，於是不同 repo 會撞成同一個檔名。
+
+    `x/evil-a`、`x/evil_a`、`x/evil/a` 三者同名——不比對第一行的 `repo:`，
+    B repo 的開場就會印出 A repo 的檔案清單。
+    """
+    repo = _git_repo(tmp_path / "mine", declare=False)
+    home = tmp_path / "home"
+    state = home / ".claude" / "state"
+    state.mkdir(parents=True)
+    note = _note_path(state, repo)
+    note.write_text("repo: /somewhere/else\nsecret/other_repo_file_wiring.py\n",
+                    encoding="utf-8")
+
+    inject = os.path.join(ROOT, ".claude", "hooks", "inject_protocol.sh")
+    out = subprocess.run(["sh", inject], capture_output=True, encoding="utf-8",
+                         errors="replace", cwd=str(repo), timeout=60,
+                         env=dict(os.environ, HOME=str(home)))
+    assert "other_repo_file_wiring.py" not in out.stdout, "印出了別的 repo 的檔名"
+
+
+def test_w19_note_output_is_bounded(tmp_path):
+    """W19：提示內容是從 repo 讀來的**檔名**——一個惡意 repo 能塞任意文字。
+
+    寫入端有 8 筆上限，讀取端原本沒有：5000 行的提示檔會整包進上下文。
+    行數與單行長度都要有上限。
+    """
+    repo = _git_repo(tmp_path / "mine", declare=False)
+    home = tmp_path / "home"
+    state = home / ".claude" / "state"
+    state.mkdir(parents=True)
+    note = _note_path(state, repo)
+    note.write_text("repo: %s\n" % str(repo).replace("\\", "/")
+                    + "".join("x" * 400 + "_wiring.py\n" for _ in range(5000)),
+                    encoding="utf-8")
+
+    inject = os.path.join(ROOT, ".claude", "hooks", "inject_protocol.sh")
+    out = subprocess.run(["sh", inject], capture_output=True, encoding="utf-8",
+                         errors="replace", cwd=str(repo), timeout=60,
+                         env=dict(os.environ, HOME=str(home)))
+    assert len(out.stdout) < 20000, f"提示未設上限，輸出 {len(out.stdout)} bytes"
 
 
 def test_w7_other_tools_are_ignored():

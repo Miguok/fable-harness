@@ -12,6 +12,33 @@ The current version is also kept in [VERSION](VERSION).
 
 ## [Unreleased]
 
+## [1.4.1] — 2026-09-05
+
+Everything here was found by running the adversarial review **on the published
+releases**, which 1.4.0 had just made mandatory before publishing and which
+1.2.0 through 1.4.0 had not had. The rule found six errors in its own author's
+work within twenty minutes of shipping.
+
+### Fixed
+
+- **The hint was unreachable on any repository whose path contains non-ASCII characters.** The note's file name is derived from the repo path by replacing everything that is not `[A-Za-z0-9]`, and the two ends did it differently: Python's `re.sub` works per *character*, the shell's `tr` per *byte*. A path under a Chinese, Japanese or Korean directory produced `d_____repo` on the writing side and `d_________repo` on the reading side — written, never read. This kit ships READMEs in those three languages; the people it locked out are the ones it was translated for. Both ends now work on UTF-8 bytes.
+
+  The test that should have caught it computed the name with a copy of the *production* regex, so it could only ever agree with the code it was testing. It now derives the name the way the shell does and drives both halves end to end.
+
+- **A note could be printed to the wrong repository.** Because every non-alphanumeric character maps to `_`, `x/evil-a`, `x/evil_a` and `x/evil/a` collide on one file name — repo B's session would open with repo A's file list, and A opting in would delete B's note. The injector now checks the note's `repo:` line against the current repository before printing anything.
+
+- **The injected hint had no size limit.** File names come from `git ls-files` of whatever repository you happen to be in, so a hostile repo could put 5,000 lines (110 KB) of arbitrary text into the session context. The reading side now caps at eight entries and 120 characters each, and labels the block as data — file names, not instructions.
+
+- **The declaration hard-coded `python`.** On a macOS or Linux box with only `python3`, every commit in an opted-in repo would have gone red. It tries `python3` first now.
+
+### Changed
+
+- **Corrected published numbers.** The 1.2.0 entry claimed 27 and 26 test cases; the files as released collect 57 and 40. The commit time for this repo's own guard was stated as 1.2 s in one place and 1.9 s in another; measured on a clean clone it is 1.3–1.8 s. The declaration described "200 tests, about 10 seconds" — that was the author's local count including five private test files; a public clone has 159.
+
+- **`MAINTAINING.md`** (and its translation) now tells reviewers that a change to `.claude/wiring-guards` is a change to what executes on every committer's machine after the merge — the warning existed only in `INSTALL.md`, which is not what a PR reviewer reads.
+
+- **`.gitattributes`** covers the extensionless `.claude/wiring-guards`, which was being checked out with CRLF on Windows.
+
 ## [1.4.0] — 2026-09-05
 
 ### Added
@@ -30,7 +57,7 @@ The current version is also kept in [VERSION](VERSION).
 
 ### Changed
 
-- **This repo now opts itself into its own wiring gate.** Up to 1.3.0 the gate guarded other people's repositories and not the one that ships it — which is the failure it exists to catch. `.claude/wiring-guards` lists the two general guards (every hook must appear in the health check's list; INSTALL step 5's table must match that list) and runs in about 1.2 seconds on commit. The full suite stays a pre-push responsibility; this gate only promises that the wiring class cannot slip through.
+- **This repo now opts itself into its own wiring gate.** Up to 1.3.0 the gate guarded other people's repositories and not the one that ships it — which is the failure it exists to catch. `.claude/wiring-guards` lists the two general guards (every hook must appear in the health check's list; INSTALL step 5's table must match that list) and runs in about 1.5 seconds on commit. The full suite stays a pre-push responsibility; this gate only promises that the wiring class cannot slip through.
 
 ## [1.3.0] — 2026-09-05
 
@@ -75,7 +102,7 @@ The current version is also kept in [VERSION](VERSION).
 
 - **Protocol §4b** — the behavioural half of the goal ladder, including "when the user comes back, raise the shelved items before resuming anything". §4 also gains the behavioural half of the wiring gate: shipping something that only matters when it is called requires a test asserting **it is on an execution path**. Both are locked by `tests/test_protocol_floor.py` (L7–L9, mutation-verified).
 
-- **tests/test_wiring_gate.py** (27 cases) and **tests/test_goal_gate.py** (26 cases), all driving the real hook files and real JSONL transcripts rather than a copy of their logic. Nine mutations verified between them — for the wiring gate: un-stripping commit message bodies (a commit whose *message* mentions `--amend` silently disarmed the whole gate, and the commit that shipped this mechanism was exactly that), removing the wiring check, removing `</dev/null`, removing the trailing-newline handling; for the goal gate: not resetting the streak on green (the counter becomes a ratchet and eventually fires on unrelated work), not writing the shelf entry, not resetting after shelving (the next goal starts already at strike three), nagging on "didn't mention it" instead of the empty note, and dropping the `stop_hook_active` pass-through (which could deadlock a session).
+- **tests/test_wiring_gate.py** (57 cases as released) and **tests/test_goal_gate.py** (40), all driving the real hook files and real JSONL transcripts rather than a copy of their logic. Nine mutations verified between them — for the wiring gate: un-stripping commit message bodies (a commit whose *message* mentions `--amend` silently disarmed the whole gate, and the commit that shipped this mechanism was exactly that), removing the wiring check, removing `</dev/null`, removing the trailing-newline handling; for the goal gate: not resetting the streak on green (the counter becomes a ratchet and eventually fires on unrelated work), not writing the shelf entry, not resetting after shelving (the next goal starts already at strike three), nagging on "didn't mention it" instead of the empty note, and dropping the `stop_hook_active` pass-through (which could deadlock a session).
 
 ### Fixed
 

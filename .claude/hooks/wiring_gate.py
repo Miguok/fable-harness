@@ -11,8 +11,10 @@
 共通點是它們**都通過了驗收**——檔案存在、測試綠、DoD 打勾、進了版控，
 於是那個缺口從此無人看管。比沒做更糟：沒做的還在待辦清單上。
 
-行為（純 opt-in，未宣告的 repo 零成本零風險）：
-  repo 沒有 `.claude/wiring-guards`  → 什麼都不做（一次 os.path.exists）
+行為（純 opt-in：未宣告的 repo 不會被擋下任何 commit）：
+  repo 沒有 `.claude/wiring-guards`  → 不介入判定，但會掃一次該 repo 有沒有
+      「接線型守衛」並留下提示（v1.3.0 起；見 note_unregistered）。
+      成本：`git rev-parse` 與 `git ls-files` 各一次，且只在 commit 指令上。
   repo 有宣告檔，則在 `git commit` 前檢查兩件事：
     W1 `--no-verify` / `-n`（含 `-nm` 這種叢集寫法，也含與 `--amend` 併用）→ 擋。
        那是繞過 pre-commit 的唯一入口，且不留痕跡。旗標**只看 `git commit` 那一段**，
@@ -296,7 +298,11 @@ def note_unregistered(root, declared):
     discards its reason, and stderr on exit 0 is thrown away. A hint that never
     reaches anyone is the same disease this gate exists to catch.
     """
-    safe = re.sub(r"[^A-Za-z0-9]", "_", root)
+    # 逐**位元組**替換，因為讀這個檔名的是 inject_protocol.sh 的
+    # `tr -c 'A-Za-z0-9' '_'`，而 tr 是逐位元組的。Python 逐字元的話，
+    # 路徑含非 ASCII（中文／日文／韓文目錄）時兩端算出來的檔名不同：
+    # 提示寫得出來、卻永遠讀不到——正是 1.3.0 自稱修掉的那個病。
+    safe = re.sub(rb"[^A-Za-z0-9]", b"_", root.encode("utf-8")).decode("ascii")
     note = os.path.join(NOTE_DIR, "wiring_unregistered_%s.txt" % safe)
     if declared:
         # 宣告檔補上了就把提示收掉，否則它會永遠掛在每次 session 開場

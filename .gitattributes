@@ -4,3 +4,6 @@
 *.py text eol=lf
 *.md text eol=lf
 *.json text eol=lf
+
+# 無副檔名，但它是 shell 指令清單：CRLF 會讓每條指令尾端帶 
+.claude/wiring-guards text eol=lf

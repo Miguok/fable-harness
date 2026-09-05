@@ -4,6 +4,12 @@
 
 給本 repo 維護者的備註。使用這個 kit 不需要這份文件——那請看 [README](README.md) 與 [INSTALL.md](INSTALL.md)。
 
+## 審查動到 `.claude/wiring-guards` 的 PR
+
+那個檔案是一份 shell 指令清單，而 pre-commit runner 會對它的每一行做 `eval`。
+改動它＝改動「合併之後，每一個 commit 的人機器上會跑什麼」——請用讀建置腳本的
+方式讀它，不要當成一般設定值。`.claude/hooks/wiring_runner.sh` 本身同理。
+
 ## 讓貢獻者名單保持乾淨（不長 `noreply` / Claude phantom）
 
 Claude Code 預設會在它協助寫的 commit 尾端附上一行 `Co-Authored-By: Claude <noreply@anthropic.com>`。GitHub 會把這行 trailer 當成一位貢獻者，於是 repo 的 **Contributors** 側欄會冒出一個不是真人的 `noreply` / `claude` 項目。兩層防線把它擋掉。
