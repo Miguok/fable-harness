@@ -303,6 +303,10 @@ def load_state(root):
     p = state_path(root)
     if not os.path.exists(p):
         return {"streak": 0, "shelved": []}
+    if not inside(root, p):
+        # 跟著連結讀出去的內容會被 run_prompt 原樣注入上下文——擋寫不擋讀，
+        # 只擋掉外洩，沒擋掉注入。
+        return None
     try:
         with open(p, encoding="utf-8") as fh:
             s = json.load(fh)
@@ -345,22 +349,55 @@ def redact(command):
     return URL_CRED_RE.sub(r"\1:***@", out)
 
 
+def inside(root, path):
+    """True when `path` really lives under `root` after every link is resolved.
+
+    `os.path.islink` was the first attempt and it checks the wrong thing twice:
+    it sees only the last component, so a symlinked `.fable/.gitignore` still
+    wrote outside the repo, and on Windows it returns False for a *junction* —
+    which is the shape that needs no administrator rights, so the guard blocked
+    the rare form and let the common one through. Resolving the path answers
+    both, and answers it for reads as well as writes.
+    """
+    try:
+        rp = os.path.realpath(root)
+        pp = os.path.realpath(path)
+    except OSError:
+        return False
+    return pp == rp or pp.startswith(rp + os.sep)
+
+
 def save_state(root, state):
     p = state_path(root)
     d = os.path.dirname(p)
-    os.makedirs(d, exist_ok=True)
-    # Self-ignoring directory: the state holds the user's failing commands, and
-    # it lands in *their* repo. Telling them to add `.fable/` to .gitignore
-    # (INSTALL step 11) only works if they read that step — a repo with no
-    # .gitignore at all would commit it on the next `git add -A`.
-    marker = os.path.join(d, ".gitignore")
-    if not os.path.exists(marker):
-        with open(marker, "w", encoding="utf-8", newline="") as fh:
-            fh.write("*\n")
     # PID in the temp name: two sessions in one repo writing `goal_state.json.tmp`
     # at the same time would have one clobber the other mid-write.
     tmp = "%s.tmp.%d" % (p, os.getpid())
     try:
+        # `makedirs` inside the try: it raises when `.fable` is a *file*, and
+        # that raise used to happen outside where the caller's blanket except
+        # swallowed it — the gate went quiet while an unreadable state file
+        # blocks loudly. Both failures behave the same way now.
+        fresh = not os.path.exists(d)
+        os.makedirs(d, exist_ok=True)
+        if not inside(root, d) or not inside(root, p):
+            return False
+        # Only write the ignore file when we created the directory ourselves.
+        #
+        # The previous version read an existing `.claude/.gitignore` and
+        # appended `*` when it looked insufficient. Every part of that was
+        # wrong: `open(…, "a")` follows a symlink out of the repository, it
+        # appended without a leading newline and turned `something_else` into
+        # `something_else*`, its idea of "sufficient" was looser than git's
+        # (`*` followed by `!*`, or a line with trailing spaces, all passed),
+        # and two sessions racing wrote `*` twice. Guessing at a file the user
+        # owns kept producing new ways to damage it, so it no longer guesses.
+        # A user who keeps their own `.fable/.gitignore` owns that decision;
+        # INSTALL.md says what the directory holds.
+        if fresh:
+            with open(os.path.join(d, ".gitignore"), "w",
+                      encoding="utf-8", newline="") as fh:
+                fh.write("*\n")
         with open(tmp, "w", encoding="utf-8", newline="") as fh:
             json.dump(state, fh, ensure_ascii=False, indent=2)
             fh.write("\n")
@@ -375,6 +412,25 @@ def save_state(root, state):
             pass
         return False
     return True
+
+
+def save_or_complain(root, state):
+    """寫入狀態；寫不進去就出聲，不要靜靜停機。
+
+    與 `load_state` 讀不到時會 block 對稱：`.fable` 是檔案／symlink、目錄唯讀
+    時，原本 `makedirs` 的例外會被 main 的 fail-open 吞掉，整道閘從此不作用
+    而沒有任何徵兆——那正是這條階梯存在的理由本身。
+    """
+    if save_state(root, state):
+        return True
+    block(
+        f"⛔ FABLE goal gate: cannot write {STATE_REL}.\n\n"
+        "Usual causes: `.fable` is a file or a symlink, or the directory is "
+        "read-only. Until that is fixed this gate does nothing at all — no "
+        "counting, no shelving, no reminders.\n\n"
+        "Remove or rename that `.fable` so it can be an ordinary directory."
+    )
+    return False
 
 
 def block(reason):
@@ -408,14 +464,16 @@ def run_stop(data, root):
         # would eventually fire on unrelated work.
         if state["streak"]:
             state["streak"] = 0
-            save_state(root, state)
+            if not save_or_complain(root, state):
+                return 0
 
     if ran and failed:
         state["streak"] += 1
         streak = state["streak"]
 
         if streak == ADVERSARIAL_AT:
-            save_state(root, state)
+            if not save_or_complain(root, state):
+                return 0
             block(
                 f"⛔ FABLE goal gate: this goal has now failed {streak} times in a row.\n\n"
                 f"Last failing command:\n  {cmd}\n\n"
@@ -443,7 +501,8 @@ def run_stop(data, root):
             # to remove.
             state["shelved"].append(item)
             state["streak"] = 0
-            save_state(root, state)
+            if not save_or_complain(root, state):
+                return 0
             block(
                 f"⛔ FABLE goal gate: {streak} consecutive failures on this goal — shelving it.\n\n"
                 f"Last failing command:\n  {cmd}\n\n"
@@ -461,7 +520,7 @@ def run_stop(data, root):
             )
             return 0
 
-        save_state(root, state)
+        save_or_complain(root, state)
         return 0
 
     # Nothing failed this turn. A shelved item whose `note` is still empty has
@@ -508,7 +567,7 @@ def run_prompt(root):
                      f"after {i.get('streak', '?')} failures)")
         lines.append(f"    last failing command: {i.get('last_command', '')[:160]}")
         if i.get("note"):
-            lines.append(f"    note: {i['note']}")
+            lines.append(f"    note: {str(i['note'])[:500]}")
     lines += [
         "",
         "These stopped because three attempts did not reach the goal, not because they were",

@@ -18,6 +18,14 @@
   G11 UserPromptSubmit 而清單為空 → 靜默
   G12 門檻可由 env 調整（FABLE_GOAL_ADVERSARIAL_AT / _SHELVE_AT）
   G13 輸入壞掉 / 不在 git repo → fail-open，無輸出、exit 0
+  G17 狀態目錄自我忽略（我們自己建立時才寫 .gitignore）
+  G21 同一目標透過不同管線／前綴仍是同一個目標
+  G23 `--collect-only` 這類「只列出」的指令不算一次測試執行
+  G25 寫不進狀態檔要出聲，不得靜默停機
+  G26 使用者既有的 `.fable/.gitignore` 一個位元組都不准動
+  G27 `.fable` 解析後不在 repo 內 → 拒寫並出聲（含 Windows junction）
+  G28 擱置項的 note 注入前要截斷
+  G29 G27 的讀取面：不得跟著連結讀 repo 外的狀態檔
 
 執行命令：
   cd <repo> && python -m pytest tests/test_goal_gate.py -v
@@ -56,6 +64,30 @@ G9 的期望隨之反轉（提 id 仍要擋）。文件與程式不一致時，�
   M-2 拿掉空綠過濾（vacuous 當成 pass）→ G15 翻紅
   M-3 恢復「提到 id 就放行」            → G9 翻紅
   M-4 拿掉 redact                       → G16 翻紅
+──────────────────────────────────────
+2026-09-05 21:5x GMT+8：抗辯在 v1.4.2 已發佈碼中挖出的三項（G25～G29）
+──────────────────────────────────────
+四個突變（各只翻自己那條，還原後 48 passed）：
+  M-1 圍籬換回 os.path.islink        → G27 翻紅
+  M-2 回到「既有 .gitignore 也要動」 → G26 翻紅
+  M-3 讀取端不設圍籬                 → G29 翻紅
+  M-4 note 不截斷                    → G28 翻紅
+
+⚠ M-1／M-3 第一次跑時**沒有翻紅**，那揭露兩件事：
+  ① G27 原本先試 `os.symlink`，在有 Dev Mode 的機器上會走到 `islink` 抓得到
+     的那一邊，測不到 junction——而 junction 才是不需要管理員權限的那種。
+  ② 讀取端當時根本沒有測試。
+  另外 G27 的第一版把「repo 外」的目錄建在 repo 內（repo 根就是 tmp_path），
+  情境根本不成立。三者都是「突變沒翻紅」才抓到的。
+最後執行：2026-09-05 21:5x → 48 passed ✅
+
+⏳ 已知限制（本檔未涵蓋，非本輪引入）：
+  兩個 session 同時擱置項目時，load→改→save 沒有鎖，後寫的會蓋掉先寫的，
+  擱置項可能整筆消失（抗辯實測 5/5）。解鎖條件＝加檔案鎖並補並行測試。
+  狀態檔若已被使用者 commit 進版控，.gitignore 對它無效；此時寫入會顯示為
+  ` M`，是可見的，不是靜默。
+
+（以下為 14:59 那批的紀錄）
 最後執行：2026-09-05 14:59（三輪抗辯修復後）→ 39 passed ✅
 
 併入本 repo 當時（12:52，26 passed）的抽樣突變：
@@ -396,6 +428,122 @@ def test_g20_hand_edited_shelf_missing_keys_still_surfaces(tmp_path):
     repo = _repo(tmp_path, {"streak": 0, "shelved": [{"id": "goal-9", "note": "手寫說明"}]})
     out = _run(repo, payload={"hook_event_name": "UserPromptSubmit"})
     assert "goal-9" in out and "手寫說明" in out
+
+
+def test_g25_write_failure_is_visible_not_silent(tmp_path):
+    """G25：寫不進狀態檔要出聲——與「讀不到會出聲」對稱。
+
+    `.fable` 若是一個**檔案**，`makedirs` 的例外原本在 try 之外，被 main 的
+    fail-open 吞掉：整道閘從此不計數、不擱置、不提醒，而沒有任何徵兆。
+    讀取失敗大聲、寫入失敗無聲，是這條階梯自己最反對的那種不對稱。
+    """
+    repo = _repo(tmp_path)
+    (repo / ".fable").write_text("not a directory\n", encoding="utf-8")
+    out = _run(repo, _turn("pytest -q", FAIL_OUT))
+    assert _blocked(out), "寫不進去卻靜默停機"
+    assert "cannot write" in _reason(out)
+
+
+def test_g26_an_existing_gitignore_is_left_alone(tmp_path):
+    """G26：使用者已有的 `.fable/.gitignore` 一個位元組都不准動。
+
+    先前的版本會讀它、判斷「夠不夠」、不夠就 append `*`。那條路每一段都出過事：
+    `open(…, "a")` 會跟著 symlink 寫到 repo 外；沒補尾端換行會把
+    `something_else` 變成 `something_else*`；「夠不夠」的判準比 git 自己寬
+    （`*` 後面接 `!*`、或行尾有空白都會被誤判為夠）；兩個 session 並行會寫兩次。
+    猜一個屬於使用者的檔案，每次都猜出新的傷害——所以現在不猜。
+    """
+    repo = _repo(tmp_path)
+    (repo / ".fable").mkdir()
+    marker = repo / ".fable" / ".gitignore"
+    original = b"something_else"  # 故意不留結尾換行
+    marker.write_bytes(original)
+
+    _run(repo, _turn("pytest -q", FAIL_OUT))
+    assert marker.read_bytes() == original, "動到了使用者的 .gitignore"
+
+
+def test_g27_state_dir_escaping_the_repo_is_refused(tmp_path):
+    """G27：`.fable` 解析後若不在 repo 內，拒寫並出聲。
+
+    `os.path.islink` 是第一版，它兩處都看錯：只看最後一層（symlink 的
+    `.fable/.gitignore` 照樣寫出去），而且在 Windows 對 **junction** 回 False
+    ——junction 不需要管理員權限，symlink 才需要，等於擋住罕見形狀、
+    放過常見形狀。改成解析真實路徑後比對是否落在 repo 內。
+    """
+    # repo 必須是 tmp_path 的子目錄——把「repo 外」的目標建在 tmp_path 底下時，
+    # 若 repo 根就是 tmp_path，那個目標其實在 repo **內**，圍籬理應放行，
+    # 測試就永遠紅（或永遠綠）而測不到真正的情境。
+    repo = _repo(tmp_path / "repo")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    linked = repo / ".fable"
+    made = False
+    # Windows 一律用 **junction**：`os.path.islink` 對 junction 回 False，
+    # 而 junction 不需要管理員權限、symlink 需要——先試 symlink 的話，
+    # 這條測試在有 Dev Mode 的機器上會走到 islink 抓得到的那一邊，
+    # 於是「換回 islink」的突變不會翻紅（實測過，正是如此）。
+    if sys.platform != "win32":
+        try:
+            os.symlink(str(outside), str(linked), target_is_directory=True)
+            made = True
+        except (OSError, NotImplementedError, AttributeError):
+            pass
+    if not made and sys.platform == "win32":  # Windows junction，不需管理員
+        subprocess.run(["cmd", "/c", "mklink", "/J", str(linked), str(outside)],
+                       capture_output=True)
+        # 只看 returncode 會被騙：mklink 失敗時本測試會退化成「普通目錄」，
+        # 於是它永遠綠。實測過一次——差點據此下錯結論。看 reparse tag 才算數。
+        made = bool(getattr(os.lstat(linked), "st_reparse_tag", 0)) if linked.exists() else False
+    if not made:
+        pytest.skip("此平台無法建立 symlink 或 junction")
+
+    out = _run(repo, _turn("pytest -q", FAIL_OUT))
+    assert _blocked(out), "指向 repo 外卻靜默寫出去"
+    assert not (outside / "goal_state.json").exists(), "使用者的失敗指令被寫到 repo 外"
+
+
+def test_g29_state_outside_the_repo_is_not_read_either(tmp_path):
+    """G29：G27 的讀取面——擋寫不擋讀，只擋掉外洩、沒擋掉注入。
+
+    `.fable` 指向 repo 外時，裡面的 `goal_state.json` 內容會被 `run_prompt`
+    原樣注入上下文，而那份檔案是攻擊者可以選位置的。
+    """
+    repo = _repo(tmp_path / "repo")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "goal_state.json").write_text(json.dumps({
+        "streak": 0, "shelved": [{"id": "goal-x", "first_seen": "x", "streak": 3,
+                                  "last_command": "pytest", "note": "ATTACKER_TEXT"}]}),
+        encoding="utf-8", newline="")
+    linked = repo / ".fable"
+    if sys.platform != "win32":
+        try:
+            os.symlink(str(outside), str(linked), target_is_directory=True)
+        except (OSError, NotImplementedError, AttributeError):
+            pytest.skip("此平台無法建立 symlink")
+    else:
+        subprocess.run(["cmd", "/c", "mklink", "/J", str(linked), str(outside)],
+                       capture_output=True)
+        if not (linked.exists() and getattr(os.lstat(linked), "st_reparse_tag", 0)):
+            pytest.skip("無法建立 junction")
+
+    out = _run(repo, payload={"hook_event_name": "UserPromptSubmit"})
+    assert "ATTACKER_TEXT" not in out, "跟著連結把 repo 外的內容注入了上下文"
+
+
+def test_g28_a_long_note_is_truncated_before_injection(tmp_path):
+    """G28：擱置項的 note 會被原樣注入上下文，必須有長度上限。
+
+    `last_command` 早就有 160 字截斷，`note` 沒有——而 note 同樣來自檔案，
+    一個 repo 可以直接 commit 一份 `.fable/goal_state.json`。
+    """
+    long_note = "N" * 5000
+    repo = _repo(tmp_path, {"streak": 0, "shelved": [
+        {"id": "goal-1", "first_seen": "x", "streak": 3,
+         "last_command": "pytest", "note": long_note}]})
+    out = _run(repo, payload={"hook_event_name": "UserPromptSubmit"})
+    assert len(out) < 2000, f"note 沒有截斷，注入 {len(out)} 字元"
 
 
 def test_g17_state_dir_ignores_itself(tmp_path):

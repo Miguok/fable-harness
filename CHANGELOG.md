@@ -12,6 +12,25 @@ The current version is also kept in [VERSION](VERSION).
 
 ## [Unreleased]
 
+## [1.4.3] — 2026-09-05
+
+Found by reviewing v1.4.2 after it shipped — and then by reviewing the fixes for *those*, which is where most of this comes from. The first attempt at each of these was wrong in a way the second review caught.
+
+### Fixed
+
+- **The goal gate went silently dead when `.fable` was not a directory.** `os.makedirs` sat outside the `try`, so a `.fable` that happened to be a *file* raised into the hook's fail-open and the whole component stopped — no counting, no shelving, no reminders, no sign. An unreadable state file already blocked loudly; the two now behave the same way.
+
+- **State could be written and read outside the repository.** A repo can commit a symlinked `.fable`, and the first guard for it (`os.path.islink`) checks the wrong thing twice: it sees only the last path component, so a symlinked `.fable/.gitignore` still escaped, and on Windows it returns False for a **junction** — the form that needs no administrator rights. The guard blocked the rare shape and passed the common one. Containment is now decided by resolving the path, and it covers reads too: following the link outward and injecting what it finds is the same hole from the other side.
+
+- **The ignore file is no longer written over.** The previous version read an existing `.fable/.gitignore`, judged whether it was "enough", and appended `*` when it wasn't. Every part of that was wrong: the append followed a symlink out of the repository; it wrote without a leading newline and turned `something_else` into `something_else*`; its notion of "enough" was looser than git's (`*` followed by `!*`, or a line with trailing whitespace, both passed); two sessions racing appended twice. Guessing at a file the user owns kept producing new ways to damage it, so it no longer guesses — the ignore file is written only when the gate creates the directory itself.
+
+- **A shelved item's `note` is truncated before it is injected.** `last_command` was capped at 160 characters and `note` was not, while both come from a file a repository can commit.
+
+### Known limitations
+
+- Two sessions shelving in the same repo at the same time can lose an entry: the state is a read-modify-write with no lock (measured: 5 of 5). Recorded in `tests/test_goal_gate.py`.
+- A `goal_state.json` the user has already committed cannot be un-tracked by an ignore file. Writes to it then show up in `git status`, which is visible rather than silent.
+
 ## [1.4.2] — 2026-09-05
 
 1.4.1 was published without the review that 1.4.0 had just made mandatory. Running it afterwards found that 1.4.1 had fixed one instance of a class and left the class alive — plus two regressions of its own.
