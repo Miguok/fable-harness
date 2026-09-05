@@ -17,3 +17,7 @@
 # 先決定直譯器再跑，不用 `A || B`：後者在兩個直譯器裝的套件不同時，會讓
 # 「前者紅、後者綠」變成整行綠，而且紅燈路徑要跑兩次（實測 2.3 倍）。
 PY=$(command -v python3 || command -v python); "$PY" -m pytest tests/test_fable_doctor.py -q -k "d9 or d11"
+# 發佈交易必須在執行路徑上（RG12／RG13，約 0.3 秒）：文件要把發佈導向
+# scripts/release.py，而且那支腳本要真的跑得起來。少了這條，發佈閘可以寫得
+# 很完整卻從來沒有人走過它——那正是這道閘存在的理由。
+PY=$(command -v python3 || command -v python); "$PY" -m pytest tests/test_release_gate.py -q -k "rg12 or rg13"

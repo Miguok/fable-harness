@@ -82,8 +82,9 @@ G9 的期望隨之反轉（提 id 仍要擋）。文件與程式不一致時，�
 最後執行：2026-09-05 21:5x → 48 passed ✅
 
 ⏳ 已知限制（本檔未涵蓋，非本輪引入）：
-  兩個 session 同時擱置項目時，load→改→save 沒有鎖，後寫的會蓋掉先寫的，
-  擱置項可能整筆消失（抗辯實測 5/5）。解鎖條件＝加檔案鎖並補並行測試。
+  ✅ 已於 v1.5.0 收掉：加了鎖檔並補 G39。⚠ G39 的第一版是**假綠**——拿掉鎖
+  照樣通過，因為兩個行程的臨界區在本機碰不到彼此；加了 `FABLE_GOAL_TEST_DELAY`
+  撐開窗口、並改用能分辨「序列化」與「各自拿舊狀態寫」的斷言之後才咬得住。
   狀態檔若已被使用者 commit 進版控，.gitignore 對它無效；此時寫入會顯示為
   ` M`，是可見的，不是靜默。
 
@@ -97,6 +98,22 @@ G9 的期望隨之反轉（提 id 仍要擋）。文件與程式不一致時，�
 
 ✅ 已驗收（本檔涵蓋）
   G1-G13，皆驅動真實的 .claude/hooks/goal_gate.py 與真實的 JSONL transcript
+  G34 兩個無關的目標不得被串成同一條階梯
+  G40 G34 的**配對**：同一個目標連續失敗時，階梯必須爬得上去
+      ——2026-09-06 抗辯抓到的 P0 就是只有 G34 沒有 G40 而溜過去的
+  G35 repo 宣告的權威驗證指令變綠 → 該目標收束
+  G36 G35 的配對：沒有宣告時，寬指令的綠不得解掉窄指令的紅（防涵蓋推論復辟）
+  G38 G35 的配對：權威綠必須出現在紅之後才算數
+  G37 同一個鍵的綠解掉同一個鍵的紅
+  G39 一個 session 的寫入不得抹掉另一個 session 剛加的擱置項
+  G41 窄／寬指令交替時階梯仍要爬得上去（除錯的標準節奏）
+  G42 一個再也不會重跑的舊紅鍵，不得永久關掉「綠燈歸零」
+  G43 同一個鍵的「判不出成敗」不得抹掉它先前的真紅（§4b-1 第 6 條）
+
+⚠ G41／G42／G43 是**第二輪**抗辯挖出來的——第一輪修完之後，同一片區域
+（「同一個目標」的定義）又出現三個缺陷。這件事本版一共設計錯兩次才對：
+先是「一則 prompt ＝一段目標」（階梯整個關掉），再是「單一計數、鍵一換歸 1」
+（交替指令永遠停在第 1 格）。最終版是**逐鍵計數**。
 ⏳ 待驗收（本檔未涵蓋）
   Claude Code 真的把 decision:block 當成擋下收工：與 verify_gate 用的是同一個
   block 封包格式（該機制已由 verify_gate 在真實 session 驗證過），但本 gate 的
@@ -715,3 +732,283 @@ def test_g13_outside_a_git_repo_is_silent(tmp_path):
                          capture_output=True, encoding="utf-8", errors="replace",
                          cwd=str(d), timeout=60)
     assert out.returncode == 0
+
+
+# ── §4b-1「同一個目標」的定義（v1.5.0）──────────────────────────────────
+def _runs(*pairs):
+    """一段 turn 內依序跑數條測試指令：((cmd, output), …)。"""
+    entries = [{"type": "user", "message": {"content": "do the thing"}}]
+    for i, (cmd, output) in enumerate(pairs):
+        uid = f"t{i}"
+        entries.append({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": uid, "name": "Bash",
+             "input": {"command": cmd}}]}})
+        entries.append({"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": uid,
+             "content": [{"type": "text", "text": output}]}]}})
+    return entries
+
+
+def _declare_verifier(repo, *lines):
+    d = repo / ".claude"
+    d.mkdir(exist_ok=True)
+    (d / "fable-verifier").write_text("\n".join(lines) + "\n",
+                                      encoding="utf-8", newline="")
+
+
+def test_g34_an_unrelated_goal_does_not_inherit_the_streak(tmp_path):
+    """G34：兩個無關的目標不得被串成同一條階梯（協議 §4b-1 第 4 條）。
+
+    這是 1.4.x 最嚴重的缺陷：跨回合累加的是**單一全域計數**，於是目標 X
+    失敗一次、使用者接著交代無關的目標 Y、Y 也失敗，閘就宣稱「這個目標已經
+    連敗兩次」並強制抗辯。兩個不同的工作之間沒有任何綠燈把階梯斷開。
+
+    斷言的是「換一個目標之後，計數從 1 開始而不是 2」——它盯的是計數
+    **歸屬於誰**。⚠ 必須與 G40 一起讀：只有這一條的話，一個「永遠歸零」的
+    實作也會綠，而那正是 2026-09-06 抗辯抓到的 P0（見 G40）。
+    """
+    repo = _repo(tmp_path, {"streak": 0, "shelved": []})
+    _run(repo, _runs(("pytest tests/test_x.py -q", FAIL_OUT)))
+    assert _state(repo)["streak"] == 1, "前置不成立：第一個目標沒被算成失敗一次"
+
+    out = _run(repo, _runs(("pytest tests/test_y.py -q", FAIL_OUT)))
+    assert _state(repo)["streak"] == 1, "無關的第二個目標被接到第一個的階梯上"
+    assert not _blocked(out), "第二個目標的第一次失敗就被當成連敗兩次而擋下"
+
+
+def test_g40_the_same_goal_still_climbs_the_ladder_across_turns(tmp_path):
+    """G40：G34 的配對——**同一個**目標連續失敗時，階梯必須爬得上去。
+
+    這一條是 2026-09-06 抗辯抓到的 P0 的守衛，而那個 P0 之所以能溜過去，
+    正是因為當時只有 G34 沒有這一條：G34 要求「不同目標不得串接」，而一個
+    **永遠歸零**的實作完全滿足它。當時的版本讓使用者每送一則 prompt 就清空
+    計數，於是同一個目標連續失敗四個回合，計數固定停在 1，一次都沒擋、
+    沒擱置——239 個測試全綠，而整個組件是死的。
+
+    真實互動的形狀在這裡很重要：每個回合中間都夾著一則使用者 prompt
+    （「還是紅的，再試一次」），所以本條**驅動真實的 UserPromptSubmit**。
+    少了那一步，這條測試就測不到當初出事的那條路徑。
+    """
+    repo = _repo(tmp_path, {"streak": 0, "shelved": []})
+    cmd = "pytest tests/test_x.py -q"
+
+    out = _run(repo, _runs((cmd, FAIL_OUT)))
+    assert _state(repo)["streak"] == 1 and not _blocked(out)
+
+    _run(repo, payload={"hook_event_name": "UserPromptSubmit"})
+    out = _run(repo, _runs((cmd, FAIL_OUT)))
+    assert _state(repo)["streak"] == 2, "同一個目標第二次失敗，計數沒有往上走"
+    assert _blocked(out), "連敗兩次沒有擋下來——整條階梯是死的"
+
+    _run(repo, payload={"hook_event_name": "UserPromptSubmit"})
+    out = _run(repo, _runs((cmd, FAIL_OUT)))
+    st = _state(repo)
+    assert len(st["shelved"]) == 1, "連敗三次沒有擱置"
+    assert _blocked(out)
+
+
+def test_g35_declared_verifier_green_closes_the_goal(tmp_path):
+    """G35：repo 宣告的權威驗證指令變綠 → 該目標視為達成（§4b-1 第 5 條）。
+
+    「跑窄的 → 紅 → 修好 → 用全套驗 → 綠」是除錯與突變測試的必然節奏，
+    而綠燈落在另一個鍵上。1.4.x 因此把已經修好的工作誤判成連敗三次並擱置
+    （2026-09-05 實際發生，v1.4.3 當時已發佈且全套 215 passed）。
+
+    解法不是讓程式去推論「寬的涵蓋窄的」——那個修法已被抗辯實測出六種會把
+    真紅燈靜默清掉的情況而退回。解法是讓 **repo 自己宣告**哪一條算數。
+    """
+    repo = _repo(tmp_path, {"streak": 0, "shelved": []})
+    _declare_verifier(repo, "# 本專案的權威驗證", "python -m pytest tests/ -q")
+
+    out = _run(repo, _runs(
+        ("python -m pytest tests/test_x.py -q -k g27", FAIL_OUT),
+        ("python -m pytest tests/ -q", PASS_OUT),
+    ))
+    st = _state(repo)
+    assert st["streak"] == 0, "權威驗證綠了，連敗數卻沒歸零"
+    # `.get`：這一回合狀態沒有任何變化，所以閘沒有寫檔——原本的 fixture
+    # 就沒有 `red` 欄位。斷言的語意是「沒有未解的紅」，不是「檔案裡有這個鍵」。
+    assert st.get("red", {}) == {}, "權威驗證綠了，窄鍵的紅卻還掛著"
+    assert not _blocked(out)
+
+
+def test_g36_a_broader_green_alone_does_not_clear_a_narrow_red(tmp_path):
+    """G36：G35 的配對——**沒有宣告**時，寬指令的綠不得解掉窄指令的紅。
+
+    這條是防復辟的：1.4.x 寫過「寬指令的綠清掉窄指令的紅」，抗辯實測出六種
+    會把真紅燈清掉的情況（先綠後紅、`pytest tests` 無尾斜線、跨工具、
+    `-k` 過濾、`--ignore`、`cd` 到別的專案）。少了這條，有人「順手」把涵蓋
+    推論加回來時全套仍會綠。
+
+    與 G35 的差別**只有一個**：有沒有那份宣告檔。所以兩條合起來證明的是
+    「解除的權力來自宣告，不是來自字串長相」。
+    """
+    repo = _repo(tmp_path, {"streak": 0, "shelved": []})
+    # 刻意不寫 .claude/fable-verifier
+
+    _run(repo, _runs(
+        ("python -m pytest tests/test_x.py -q -k g27", FAIL_OUT),
+        ("python -m pytest tests/ -q", PASS_OUT),
+    ))
+    st = _state(repo)
+    assert st["red"], "沒有宣告，寬指令的綠卻把窄鍵的紅清掉了——涵蓋推論復辟"
+    assert st["streak"] == 1
+
+
+def test_g37_same_key_green_resolves_that_keys_red(tmp_path):
+    """G37：同一個鍵的綠解掉同一個鍵的紅，而且解乾淨之後計數歸零。
+
+    這是不需要任何宣告就該成立的最小解除規則。沒有它，一個修好的目標會
+    一直帶著自己的紅鍵，下一次任何失敗都從比較高的一格開始。
+    """
+    repo = _repo(tmp_path, {"streak": 0, "shelved": []})
+    _run(repo, _runs(("pytest tests/test_x.py -q", FAIL_OUT)))
+    assert _state(repo)["red"], "前置不成立：紅鍵沒被記下來"
+
+    _run(repo, _runs(("pytest tests/test_x.py -q", PASS_OUT)))
+    st = _state(repo)
+    assert st["red"] == {}, "同一個鍵綠了，它的紅卻沒被解掉"
+    assert st["streak"] == 0, "紅鍵全解了，連敗數卻沒歸零"
+
+
+def test_g38_a_verifier_green_before_the_red_does_not_close_the_goal(tmp_path):
+    """G38：G35 的配對——權威綠必須**在紅之後**才算收束整段。
+
+    同一回合裡「全套綠 → 改壞某處 → 窄的紅」是真實存在的節奏，那時整段
+    顯然沒達成。只要看到過一次權威綠就收束，會把它讀成達成——而那是一道
+    會被靜默關掉的閘，正是 1.4.x 那版「寬綠清窄紅」被退回的理由。
+
+    與 G35 的差別**只有順序**：兩條指令、兩個結果完全相同，只是對調。
+    所以這一對證明的是「順序真的被讀進去了」，不是「有沒有宣告」。
+    """
+    repo = _repo(tmp_path, {"streak": 0, "shelved": []})
+    _declare_verifier(repo, "python -m pytest tests/ -q")
+
+    _run(repo, _runs(
+        ("python -m pytest tests/ -q", PASS_OUT),
+        ("python -m pytest tests/test_x.py -q -k g27", FAIL_OUT),
+    ))
+    st = _state(repo)
+    assert st["red"], "權威綠出現在紅之前，卻把後來的紅收掉了"
+    assert st["streak"] == 1, "後來的紅沒有被算成一次失敗"
+
+
+def test_g39_a_concurrent_write_does_not_erase_a_shelved_entry(tmp_path):
+    """G39：一個 session 的寫入不得抹掉另一個 session 剛加的擱置項。
+
+    無鎖時 load→改→save 是 read-modify-write。A 擱置一筆並寫檔的同時，B 早
+    一步讀到的是**還沒有那筆**的狀態；B 寫回去時整份覆蓋，A 那筆就消失了。
+    v1.4.3 的 CHANGELOG 記載實測 5 次全中，本版加鎖修掉。
+
+    為什麼這比「少一筆資料」嚴重：擱置項是「這件事交回使用者拍板」的**唯一
+    載體**。它消失之後，那個目標既不在待辦上、也沒有人會再提起——與被放棄
+    分不出差別，而這正是整條階梯存在的理由。
+
+    真的開兩個**行程**同時打同一個 repo，不是執行緒也不是模擬：鎖要防的就是
+    行程之間的競態，用別的東西測等於測我對競態的想像。跑 5 輪是沿用當初
+    量到 5/5 的那個樣本數。
+    """
+    for round_no in range(5):
+        repo = _repo(tmp_path / f"r{round_no}", {"streak": 2, "shelved": []})
+        paths = []
+        for name, cmd in (("a", "pytest tests/test_x.py -q"),
+                          ("b", "pytest tests/test_y.py -q")):
+            tp = repo / f"transcript_{name}.jsonl"
+            tp.write_text("".join(json.dumps(e, ensure_ascii=False) + "\n"
+                                  for e in _runs((cmd, FAIL_OUT))),
+                          encoding="utf-8", newline="")
+            paths.append(tp)
+
+        procs = []
+        for tp in paths:
+            # 沒有這個延遲，兩個行程的臨界區在本機碰不到彼此：實測把鎖
+            # 拿掉，這條照樣綠——那是假綠。延遲把窗口撐開到必然重疊。
+            pr = subprocess.Popen(
+                [sys.executable, GATE], stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                encoding="utf-8", cwd=str(repo),
+                env=dict(os.environ, FABLE_GOAL_TEST_DELAY="0.3"))
+            procs.append(pr)
+        for pr, tp in zip(procs, paths):
+            pr.stdin.write(json.dumps({"transcript_path": str(tp)}))
+            pr.stdin.close()
+        for pr in procs:
+            pr.wait(timeout=60)
+
+        st = _state(repo)
+        # 兩邊都從 streak=2 出發，序列化之後**恰好一邊**會踩到第 3 格並擱置；
+        # 另一邊看到的是已歸零的計數，只會算成 1。所以正解是「剛好 1 筆」，
+        # 不是「2 筆」——2 筆代表兩邊都拿舊狀態算，也就是鎖沒生效。
+        assert len(st["shelved"]) == 1, (
+            f"第 {round_no + 1} 輪：擱置項有 {len(st['shelved'])} 筆，預期 1 筆"
+        )
+        # 分辨「序列化」與「兩邊各自拿舊狀態寫」的關鍵：兩邊都從 streak=2
+        # 出發。序列化時後跑的那個讀到的是已歸零的計數，只會算成 1；無鎖時
+        # 兩邊都讀到 2、都踩到第 3 格、都擱置，於是都把計數寫成 0。
+        # 光看擱置筆數分不出來——兩種情況都是 1 筆（後寫的蓋掉先寫的）。
+        assert st["streak"] == 1, (
+            f"第 {round_no + 1} 輪：streak={st['streak']}，預期 1。"
+            "0 代表兩個 session 都拿過期的狀態各自擱置，後寫的蓋掉先寫的"
+        )
+
+
+def test_g41_alternating_narrow_and_broad_commands_still_climb(tmp_path):
+    """G41：除錯時窄／寬指令交替，階梯仍必須爬得上去。
+
+    2026-09-06 抗辯抓到的第二個致命洞：當時用單一 `last_key`，鍵一換就把計數
+    歸 1。而「跑窄的確認這個 case、再跑全套確認沒弄壞別的」是除錯**最標準**
+    的節奏，不是刁鑽輸入——實測六個回合全紅，計數固定停在 1，一次都沒擋。
+
+    G34（不同目標不得串接）與 G40（同一指令要爬得上去）都覆蓋不到這片中間
+    地帶：兩條指令**不完全相同、也不是無關的兩件事**。逐鍵計數同時滿足兩邊。
+    """
+    repo = _repo(tmp_path, {"streak": 0, "shelved": []})
+    narrow, broad = "pytest tests/test_x.py -q", "pytest tests/ -q"
+
+    _run(repo, _runs((narrow, FAIL_OUT)))
+    _run(repo, payload={"hook_event_name": "UserPromptSubmit"})
+    _run(repo, _runs((broad, FAIL_OUT)))
+    _run(repo, payload={"hook_event_name": "UserPromptSubmit"})
+
+    out = _run(repo, _runs((narrow, FAIL_OUT)))
+    assert _state(repo)["streak"] == 2, "同一個窄指令第二次紅，計數沒有往上走"
+    assert _blocked(out), "窄／寬交替時階梯爬不上去——這是除錯的標準節奏"
+
+
+def test_g42_a_stale_red_key_does_not_block_the_green_reset(tmp_path):
+    """G42：一個再也不會重跑的舊紅鍵，不得永久關掉「綠燈歸零」。
+
+    2026-09-06 抗辯抓到的第三個洞：歸零的條件曾寫成「有綠**而且** red 是空的」。
+    舊鍵只被同鍵綠／權威綠／擱置清掉，於是任何一個換過寫法、再也不會用同樣
+    字串跑的舊鍵會永遠留著，`not red` 從此恆假——明明中間綠過一次，閘仍然
+    宣稱「連續失敗兩次」。硬擋的假陽性，正是這道閘最該避免的東西。
+    """
+    repo = _repo(tmp_path, {"streak": 0, "shelved": []})
+    _run(repo, _runs(("pytest tests/test_old.py -q", FAIL_OUT)))   # 此後再沒跑過
+
+    _run(repo, _runs(("pytest tests/test_new.py -q", FAIL_OUT)))
+    _run(repo, _runs(("pytest tests/test_new.py -q", PASS_OUT)))
+    assert _state(repo)["streak"] == 0, "綠了卻沒歸零——舊鍵把歸零那條路關掉了"
+
+    out = _run(repo, _runs(("pytest tests/test_new.py -q", FAIL_OUT)))
+    assert _state(repo)["streak"] == 1, "中間綠過一次，卻被算成連敗第二次"
+    assert not _blocked(out)
+
+
+def test_g43_a_vacuous_rerun_does_not_erase_a_real_red(tmp_path):
+    """G43：同一個鍵的「判不出成敗」不得抹掉它先前的真紅。
+
+    協議 §4b-1 第 6 條逐字寫「既不累加也不解除，**維持原狀**」，而覆寫是解除。
+    2026-09-06 抗辯實測：紅之後同鍵再跑一次而 `no tests ran`（過濾光了、換了
+    venv 找不到模組、路徑打錯），真紅就被覆寫掉再被整筆丟棄，連敗從 2 掉回 1。
+
+    這幾種情況在真實工作裡都很常見，而它們的共同點是「這次沒測到東西」，
+    不是「上次那個問題不見了」。
+    """
+    repo = _repo(tmp_path, {"streak": 0, "shelved": []})
+    cmd = "pytest tests/test_x.py -q"
+    _run(repo, _runs((cmd, FAIL_OUT)))
+
+    out = _run(repo, _runs((cmd, FAIL_OUT), (cmd, "no tests ran in 0.01s\n")))
+    assert _state(repo)["streak"] == 2, "同鍵的空綠把先前的真紅抹掉了"
+    assert _blocked(out), "連敗兩次沒擋——判不出成敗的執行解除了一次真實失敗"

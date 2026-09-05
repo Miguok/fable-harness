@@ -20,6 +20,7 @@
   W14 W13 的配對：補上宣告檔後提示必須被收掉，否則每次開場都嘮叨
   W15 一般 repo（沒有接線型守衛）→ 不留提示
   W16 提示必須真的被講出來——驅動真實 inject_protocol.sh 斷言它輸出提示內容
+  W22 W14 的配對：收提示只能收自己的——碰撞檔名上別的 repo 的提示不得被刪或覆寫
   R6 宣告檔存在卻一條守衛都沒有（空檔／只有註解）→ 紅，不得回綠
   R7 新增的紅燈也要走 ALLOW_UNWIRED 逃生口，否則 repo 會被完全鎖死
   R1 runner：會讀 stdin 的守衛不得吃掉宣告檔後續行（eval 必須 </dev/null）
@@ -85,9 +86,39 @@ fail-then-pass：W6 是本檔存在的主因——修復前 gate 拿【整條指
 R1/R2/R3 同理：拿掉 `</dev/null`、拿掉 `|| [ -n "$line" ]`、拿掉假綠偵測，
 各自讓對應案例翻紅，且**未修時三者的 rc 都是 0**——會一邊跳過守衛一邊報綠。
 
+──────────────────────────────────────
+2026-09-05 23:25 GMT+8：碰撞類別的寫入面（W22）——外審 P2-01
+──────────────────────────────────────
+來由：外部審查（ChatGPT GPT-5.6 Sol，`reports/open_design_questions_review_20260905_chatgpt_reply_2026-09-05.md`）
+指出 v1.4.1 只修了碰撞類別的**讀取面**。實查屬實：`inject_protocol.sh:17` 有第一行
+`repo:` 比對，而 `wiring_gate.py` 的 `declared` 分支直接 `os.remove(note)`——
+A 補上宣告檔會刪掉碰撞 repo B 的提示，B 永遠不會知道（被刪與從未產生同形）。
+
+執行命令：python -m pytest tests/test_wiring_gate.py -q -k "w14 or w22"
+最後執行：2026-09-05 23:25 → 2 passed ✅（全套 216 passed）
+
+fail-then-pass 實測值：
+  修法前（`git stash push -- .claude/hooks/wiring_gate.py`）
+    → 1 failed, 1 passed：W22 `AssertionError: opt-in 時刪掉了別的 repo 的提示`
+  修法後 → 2 passed
+  ⚠ 過程中 W14 也曾翻紅一次，那是**真實缺陷不是測試噪音**：note 的 `repo:` 行由
+  生產端以 `git rev-parse --show-toplevel` 寫入（Windows 上正斜線），而 W14 原本
+  用 `WindowsPath`（反斜線）造 fixture。fixture 已改成向 git 要路徑，不寫死任一形式。
+
+W14 原本的 fixture 寫的是 `repo: x`（別人的提示）卻斷言它必須被刪——
+那條測試把缺陷編碼成了預期行為，與 W22 直接對撞。已改為寫入自己的 repo 路徑，
+於是 W14／W22 成為一組「必須仍然做得到／必須被擋下」的配對。
+
 ✅ 已驗收（本檔涵蓋）
   W1-W7 判定與擋放行為；R1-R4 runner 行為（皆驅動真實檔案，非測試裡複製的邏輯）
+  W22 寫入端的刪除路徑：不屬於自己的提示檔不得被刪
 ⏳ 待驗收（本檔未涵蓋）
+  碰撞檔名的**覆寫**面仍開著：兩個 repo 都未 opt-in 且檔名相撞時，後寫的一方
+    會覆蓋先寫的一方，而 ownership check 修不了它——A 若因為「這是 B 的檔案」
+    而不寫，A 就永遠得不到提示，兩種選擇都有一方失去提示。
+    根因是「拿 repo 路徑推導檔名」這個設計本身，不是缺一道檢查。
+    解鎖條件＝改用不會碰撞的命名（外審建議 `git rev-parse --git-path`），
+    見 `reports/open_design_questions_disposition_20260905.md` 票 F-04／F-05。
   R1 的偶發紅燈：2026-09-05 抗辯過程中，某次全量跑出現一次
     `test_r1...` 斷言 `0 == 1`（runner 回 0、無 RED 行），其後連跑 12 次未複現。
     現況標 `UNVERIFIED`——症狀與「宣告檔讀取失敗→靜默回綠」同形，本輪已補
@@ -299,19 +330,25 @@ def test_r7_allow_unwired_also_escapes_the_zero_guard_red(tmp_path):
     assert rc == 0 and "accepted on the record" in out
 
 
-def _note_path(state_dir, repo):
-    """提示檔路徑——刻意用 **shell 端** 的算法算，不是抄生產端那份。
+def _note_path(repo):
+    """提示檔路徑——**問 git**，不從 repo 路徑推導檔名。
 
-    抄生產端的話，這個 helper 永遠會跟 wiring_gate.py 一致，於是「寫入端與
-    讀取端算出不同檔名」這種分歧它一輩子測不到（2026-09-05 抗辯實證：
-    Python 逐字元 vs `tr` 逐位元組，非 ASCII 路徑上兩端就是不同的檔名）。
+    1.4.x 的這個 helper 用 shell 端的算法重算一次檔名，因為當時真的有兩份
+    算法（Python 逐字元 vs `tr` 逐位元組）可能分歧。1.5.0 把兩端都改成問
+    `git rev-parse --git-path` 之後，那個分歧類別在結構上消失了——再留著
+    重算，等於把一份已經死掉的算法養在測試裡，而它永遠不會再翻紅。
+
+    這裡問的是 git，與生產端問的是**同一個權威來源**，不是互相抄。
     """
-    safe = re.sub(rb"[^A-Za-z0-9]", b"_", str(repo).encode("utf-8")).decode("ascii")
-    return state_dir / f"wiring_unregistered_{safe}.txt"
+    p = subprocess.run(["git", "-C", str(repo), "rev-parse", "--git-path",
+                        "fable/wiring_unregistered.txt"],
+                       capture_output=True, encoding="utf-8",
+                       check=True).stdout.strip()
+    return repo / p if not os.path.isabs(p) else type(repo)(p)
 
 
-def _commit_with_state(repo, state_dir, utf8_mode=None, cmd='git commit -m "x"'):
-    env = dict(os.environ, FABLE_STATE_DIR=str(state_dir))
+def _commit(repo, utf8_mode=None, cmd='git commit -m "x"'):
+    env = dict(os.environ)
     if utf8_mode is not None:
         env["PYTHONUTF8"] = utf8_mode
     out = subprocess.run(
@@ -336,8 +373,8 @@ def test_w13_repo_with_guards_but_no_declaration_leaves_a_note(tmp_path):
     subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
     state = tmp_path / "state"
 
-    assert _commit_with_state(repo, state) == "", "未 opt-in 的 repo 不得被擋"
-    note = _note_path(state, repo)
+    assert _commit(repo) == "", "未 opt-in 的 repo 不得被擋"
+    note = _note_path(repo)
     assert note.exists(), "有守衛卻沒宣告，卻沒有留下任何提示"
     body = note.read_text(encoding="utf-8")
     # git 回的路徑用正斜線，Windows 的 Path 用反斜線——比對前先正規化
@@ -349,15 +386,95 @@ def test_w14_note_is_cleared_once_the_repo_opts_in(tmp_path):
     """W14：W13 的配對——宣告檔補上了就要把提示收掉。
 
     否則它會永遠掛在每次 session 開場，而每次都出現的提示會被當成雜訊略過。
-    """
-    repo = _git_repo(tmp_path / "r", precommit="#!/bin/sh\n# .claude/wiring-guards\n")
-    state = tmp_path / "state"
-    state.mkdir()
-    note = _note_path(state, repo)
-    note.write_text("repo: x\nstale\n", encoding="utf-8")
 
-    _commit_with_state(repo, state)
+    提示檔**由閘自己寫出來**，不手造 fixture：手造的話，這條測到的是我對
+    檔案格式的想像，而不是寫入端與刪除端是否對得上。2026-09-05 就吃過一次
+    ——手造的 fixture 用反斜線路徑，生產端用 git 的正斜線，兩者對不上。
+    """
+    repo = _git_repo(tmp_path / "r", declare=False,
+                     precommit="#!/bin/sh\n# .claude/wiring-guards\n")
+    (repo / "tests").mkdir()
+    (repo / "tests" / "test_gate_entrypoints.py").write_text("x\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+
+    _commit(repo)
+    note = _note_path(repo)
+    assert note.exists(), "前置不成立：閘沒先寫出提示，這條就測不到收提示"
+
+    # 現在才 opt-in
+    (repo / ".claude").mkdir(exist_ok=True)
+    (repo / ".claude" / "wiring-guards").write_text("true\n", encoding="utf-8")
+    _commit(repo)
     assert not note.exists(), "已經 opt-in 了，提示卻還留著"
+
+
+def test_w22_note_lives_where_a_hostile_repo_cannot_put_one(tmp_path):
+    """W22：提示檔必須在 git 私有目錄內，不在工作目錄裡。
+
+    提示的內容會被 SessionStart 注入上下文。它一旦落在工作目錄，就變成一個
+    **repo 可以 commit 的東西**——任何人 clone 一份惡意 repo，開場就吃下對方
+    寫好的內容。這是提示檔搬家方案唯一不可協商的約束（1.5.0 的抗辯否決了
+    搬進 `<repo>/.fable/` 的版本，就是為了這條）。
+
+    `.git` 滿足它：不被 clone 帶走、不進 `git status`、`git ls-files` 看不到。
+    這條測的是那三個性質本身，不是「路徑字串裡有沒有 .git」——後者換個寫法
+    就繞過去了。
+    """
+    repo = _git_repo(tmp_path / "r", declare=False)
+    (repo / "tests").mkdir()
+    (repo / "tests" / "test_gate_entrypoints.py").write_text("x\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+
+    _commit(repo)
+    note = _note_path(repo)
+    assert note.exists(), "前置不成立：沒有提示檔就測不到它放在哪"
+
+    tracked = subprocess.run(["git", "-C", str(repo), "ls-files"],
+                             capture_output=True, encoding="utf-8",
+                             check=True).stdout
+    assert "wiring_unregistered" not in tracked, "提示檔進了版控——會隨 clone 散佈"
+
+    status = subprocess.run(["git", "-C", str(repo), "status", "--porcelain"],
+                            capture_output=True, encoding="utf-8",
+                            check=True).stdout
+    assert "wiring_unregistered" not in status, "提示檔出現在 git status，會被誤 add"
+
+    clone = tmp_path / "clone"
+    subprocess.run(["git", "clone", "-q", str(repo), str(clone)], check=True)
+    assert not _note_path(clone).exists(), "提示檔被 clone 帶走了"
+
+
+def test_w18_colliding_repo_paths_no_longer_share_a_note(tmp_path):
+    """W18：舊命名把路徑的非英數字元全換成底線，於是不同 repo 撞成同一個檔名。
+
+    `x/evil-a`、`x/evil_a`、`x/evil/a` 三者同名。1.4.1 補了讀取端的 `repo:`
+    比對、1.5.0 補了刪除端的比對，但那些都只是「撞了之後不要造成傷害」；
+    **覆寫**面補不起來，因為兩個都沒 opt-in 的碰撞 repo，後寫的必然蓋掉先寫的。
+
+    這條盯的是**根因**：檔名不再由路徑推導，所以撞不起來。斷言的是兩個在舊
+    命名下同名的 repo 現在拿到不同的路徑——換言之，它抓得到「有人把命名改
+    回從路徑推導」這件事，不論那個新算法長什麼樣。
+
+    ⚠ 斷言對象必須是**生產端的 `wiring_gate.note_path`**，不是本檔的
+    `_note_path` helper。第一版寫成後者，於是它量的是測試自己的 git 查詢——
+    把生產端整個換回 1.4.x 的共用目錄＋路徑推導，這條照樣綠（2026-09-06 實測）。
+    守衛的斷言對象與被保護對象必須是同一份東西，否則它只是在證明我想像中的
+    形狀會被抓到。
+    """
+    a = _git_repo(tmp_path / "evil-a", declare=False)
+    b = _git_repo(tmp_path / "evil_a", declare=False)
+
+    def old(p):
+        return re.sub(rb"[^A-Za-z0-9]", b"_",
+                      str(p).encode("utf-8")).decode("ascii")
+
+    assert old(a) == old(b), "前置不成立：這兩個路徑在舊命名下並不相撞"
+
+    pa, pb = wiring_gate.note_path(str(a)), wiring_gate.note_path(str(b))
+    assert pa and pb, "生產端算不出提示檔路徑"
+    assert os.path.abspath(pa) != os.path.abspath(pb), (
+        "兩個舊命名下同名的 repo 仍共用同一個提示檔——命名又回到從路徑推導了"
+    )
 
 
 def test_w15_ordinary_repo_gets_no_note(tmp_path):
@@ -368,8 +485,8 @@ def test_w15_ordinary_repo_gets_no_note(tmp_path):
     subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
     state = tmp_path / "state"
 
-    _commit_with_state(repo, state)
-    assert not _note_path(state, repo).exists(), "對沒有接線型守衛的 repo 也出聲"
+    _commit(repo)
+    assert not _note_path(repo).exists(), "對沒有接線型守衛的 repo 也出聲"
 
 
 def test_w16_sessionstart_actually_surfaces_the_note(tmp_path):
@@ -377,19 +494,20 @@ def test_w16_sessionstart_actually_surfaces_the_note(tmp_path):
 
     驅動真實的 inject_protocol.sh，斷言它把提示內容輸出出來（SessionStart 的
     輸出會進模型上下文，這是唯一已驗證可達的路徑）。
+
+    提示檔由**閘自己寫**，不手造：一端寫、另一端讀，才抓得到兩端對不上的
+    分歧——手造 fixture 只證明「我想像的格式讀得出來」。
     """
     repo = _git_repo(tmp_path / "r", declare=False)
-    home = tmp_path / "home"
-    (home / ".claude" / "state").mkdir(parents=True)
-    note = _note_path(home / ".claude" / "state", repo)
-    # git rev-parse 回的是正斜線，第一行要與它逐字相同才會被印出（見 W18）
-    note.write_text("repo: %s\ntests/test_gate_entrypoints.py\n"
-                    % str(repo).replace("\\", "/"), encoding="utf-8")
+    (repo / "tests").mkdir()
+    (repo / "tests" / "test_gate_entrypoints.py").write_text("x\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    _commit(repo)
+    assert _note_path(repo).exists(), "前置不成立：閘沒寫出提示檔"
 
     inject = os.path.join(ROOT, ".claude", "hooks", "inject_protocol.sh")
     out = subprocess.run(["sh", inject], capture_output=True, encoding="utf-8",
-                         errors="replace", cwd=str(repo), timeout=60,
-                         env=dict(os.environ, HOME=str(home)))
+                         errors="replace", cwd=str(repo), timeout=60)
     assert "FABLE-PROTOCOL" in out.stdout, "協議本體沒被注入"
     assert "尚未 opt-in" in out.stdout, "提示檔存在，SessionStart 卻沒講出來"
     assert "test_gate_entrypoints.py" in out.stdout
@@ -412,7 +530,7 @@ def test_w17_note_survives_a_non_ascii_repo_path(tmp_path):
 
     # PYTHONUTF8=0：那是原廠 zh-TW／ja／ko Windows 的預設。作者機器設了 =1，
     # 於是這條測試曾經「只在作者機器上綠」——它證明的是作者的環境，不是修法。
-    _commit_with_state(repo, home / ".claude" / "state", utf8_mode="0")
+    _commit(repo, utf8_mode="0")
 
     inject = os.path.join(ROOT, ".claude", "hooks", "inject_protocol.sh")
     out = subprocess.run(["sh", inject], capture_output=True, encoding="utf-8",
@@ -436,8 +554,8 @@ def test_w21_cjk_file_names_stay_readable_in_the_note(tmp_path):
     subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
     state = tmp_path / "state"
 
-    _commit_with_state(repo, state)
-    body = _note_path(state, repo).read_text(encoding="utf-8")
+    _commit(repo)
+    body = _note_path(repo).read_text(encoding="utf-8")
     assert "test_測試_wiring.py" in body, f"檔名沒保持可讀：{body!r}"
 
 
@@ -455,30 +573,9 @@ def test_w20_gate_still_blocks_in_a_cjk_path_under_platform_default(tmp_path):
     repo = _git_repo(tmp_path / "測試專案",
                      precommit="#!/bin/sh\n# runs .claude/wiring-guards\n")
     state = tmp_path / "state"
-    out = _commit_with_state(repo, state, utf8_mode="0",
+    out = _commit(repo, utf8_mode="0",
                              cmd='git commit --no-verify -m "x"')
     assert _is_deny(out), "CJK 路徑下 --no-verify 沒被擋——整道閘對這些使用者是關的"
-
-
-def test_w18_a_note_from_another_repo_is_not_printed(tmp_path):
-    """W18：檔名把非英數字元全換成底線，於是不同 repo 會撞成同一個檔名。
-
-    `x/evil-a`、`x/evil_a`、`x/evil/a` 三者同名——不比對第一行的 `repo:`，
-    B repo 的開場就會印出 A repo 的檔案清單。
-    """
-    repo = _git_repo(tmp_path / "mine", declare=False)
-    home = tmp_path / "home"
-    state = home / ".claude" / "state"
-    state.mkdir(parents=True)
-    note = _note_path(state, repo)
-    note.write_text("repo: /somewhere/else\nsecret/other_repo_file_wiring.py\n",
-                    encoding="utf-8")
-
-    inject = os.path.join(ROOT, ".claude", "hooks", "inject_protocol.sh")
-    out = subprocess.run(["sh", inject], capture_output=True, encoding="utf-8",
-                         errors="replace", cwd=str(repo), timeout=60,
-                         env=dict(os.environ, HOME=str(home)))
-    assert "other_repo_file_wiring.py" not in out.stdout, "印出了別的 repo 的檔名"
 
 
 def test_w19_note_output_is_bounded(tmp_path):
@@ -498,7 +595,7 @@ def test_w19_note_output_is_bounded(tmp_path):
     home = tmp_path / "home"
     state = home / ".claude" / "state"
     state.mkdir(parents=True)
-    _commit_with_state(repo, state)
+    _commit(repo)
 
     inject = os.path.join(ROOT, ".claude", "hooks", "inject_protocol.sh")
     out = subprocess.run(["sh", inject], capture_output=True, encoding="utf-8",
@@ -508,7 +605,7 @@ def test_w19_note_output_is_bounded(tmp_path):
     # 拿掉單行截斷仍然會綠（實測 6597 < 20000）。
     # 兩端各自都要有上限：讀取端的 `sed -n '2,9p'` 會蓋住寫入端沒截的情形，
     # 所以直接盯提示檔本身，否則寫入端的 [:8] 是沒有守衛的。
-    note_lines = _note_path(state, repo).read_text(encoding="utf-8").splitlines()
+    note_lines = _note_path(repo).read_text(encoding="utf-8").splitlines()
     assert len(note_lines) <= 9, f"提示檔筆數沒有上限：{len(note_lines) - 1}"
     entries = [ln for ln in out.stdout.splitlines() if ln.startswith("  - ")]
     assert len(entries) <= 8, f"注入的筆數沒有上限：{len(entries)}"

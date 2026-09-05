@@ -9,12 +9,13 @@ cat "$DIR/fable_protocol.md"
 # 的輸出（allow 會丟掉理由、exit 0 的 stderr 被丟棄）；SessionStart 的輸出才會進上下文。
 ROOT=$(git rev-parse --show-toplevel 2>/dev/null || true)
 if [ -n "$ROOT" ]; then
-    SAFE=$(printf '%s' "$ROOT" | tr -c 'A-Za-z0-9' '_')
-    NOTE="$HOME/.claude/state/wiring_unregistered_$SAFE.txt"
-    # 只印屬於「這個」repo 的提示：檔名把非英數字元一律換成底線，於是
-    # `x/evil-a`、`x/evil_a`、`x/evil/a` 會撞成同一個檔名——不比對第一行的話，
-    # B repo 的開場會印出 A repo 的檔名。
-    if [ -f "$NOTE" ] && [ "$(head -1 "$NOTE" 2>/dev/null)" = "repo: $ROOT" ]; then
+    # 路徑向 git 要，不從 repo 路徑推導檔名——`--git-path` 主 repo 回
+    # `.git/fable/…`、linked worktree 回各自的 `.git/worktrees/<name>/fable/…`。
+    # 舊寫法把非英數字元全換成底線，於是 `x/evil-a`、`x/evil_a`、`x/evil/a`
+    # 撞成同一個檔名；而且兩端各算一次（Python 逐字元 vs `tr` 逐位元組）
+    # 在非 ASCII 路徑上算出不同結果。兩個病都由「問 git」一次解掉。
+    NOTE=$(git rev-parse --git-path fable/wiring_unregistered.txt 2>/dev/null || true)
+    if [ -n "$NOTE" ] && [ -f "$NOTE" ]; then
         echo ""
         echo "## 接線關卡：這個 repo 尚未 opt-in"
         echo ""

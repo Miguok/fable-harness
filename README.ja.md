@@ -4,7 +4,7 @@
 
 [English](README.en.md) &nbsp;·&nbsp; [繁體中文](README.md) &nbsp;·&nbsp; [简体中文](README.zh-CN.md) &nbsp;·&nbsp; **日本語** &nbsp;·&nbsp; [한국어](README.ko.md)
 
-![Version: 1.4.3](https://img.shields.io/badge/version-1.4.3-blue.svg) &nbsp; ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
+![Version: 1.5.0](https://img.shields.io/badge/version-1.5.0-blue.svg) &nbsp; ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 
 ## これは何か
 

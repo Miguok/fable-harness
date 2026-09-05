@@ -21,7 +21,12 @@
                   因為第二次沒中，代表根因判定本身可能就是錯的。
   連續失敗 3 次 → 擋一次收工並**自動寫入擱置清單**：停止這一項，
                   交回用戶拍板，改做不相關的項目。
-  任何一次測試全綠 → 計數歸零。
+
+「同一個目標」的定義見協議 §4b-1，這裡只記三條會影響閱讀的：
+  · 目標的身分＝**測試指令的鍵**（剝掉 shell 雜訊與管線尾巴），不是對話的分段。
+  · **每個鍵有自己的次數**：不同的鍵互不影響，交替跑窄／寬指令時各自累加。
+  · 解除：同鍵的綠解該鍵；`.claude/fable-verifier` 宣告的指令變綠 → 整個目標收束，
+    但那個綠必須**出現在紅之後**。除此之外不做任何涵蓋推論。
 
 用戶回來時：`UserPromptSubmit` 會把擱置清單注入；若清單非空而這一輪
 從頭到尾沒提到它，`Stop` 會擋一次，確保它真的被講出來而不是靜靜躺著。
@@ -78,6 +83,38 @@ SOFT_FAIL_MARKERS = (
 ADVERSARIAL_AT = int(os.environ.get("FABLE_GOAL_ADVERSARIAL_AT", "2"))
 SHELVE_AT = int(os.environ.get("FABLE_GOAL_SHELVE_AT", "3"))
 STATE_REL = os.path.join(".fable", "goal_state.json")
+# 權威驗證指令的宣告檔。放 `.claude/` 而不是 `.fable/`：後者被本閘自己寫的
+# `.gitignore` 蓋成 `*`，宣告會變成每個人各留一份、無法隨 repo 傳遞——而
+# 「什麼算驗過了」是團隊的共同約定，不是個人設定。與 `wiring-guards` 同目錄。
+VERIFIER_REL = os.path.join(".claude", "fable-verifier")
+
+
+def load_verifiers(root):
+    """repo 宣告的權威驗證指令，正規化成鍵；沒宣告就是空集合。
+
+    這是「什麼綠可以解掉整段目標」的**唯一**來源。1.4.x 曾試過反過來做：
+    由程式推論「寬指令的綠涵蓋窄指令的紅」，抗辯實測出六種會把真紅燈靜默
+    清掉的情況（先綠後紅、`pytest tests` 無尾斜線、跨工具、`-k` 過濾、
+    `--ignore`、`cd` 到別的專案），該修法已退回。
+
+    差別在**誰說了算**：推論是程式猜；宣告是 repo 自己講，一次設定、之後
+    沒有每次操作的負擔，而且猜錯的可能性歸零。
+    """
+    p = os.path.join(root, VERIFIER_REL)
+    try:
+        with open(p, encoding="utf-8") as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        return frozenset()
+    keys = set()
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        k = test_key(line)
+        if k:
+            keys.add(k)
+    return frozenset(keys)
 
 
 # ── transcript ────────────────────────────────────────────────────────────
@@ -207,10 +244,15 @@ def _verdict(text):
 
 
 def analyze_turn(turn):
-    """Return (test_ran, test_failed, last_test_command).
+    """Return ({test_key: "pass"|"fail"}, {test_key: raw command}).
 
     A turn counts as failed only when a test actually ran AND its output
     carries an unambiguous failure marker. Silence is not failure.
+
+    逐鍵回報而不是回一個 bool：呼叫端要能分辨「哪一個目標紅了」與「哪一個
+    綠了」，才做得到協議 §4b-1 第 5 條的「同鍵的綠解掉同鍵的紅」。1.4.x 回
+    bool，於是解除只能是全有全無，而那正是誤判的來源之一。
+    判不出成敗的（"vacuous"）在這裡就被濾掉，不進呼叫端的視野。
     """
     test_ids, commands = {}, {}
     for e in turn:
@@ -230,7 +272,7 @@ def analyze_turn(turn):
                 commands[b.get("id")] = cmd
 
     if not test_ids:
-        return False, False, ""
+        return {}, {}, {}
 
     # Per test command, keep only its LAST result in this turn.
     #
@@ -245,6 +287,8 @@ def analyze_turn(turn):
     # green run afterwards would mask a target that is genuinely still red.
     last_by_cmd = {}
     raw_by_key = {}
+    order = {}   # 這個鍵最後一次出結果的序號——用來回答「綠是不是在紅之後」
+    seq = 0
     for e in turn:
         if e.get("type") != "user":
             continue
@@ -259,7 +303,16 @@ def analyze_turn(turn):
                 continue
             raw = commands.get(tid, "")
             key = test_key(raw)
-            last_by_cmd[key] = _verdict(_result_text(b))
+            v = _verdict(_result_text(b))
+            if v == "vacuous" and key in last_by_cmd:
+                # 判不出成敗的執行不得覆寫同一個鍵先前的結果——協議 §4b-1
+                # 第 6 條逐字寫「維持原狀」，而覆寫是解除。2026-09-06 抗辯
+                # 實測：紅之後同鍵跑一次 `no tests ran`／換了 venv 找不到模組，
+                # 真紅就被抹掉，連敗從 2 掉回 1、擋不下來。
+                continue
+            seq += 1
+            last_by_cmd[key] = v
+            order[key] = seq
             # 鍵是用來「認出同一個目標」的，回報時要給的是使用者實際下的那條指令：
             # 擱置紀錄的用途就是讓人看出當時卡在哪，存截短過的鍵等於把它丟掉。
             raw_by_key[key] = raw
@@ -268,10 +321,7 @@ def analyze_turn(turn):
     # pass: otherwise one filtered-out pytest between two real failures resets
     # the ladder, and the second rung is never reached.
     verdicts = {c: v for c, v in last_by_cmd.items() if v != "vacuous"}
-    if not verdicts:
-        return False, False, ""
-    still_red = [c for c, v in verdicts.items() if v == "fail"]
-    return True, bool(still_red), raw_by_key.get(still_red[-1], "") if still_red else ""
+    return verdicts, raw_by_key, order
 
 
 # ── state ─────────────────────────────────────────────────────────────────
@@ -302,7 +352,10 @@ def load_state(root):
     """
     p = state_path(root)
     if not os.path.exists(p):
-        return {"streak": 0, "shelved": []}
+        # 欄位要與下方 setdefault 那組**逐一相同**：這條早退繞過它們，於是
+        # 少一個欄位就會在呼叫端 KeyError，而 main 的 fail-open 會把整道閘
+        # 靜靜關掉——沒有紅燈、沒有訊息。2026-09-06 加 `last_key` 時踩過一次。
+        return {"streak": 0, "shelved": [], "red": {}}
     if not inside(root, p):
         # 跟著連結讀出去的內容會被 run_prompt 原樣注入上下文——擋寫不擋讀，
         # 只擋掉外洩，沒擋掉注入。
@@ -316,6 +369,12 @@ def load_state(root):
         return None
     s.setdefault("streak", 0)
     s.setdefault("shelved", [])
+    # v1.5.0 新增 `red`（逐鍵的次數）。舊檔沒有它，補上即可——**不清掉既有的
+    # `streak`**：那個數字代表一次還沒收束的連敗，歸零等於把它抹掉。舊版升級
+    # 時它會被接到下一個失敗的鍵上（見 run_stop 的逐鍵計數段）。
+    s.setdefault("red", {})
+    if not isinstance(s["red"], dict):
+        s["red"] = {}
     return s
 
 
@@ -367,6 +426,94 @@ def inside(root, path):
     return pp == rp or pp.startswith(rp + os.sep)
 
 
+def ensure_state_dir(d):
+    """建 `.fable`，而且**只在自己建立它時**寫 `.gitignore`。
+
+    唯一正本：鎖與 `save_state` 都走這裡。兩處各寫一次的話，先跑到的那個
+    會把目錄建出來，另一個的「是我建的嗎」就永遠是 False——`.gitignore`
+    從此不會被寫，狀態檔開始出現在使用者的 `git status`。
+    """
+    fresh = not os.path.exists(d)
+    os.makedirs(d, exist_ok=True)
+    if fresh:
+        # 只在我們自己建立時才寫。猜使用者既有的 .gitignore 該不該改，
+        # 在 1.4.3 之前製造了四種新傷害（見該版 CHANGELOG）。
+        with open(os.path.join(d, ".gitignore"), "w",
+                  encoding="utf-8", newline="") as fh:
+            fh.write("*\n")
+
+
+LOCK_REL = os.path.join(".fable", "goal_state.lock")
+MAX_TRACKED_GOALS = 16    # `red` 裡最多留幾個目標的次數
+LOCK_STALE_SECONDS = 30   # 超過這個歲數的鎖視為前一個持有者當掉了
+LOCK_WAIT_SECONDS = 1.5   # 等不到就不鎖繼續跑（見 state_lock 的 fail-open 說明）
+LOCK_POLL_SECONDS = 0.02
+
+
+class state_lock(object):
+    """把 load→改→save 圈起來，讓兩個 session 不會互相蓋掉。
+
+    無鎖時這是一個 read-modify-write：兩邊都讀到「shelved 有 1 筆」，各自
+    append 自己那筆，後寫的整個覆蓋先寫的——**一筆擱置項就這樣消失**，
+    而擱置項正是「交回使用者拍板」的唯一載體，消失等於那件事沒有人再提。
+    v1.4.3 實測 5 次全中。
+
+    用 `O_CREAT|O_EXCL` 建一個鎖檔，不用 fcntl／msvcrt：那兩個在 Windows 與
+    POSIX 上的語意不同，而這個套件兩邊都要跑。
+
+    ⚠ 拿不到鎖時**照樣往下做**（fail-open）。這道閘絕不能把 session 卡住：
+    一次遺失的更新比一個永遠結束不了的回合便宜得多。搶不到鎖的情況需要兩個
+    session 在同一秒寫同一個 repo，本來就罕見。
+    """
+
+    def __init__(self, root):
+        self.path = os.path.join(root, LOCK_REL)
+        self.fd = None
+
+    def __enter__(self):
+        # `.fable` 不是目錄時（使用者放了一個同名檔案）直接放棄上鎖：不這樣的話
+        # `ensure_state_dir` 的 FileExistsError 會掉進下面「鎖已存在」那支
+        # except，接著 `getmtime` 對不存在的鎖檔再拋一次，於是空轉到逾時——
+        # **每一次 Stop 與 UserPromptSubmit 都固定停 1.5 秒**（實測 1.50 秒）。
+        # 那個情況本來就寫不進狀態，`save_or_complain` 會出聲，不需要鎖。
+        d = os.path.dirname(self.path)
+        if os.path.exists(d) and not os.path.isdir(d):
+            return self
+        deadline = time.time() + LOCK_WAIT_SECONDS
+        while True:
+            try:
+                # 用共用的建立函式，不自己 makedirs：`save_state` 只在
+                # **它自己建立目錄時**才寫 `.gitignore`，鎖若搶先把目錄建出來，
+                # 那個判斷會變成 False，狀態檔就會出現在使用者的 git status 裡。
+                ensure_state_dir(os.path.dirname(self.path))
+                self.fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                return self
+            except FileExistsError:
+                # 前一個持有者當掉時鎖檔會留下來。因為 `__enter__` 是
+                # fail-open，後果不是「閘關掉」而是**每次都多等 1.5 秒、
+                # 並退化成不序列化**——仍然要清，但別把代價說得比實際嚴重。
+                try:
+                    if time.time() - os.path.getmtime(self.path) > LOCK_STALE_SECONDS:
+                        os.remove(self.path)
+                        continue
+                except OSError:
+                    pass
+            except OSError:
+                return self  # 目錄不可寫等等：不鎖，但也不擋人
+            if time.time() >= deadline:
+                return self
+            time.sleep(LOCK_POLL_SECONDS)
+
+    def __exit__(self, *exc):
+        if self.fd is not None:
+            try:
+                os.close(self.fd)
+                os.remove(self.path)
+            except OSError:
+                pass
+        return False
+
+
 def save_state(root, state):
     p = state_path(root)
     d = os.path.dirname(p)
@@ -378,26 +525,9 @@ def save_state(root, state):
         # that raise used to happen outside where the caller's blanket except
         # swallowed it — the gate went quiet while an unreadable state file
         # blocks loudly. Both failures behave the same way now.
-        fresh = not os.path.exists(d)
-        os.makedirs(d, exist_ok=True)
+        ensure_state_dir(d)
         if not inside(root, d) or not inside(root, p):
             return False
-        # Only write the ignore file when we created the directory ourselves.
-        #
-        # The previous version read an existing `.claude/.gitignore` and
-        # appended `*` when it looked insufficient. Every part of that was
-        # wrong: `open(…, "a")` follows a symlink out of the repository, it
-        # appended without a leading newline and turned `something_else` into
-        # `something_else*`, its idea of "sufficient" was looser than git's
-        # (`*` followed by `!*`, or a line with trailing spaces, all passed),
-        # and two sessions racing wrote `*` twice. Guessing at a file the user
-        # owns kept producing new ways to damage it, so it no longer guesses.
-        # A user who keeps their own `.fable/.gitignore` owns that decision;
-        # INSTALL.md says what the directory holds.
-        if fresh:
-            with open(os.path.join(d, ".gitignore"), "w",
-                      encoding="utf-8", newline="") as fh:
-                fh.write("*\n")
         with open(tmp, "w", encoding="utf-8", newline="") as fh:
             json.dump(state, fh, ensure_ascii=False, indent=2)
             fh.write("\n")
@@ -441,9 +571,14 @@ def block(reason):
 def run_stop(data, root):
     entries = load_entries(data["transcript_path"])
     turn = current_turn(entries)
-    ran, failed, cmd = analyze_turn(turn)
-    cmd = redact(cmd)
+    verdicts, raw_by_key, order = analyze_turn(turn)
     state = load_state(root)
+    # 測試用的接縫，預設 0：把 load 與 save 之間的窗口撐開，讓兩個行程的
+    # 臨界區確定重疊。沒有它，並行測試在本機是**假綠**——實測拿掉鎖照樣通過，
+    # 因為 python 啟動的百毫秒遠大於這段微秒級的讀改寫，競態根本碰不到。
+    # 一條驗不出東西的並行測試，比沒有更糟：它會讓人以為這件事已經處理好了。
+    if os.environ.get("FABLE_GOAL_TEST_DELAY"):
+        time.sleep(float(os.environ["FABLE_GOAL_TEST_DELAY"]))
     if state is None:
         # Say so. Refusing to overwrite protects the data, but staying silent
         # about it would leave the whole component switched off with nobody
@@ -458,71 +593,144 @@ def run_stop(data, root):
         )
         return 0
 
-    if ran and not failed:
-        # A green run clears the streak. This is the only way out other than
-        # shelving — otherwise the counter would ratchet forever and the gate
-        # would eventually fire on unrelated work.
-        if state["streak"]:
+    # ── 解除（協議 §4b-1 第 5 條）────────────────────────────────────────
+    # 同一個鍵的綠解掉同一個鍵的紅；repo 宣告的權威驗證指令的綠解掉整段。
+    # 除此之外不做任何涵蓋推論——「寬指令的綠清掉窄指令的紅」已被抗辯實測
+    # 出六種會把真紅燈靜默清掉的情況而退回。
+    red = state.setdefault("red", {})
+    before = (dict(red), state["streak"])
+    greens = {k for k, v in verdicts.items() if v == "pass"}
+    reds = {k for k, v in verdicts.items() if v == "fail"}
+    for k in greens:
+        red.pop(k, None)
+
+    # 權威驗證綠了：整段目標視為達成，連還沒各自轉綠的窄鍵也一併收掉。
+    # 這是「跑窄的→修好→用全套驗」這個必然節奏唯一的正解——它之所以安全，
+    # 是因為「哪一條算權威」由 repo 自己宣告，不是程式從字串猜的。
+    #
+    # 但必須**綠在紅之後**才算數。同一回合裡「全套綠 → 改壞 → 窄的紅」也
+    # 存在，那時整段顯然沒達成；只看「有沒有出現過權威綠」會把它讀成達成，
+    # 而那是一道會被靜默關掉的閘——正是退回上一版修法的理由。
+    latest_red = max((order.get(k, 0) for k in reds), default=0)
+    if any(order.get(k, 0) > latest_red for k in greens & load_verifiers(root)):
+        red.clear()
+        state["streak"] = 0
+        if (dict(red), state["streak"]) != before:
+            save_or_complain(root, state)
+        return block_unexplained_shelf(state)
+
+    fresh_red = [k for k, v in verdicts.items() if v == "fail"]
+
+    if not fresh_red:
+        # 這一回合沒有觀察到任何紅。有綠就歸零——「這一回合什麼都沒失敗」，
+        # 階梯本來就該回到起點；還沒被解掉的舊鍵留在 `red` 裡保住它們各自的
+        # 次數，但**不參與這一回合的判定**。
+        #
+        # 歸零的條件是「這一回合真的有綠」，不是「紅鍵字典是空的」：判不出
+        # 成敗的執行（沒有測試跑到、工具沒裝）兩者皆非，必須什麼都不改——
+        # 拿空字典當「已解決」會把一次真實的連敗抹掉（G15／G19 盯這條）。
+        #
+        # ⚠ 曾經寫成 `greens and not red`，那把一個**再也不會被重跑的舊鍵**
+        # 變成永久的絆腳石：`not red` 從此恆假，於是「綠燈歸零」整條路死掉，
+        # 明明中間綠過一次，閘仍然宣稱「連續失敗兩次」（2026-09-06 抗辯實測）。
+        if greens and state["streak"]:
             state["streak"] = 0
-            if not save_or_complain(root, state):
-                return 0
+        if (dict(red), state["streak"]) != before:
+            save_or_complain(root, state)
+        return block_unexplained_shelf(state)
 
-    if ran and failed:
-        state["streak"] += 1
-        streak = state["streak"]
+    # ── 每個目標各自計數（協議 §4b-1 第 1、4 條）──────────────────────────
+    #
+    # 「同一個目標」＝同一個鍵，而**每個鍵有自己的次數**。這是第三版設計，
+    # 前兩版各自壞在一邊，兩邊都被抗辯實測抓到：
+    #
+    #   v1.4.x：單一全域計數 → 目標 X 失敗一次、接著做無關的 Y 也失敗，
+    #           閘宣稱「這個目標連敗兩次」。把不相關的工作串成一條。
+    #   本版第一稿：使用者送出 prompt 就換段 → Stop 每回合最多加一次，
+    #           而使用者每說一句話就清零，於是**永遠到不了第 2 格**。
+    #   本版第二稿：單一 `last_key`，鍵一換就歸 1 → 除錯時窄／寬指令交替
+    #           （最標準的節奏）讓計數永遠停在 1。實測六個回合全紅、零次擋。
+    #
+    # 逐鍵計數同時滿足兩邊：交替的窄／寬各自累加，各自爬自己的梯；無關的
+    # 目標互不影響，因為它們是不同的鍵。
+    for k in fresh_red:
+        prev = red.get(k)
+        n = (prev.get("n", 0) if isinstance(prev, dict) else 0) + 1
+        # 舊版狀態檔只有一個全域 `streak` 而沒有逐鍵資料。此時把它接到這個鍵
+        # 上，否則升級版本會讓一次真實的連敗從頭算起。
+        if prev is None and not red and state["streak"]:
+            n = state["streak"] + 1
+        red[k] = {"cmd": redact(raw_by_key.get(k, "")), "n": n}
 
-        if streak == ADVERSARIAL_AT:
-            if not save_or_complain(root, state):
-                return 0
-            block(
-                f"⛔ FABLE goal gate: this goal has now failed {streak} times in a row.\n\n"
-                f"Last failing command:\n  {cmd}\n\n"
-                "Two failures means the root cause you identified is probably not the root "
-                "cause. A third attempt built on the same reading of the problem is the same "
-                "attempt wearing different clothes.\n\n"
-                "Before the next attempt, run the adversarial review (skeptic / red-team / "
-                "simplifier, in one message) against your current root-cause claim, and say "
-                "which of the three lenses survived. Then attempt again.\n\n"
-                "If you have already done that this turn, end the turn again and this will "
-                "let you through."
-            )
+    # 這一回合紅的鍵裡，走得最遠的那個決定階梯。取最遠而不是最後一個：
+    # 一回合內同時紅了兩個目標時，該被擋的是已經試最多次的那一個。
+    key = max(fresh_red, key=lambda k: red[k]["n"])
+    cmd = red[key]["cmd"]
+    state["streak"] = streak = red[key]["n"]
+
+    # 舊鍵不無限累積：長 session 裡每個試過的目標都會留一筆。保留最近的，
+    # 因為階梯關心的是「還在試的東西」。
+    if len(red) > MAX_TRACKED_GOALS:
+        for k in list(red)[:len(red) - MAX_TRACKED_GOALS]:
+            red.pop(k, None)
+
+    if streak == ADVERSARIAL_AT:
+        if not save_or_complain(root, state):
             return 0
-
-        if streak >= SHELVE_AT:
-            item = {
-                "id": f"goal-{int(time.time())}",
-                "first_seen": time.strftime("%Y-%m-%d %H:%M:%S"),
-                "streak": streak,
-                "last_command": cmd,
-                "note": "",
-            }
-            # The gate writes the shelf entry itself. Relying on the agent to
-            # remember to write it is exactly the failure this ladder exists
-            # to remove.
-            state["shelved"].append(item)
-            state["streak"] = 0
-            if not save_or_complain(root, state):
-                return 0
-            block(
-                f"⛔ FABLE goal gate: {streak} consecutive failures on this goal — shelving it.\n\n"
-                f"Last failing command:\n  {cmd}\n\n"
-                f"Shelved as {item['id']} in {STATE_REL}.\n\n"
-                "Stop working this item. Three attempts without reaching the goal means the "
-                "problem is not what you think it is, and further attempts spend the user's "
-                "budget to confirm that.\n\n"
-                "Do this instead:\n"
-                "  1. Write one paragraph into the shelf entry's \"note\": what you tried, what "
-                "     the evidence actually says, and the specific question the user has to "
-                "     answer for this to move.\n"
-                "  2. Tell the user it is shelved and why — plainly, without burying it.\n"
-                "  3. Move on to items in the queue that do not depend on this one.\n\n"
-                "The shelf is surfaced to you again the moment the user returns."
-            )
-            return 0
-
-        save_or_complain(root, state)
+        block(
+            f"⛔ FABLE goal gate: this goal has now failed {streak} times in a row.\n\n"
+            f"Last failing command:\n  {cmd}\n\n"
+            "Two failures means the root cause you identified is probably not the root "
+            "cause. A third attempt built on the same reading of the problem is the same "
+            "attempt wearing different clothes.\n\n"
+            "Before the next attempt, run the adversarial review (skeptic / red-team / "
+            "simplifier, in one message) against your current root-cause claim, and say "
+            "which of the three lenses survived. Then attempt again.\n\n"
+            "If you have already done that this turn, end the turn again and this will "
+            "let you through."
+        )
         return 0
 
+    if streak >= SHELVE_AT:
+        item = {
+            "id": f"goal-{int(time.time())}",
+            "first_seen": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "streak": streak,
+            "last_command": cmd,
+            "note": "",
+        }
+        # The gate writes the shelf entry itself. Relying on the agent to
+        # remember to write it is exactly the failure this ladder exists
+        # to remove.
+        state["shelved"].append(item)
+        state["streak"] = 0
+        # 擱置＝這段目標已經下桌。留著紅鍵的話，下一段一開始就帶著別人的
+        # 未解紅，而那正是 1.4.x「兩個無關目標串成一條階梯」的形態。
+        state["red"] = {}
+        if not save_or_complain(root, state):
+            return 0
+        block(
+            f"⛔ FABLE goal gate: {streak} consecutive failures on this goal — shelving it.\n\n"
+            f"Last failing command:\n  {cmd}\n\n"
+            f"Shelved as {item['id']} in {STATE_REL}.\n\n"
+            "Stop working this item. Three attempts without reaching the goal means the "
+            "problem is not what you think it is, and further attempts spend the user's "
+            "budget to confirm that.\n\n"
+            "Do this instead:\n"
+            "  1. Write one paragraph into the shelf entry's \"note\": what you tried, what "
+            "     the evidence actually says, and the specific question the user has to "
+            "     answer for this to move.\n"
+            "  2. Tell the user it is shelved and why — plainly, without burying it.\n"
+            "  3. Move on to items in the queue that do not depend on this one.\n\n"
+            "The shelf is surfaced to you again the moment the user returns."
+        )
+        return 0
+
+    save_or_complain(root, state)
+    return 0
+
+
+def block_unexplained_shelf(state):
     # Nothing failed this turn. A shelved item whose `note` is still empty has
     # not been explained to anyone yet — block until it is.
     #
@@ -550,7 +758,14 @@ def run_stop(data, root):
 
 
 def run_prompt(root):
-    """UserPromptSubmit: the user is back — put the shelf in front of them."""
+    """UserPromptSubmit: the user is back — put the shelf in front of them.
+
+    ⚠ 這裡**不動計數**。開發過程中曾讓它換一段新目標（清空 streak 與 red），
+    那個版本把整條階梯關掉了：Stop 每個回合最多累加一次，而使用者每說一句話
+    就換一段，於是永遠到不了第 2 格——實測同一個目標連續失敗四個回合，計數
+    固定停在 1，一次都沒擋。目標的身分由**鍵**決定（協議 §4b-1 第 1 條），
+    不是由對話的分段決定。
+    """
     state = load_state(root)
     if state is None or not state["shelved"]:
         return 0
@@ -587,13 +802,17 @@ def main():
         if not root:
             return 0
         event = data.get("hook_event_name") or ""
+        # 兩個入口都是 load→改→save，兩個都要在鎖裡：只鎖其中一個，另一個
+        # 照樣能把整份狀態蓋掉——那正是「檢查器存在但沒接上」的同一種病。
         if event == "UserPromptSubmit" or "--prompt" in sys.argv:
-            return run_prompt(root)
+            with state_lock(root):
+                return run_prompt(root)
         if data.get("stop_hook_active"):
             return 0  # never deadlock: the second attempt always goes through
         if not data.get("transcript_path"):
             return 0
-        return run_stop(data, root)
+        with state_lock(root):
+            return run_stop(data, root)
     except Exception:
         return 0  # fail-open
     return 0

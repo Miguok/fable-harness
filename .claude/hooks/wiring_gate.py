@@ -279,10 +279,44 @@ def precommit_path(root, config_args=()):
 GUARD_FILE_RE = re.compile(
     r"(^|/)[^/]*(test|spec)[^/]*(wired|wiring|single_source|_gate|gated)[^/]*"
     r"\.(py|ts|js|sh)$", re.I)
-# FABLE_STATE_DIR 只為測試而存在：提示檔寫在使用者真正的 ~/.claude/state，
-# 測試不得碰它。
-NOTE_DIR = os.environ.get(
-    "FABLE_STATE_DIR", os.path.join(os.path.expanduser("~"), ".claude", "state"))
+# 提示檔在 repo 私有的 git 目錄裡，路徑由 `note_path()` 向 git 要。
+# v1.4.x 曾放在 `~/.claude/state/` 並用 `FABLE_STATE_DIR` 讓測試改道；
+# 兩者都已移除，因為那個位置需要從 repo 路徑推導檔名，而不同 repo 會撞名。
+NOTE_REL = "fable/wiring_unregistered.txt"
+
+
+def note_path(root):
+    """提示檔的位置——**向 git 要**，不從 repo 路徑推導檔名。
+
+    1.4.1 之前兩端各自把 repo 路徑的非英數字元換成底線來當檔名，那個對應
+    不是一對一的：`x/evil-a`、`x/evil_a`、`x/evil/a` 撞成同一個檔名。1.4.1
+    補了讀取端的 `repo:` 比對、1.5.0 補了寫入端的刪除比對，但兩者都只是
+    「撞了之後不要造成傷害」——覆寫面補不起來：兩個都沒 opt-in 的碰撞 repo，
+    後寫的一定蓋掉先寫的，而讓 A 因為「這是 B 的檔案」不寫，A 就永遠沒有提示。
+    兩種選擇都有一方失去提示，因為根因是**拿路徑推導檔名**這件事本身。
+
+    `--git-path` 讓 git 自己回答「這個 repo 的私有檔案放哪」：
+      主 repo        → `.git/fable/…`（相對於 cwd）
+      linked worktree → `…/.git/worktrees/<name>/fable/…`（絕對路徑，各自獨立）
+    於是碰撞在結構上不可能發生，而不是被一道檢查擋住；同時兩端都問同一個
+    來源，1.4.1 那種「Python 逐字元 vs `tr` 逐位元組」的雙端分歧也一併消失。
+
+    `.git` 不會被 clone 帶走，所以一個惡意 repo 放不進東西——這正是提示檔
+    不能搬進工作目錄的那個約束。
+    """
+    try:
+        out = subprocess.run(["git", "rev-parse", "--git-path", NOTE_REL],
+                             capture_output=True, encoding="utf-8",
+                             errors="replace", timeout=5, cwd=root)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0:
+        return None
+    p = (out.stdout or "").strip()
+    if not p:
+        return None
+    # 主 repo 回的是相對 cwd 的路徑，worktree 回絕對路徑——兩種都要能用
+    return p if os.path.isabs(p) else os.path.join(root, p)
 
 
 def note_unregistered(root, declared):
@@ -298,14 +332,12 @@ def note_unregistered(root, declared):
     discards its reason, and stderr on exit 0 is thrown away. A hint that never
     reaches anyone is the same disease this gate exists to catch.
     """
-    # 逐**位元組**替換，因為讀這個檔名的是 inject_protocol.sh 的
-    # `tr -c 'A-Za-z0-9' '_'`，而 tr 是逐位元組的。Python 逐字元的話，
-    # 路徑含非 ASCII（中文／日文／韓文目錄）時兩端算出來的檔名不同：
-    # 提示寫得出來、卻永遠讀不到——正是 1.3.0 自稱修掉的那個病。
-    safe = re.sub(rb"[^A-Za-z0-9]", b"_", root.encode("utf-8")).decode("ascii")
-    note = os.path.join(NOTE_DIR, "wiring_unregistered_%s.txt" % safe)
+    note = note_path(root)
+    if note is None:
+        return  # 問不到 git 就不留提示，絕不猜路徑
     if declared:
-        # 宣告檔補上了就把提示收掉，否則它會永遠掛在每次 session 開場
+        # 宣告檔補上了就把提示收掉，否則它會永遠掛在每次 session 開場。
+        # 路徑由 git 給，一個 repo 一份，刪的一定是自己的那一份。
         try:
             os.remove(note)
         except OSError:
@@ -322,7 +354,7 @@ def note_unregistered(root, declared):
         found = [f[:120] for f in out.stdout.split("\0") if GUARD_FILE_RE.search(f)][:8]
         if not found:
             return
-        os.makedirs(NOTE_DIR, exist_ok=True)
+        os.makedirs(os.path.dirname(note), exist_ok=True)
         with open(note, "w", encoding="utf-8", newline="") as fh:
             fh.write("repo: %s\n" % root)
             fh.write("\n".join(found) + "\n")
