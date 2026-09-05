@@ -15,6 +15,7 @@ floor 是唯一每個 session 都會被注入的檔，它的條文一旦被誤�
   L7 §4b 目標階梯三階齊全，且第三階明文交回用戶
   L8 L7 的配對負向鎖：階梯還在但「四個計數器不得合併」的但書被刪時要紅
   L9 §4 要求「它在執行路徑上」——測試綠但沒接線不算完成
+  L10 §4 的順序要求：查證與抗辯要在宣告完成**之前**跑完；§2 觸發時機含對外發佈前
 
 執行命令：
   python -m pytest tests/test_protocol_floor.py -v
@@ -37,7 +38,8 @@ floor 是唯一每個 session 都會被注入的檔，它的條文一旦被誤�
 突變測試（唯一驗收方式，實跑輸出）：
   把 §4b 整段刪掉（522 字元）→ L7、L8 轉紅（2 failed, 7 passed）；還原 → 9 passed
   把 §4 的「在執行路徑上」那行刪掉 → L9 轉紅（1 failed, 8 passed）；還原 → 9 passed
-最後執行：2026-09-05 14:59 → 9 passed ✅
+最後執行：2026-09-05 16:1x → 10 passed ✅
+  L10 突變：刪掉順序那一句 → 翻紅；拿掉「對外發佈前」→ 翻紅；還原 → 10 passed
 
 ⚠ 13:09 修正 L7 的假綠（抗辯發現，實跑證實）：
   原本鎖「失敗 1／2／3 次」這幾個字，但它們在 §4b 的計數器但書行也出現，
@@ -151,6 +153,24 @@ def test_l9_done_requires_being_on_an_execution_path(floor_text):
     已交付的會被劃掉，缺口從此無人看管。wiring_gate（組件 4）機械執行這一條。
     """
     assert "執行路徑上" in floor_text, "floor §4 缺「在執行路徑上」的完成要求"
+
+
+def test_l10_verification_comes_before_the_claim_of_done(floor_text):
+    """L10：§4 必須把查證與抗辯的**順序**寫死在「宣告完成之前」。
+
+    來由（2026-09-05，本 kit 自己的發佈過程）：抗辯確實跑了、既決反查確實查了，
+    但都在「已完成」與「請你拍板」送出**之後**——於是使用者看到的完成，其實是
+    「還沒查」，而他已經照那句話做了決定。三輪抗辯共 25 個缺陷，其中 2 個是
+    修法自己造成的，全部來自這個順序。
+
+    鎖「之前」這個詞，因為條文改弱最省事的方式就是把它拿掉：
+    只剩「要跑抗辯」而不說何時跑，等於沒有規定。
+    """
+    assert "宣告完成" in floor_text, "floor §4 缺「宣告完成之前」的順序要求"
+    assert "之前跑完，不是之後" in floor_text, (
+        "floor §4 的順序條文被改弱：沒有明確排除「報完成之後才查」"
+    )
+    assert "對外發佈前" in floor_text, "floor §2 的抗辯觸發時機未涵蓋對外發佈"
 
 
 def test_l4_progress_clause_requires_stating_a_fact(floor_text):

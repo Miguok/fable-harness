@@ -12,6 +12,16 @@ The current version is also kept in [VERSION](VERSION).
 
 ## [Unreleased]
 
+## [1.4.0] — 2026-09-05
+
+### Added
+
+- **Protocol §4: verification and adversarial review happen *before* the claim of done, not after** — and §2's trigger list now names publishing explicitly.
+
+  This one was earned. Across this kit's own 1.2.0 release the review did run and the decision lookup did happen, but both landed *after* "this is done" and after "which do you prefer?" had already been sent. Three rounds found 25 defects, two of them introduced by the fixes from the round before, and every one of them reached the user as an amendment to something they had already been told was finished. A report that arrives before the checking is not a report — it makes the reader part of your verification loop without telling them, and they act on it.
+
+  The clause locks the **ordering**, because the failure was never "no review". The same review, the same lookup, moved to after the announcement, loses the thing it was for. Locked by `tests/test_protocol_floor.py::test_l10`, mutation-verified in both directions (drop the ordering sentence, drop the publishing trigger).
+
 ## [1.3.1] — 2026-09-05
 
 ### Fixed
