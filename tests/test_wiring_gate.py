@@ -310,12 +310,16 @@ def _note_path(state_dir, repo):
     return state_dir / f"wiring_unregistered_{safe}.txt"
 
 
-def _commit_with_state(repo, state_dir):
+def _commit_with_state(repo, state_dir, utf8_mode=None, cmd='git commit -m "x"'):
+    env = dict(os.environ, FABLE_STATE_DIR=str(state_dir))
+    if utf8_mode is not None:
+        env["PYTHONUTF8"] = utf8_mode
     out = subprocess.run(
-        [sys.executable, GATE], input=json.dumps(_bash('git commit -m "x"')),
-        capture_output=True, text=True, cwd=str(repo), timeout=30,
-        env=dict(os.environ, FABLE_STATE_DIR=str(state_dir)))
-    assert out.returncode == 0
+        [sys.executable, GATE], input=json.dumps(_bash(cmd)),
+        capture_output=True, encoding="utf-8", errors="replace",
+        cwd=str(repo), timeout=30, env=env)
+    assert out.returncode == 0, f"gate 不得非零退出：{out.stderr[:300]}"
+    assert not out.stderr.strip(), f"gate 不得吐 stderr：{out.stderr[:300]}"
     return out.stdout.strip()
 
 
@@ -406,7 +410,9 @@ def test_w17_note_survives_a_non_ascii_repo_path(tmp_path):
     home = tmp_path / "home"
     (home / ".claude" / "state").mkdir(parents=True)
 
-    _commit_with_state(repo, home / ".claude" / "state")
+    # PYTHONUTF8=0：那是原廠 zh-TW／ja／ko Windows 的預設。作者機器設了 =1，
+    # 於是這條測試曾經「只在作者機器上綠」——它證明的是作者的環境，不是修法。
+    _commit_with_state(repo, home / ".claude" / "state", utf8_mode="0")
 
     inject = os.path.join(ROOT, ".claude", "hooks", "inject_protocol.sh")
     out = subprocess.run(["sh", inject], capture_output=True, encoding="utf-8",
@@ -415,6 +421,43 @@ def test_w17_note_survives_a_non_ascii_repo_path(tmp_path):
     assert "test_gate_entrypoints.py" in out.stdout, (
         "非 ASCII 路徑下提示讀不到——寫入端與讀取端的檔名算法分歧"
     )
+
+
+def test_w21_cjk_file_names_stay_readable_in_the_note(tmp_path):
+    """W21：檔名本身含中文時，提示要是可讀的檔名，不是八進位跳脫。
+
+    `git ls-files` 不加 `-z` 會把非 ASCII 檔名轉成 `"tests/test_\\346\\270\\254…"`。
+    正則照樣命中、提示照樣寫出來——但對目標讀者是一串亂碼。
+    W17 抓不到這條：它的**目錄**是中文，**檔名**是 ASCII。
+    """
+    repo = _git_repo(tmp_path / "r", declare=False)
+    (repo / "tests").mkdir()
+    (repo / "tests" / "test_測試_wiring.py").write_text("x\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    state = tmp_path / "state"
+
+    _commit_with_state(repo, state)
+    body = _note_path(state, repo).read_text(encoding="utf-8")
+    assert "test_測試_wiring.py" in body, f"檔名沒保持可讀：{body!r}"
+
+
+def test_w20_gate_still_blocks_in_a_cjk_path_under_platform_default(tmp_path):
+    """W20：中文路徑 ＋ `PYTHONUTF8=0`（原廠 zh-TW Windows）下，`--no-verify` 仍要被擋。
+
+    這是本 kit 最嚴重的一次失效：`subprocess.run(..., text=True)` 以 locale
+    （cp950）去解 git 的 UTF-8 輸出 → UnicodeDecodeError → `.strip()` 拿到
+    None → AttributeError → 被 main 的 fail-open 吞掉 → **整道閘對 CJK 路徑全滅**，
+    而且會吐一段 traceback 到 stderr。
+
+    1.4.1 只改了「檔名怎麼算」，沒改**更早的那層：輸出怎麼解碼**——同一類的
+    第二個實例。這條測試盯的是解碼那一層，所以它抓得到還沒發生的第三個。
+    """
+    repo = _git_repo(tmp_path / "測試專案",
+                     precommit="#!/bin/sh\n# runs .claude/wiring-guards\n")
+    state = tmp_path / "state"
+    out = _commit_with_state(repo, state, utf8_mode="0",
+                             cmd='git commit --no-verify -m "x"')
+    assert _is_deny(out), "CJK 路徑下 --no-verify 沒被擋——整道閘對這些使用者是關的"
 
 
 def test_w18_a_note_from_another_repo_is_not_printed(tmp_path):
@@ -444,20 +487,33 @@ def test_w19_note_output_is_bounded(tmp_path):
     寫入端有 8 筆上限，讀取端原本沒有：5000 行的提示檔會整包進上下文。
     行數與單行長度都要有上限。
     """
-    repo = _git_repo(tmp_path / "mine", declare=False)
+    repo = _git_repo(tmp_path / "m", declare=False)
+    # 驅動**寫入端**：截斷發生在那裡（以字元為單位），手寫提示檔會繞過它，
+    # 而能手寫 ~/.claude/state 的人本來就能做更糟的事——不在威脅模型內。
+    # 檔名長度受 Windows 路徑上限拘束，取 129 字元（>120 的截斷點即可）。
+    for i in range(12):
+        (repo / ("test_" + "x" * 112 + f"{i}_wiring.py")).write_text(
+            "x\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
     home = tmp_path / "home"
     state = home / ".claude" / "state"
     state.mkdir(parents=True)
-    note = _note_path(state, repo)
-    note.write_text("repo: %s\n" % str(repo).replace("\\", "/")
-                    + "".join("x" * 400 + "_wiring.py\n" for _ in range(5000)),
-                    encoding="utf-8")
+    _commit_with_state(repo, state)
 
     inject = os.path.join(ROOT, ".claude", "hooks", "inject_protocol.sh")
     out = subprocess.run(["sh", inject], capture_output=True, encoding="utf-8",
                          errors="replace", cwd=str(repo), timeout=60,
                          env=dict(os.environ, HOME=str(home)))
-    assert len(out.stdout) < 20000, f"提示未設上限，輸出 {len(out.stdout)} bytes"
+    # 直接斷言兩個上限本身，不用「總長度小於某個大數字」——那種門檻是拍腦袋的，
+    # 拿掉單行截斷仍然會綠（實測 6597 < 20000）。
+    # 兩端各自都要有上限：讀取端的 `sed -n '2,9p'` 會蓋住寫入端沒截的情形，
+    # 所以直接盯提示檔本身，否則寫入端的 [:8] 是沒有守衛的。
+    note_lines = _note_path(state, repo).read_text(encoding="utf-8").splitlines()
+    assert len(note_lines) <= 9, f"提示檔筆數沒有上限：{len(note_lines) - 1}"
+    entries = [ln for ln in out.stdout.splitlines() if ln.startswith("  - ")]
+    assert len(entries) <= 8, f"注入的筆數沒有上限：{len(entries)}"
+    longest = max((len(ln) for ln in entries), default=0)
+    assert longest <= 130, f"單行沒有長度上限：最長 {longest}"
 
 
 def test_w7_other_tools_are_ignored():

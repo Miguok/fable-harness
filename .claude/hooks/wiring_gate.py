@@ -243,7 +243,7 @@ def repo_root(cwd=None):
     try:
         out = subprocess.run(
             ["git", "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True, timeout=5, cwd=cwd,
+            capture_output=True, encoding="utf-8", errors="replace", timeout=5, cwd=cwd,
         )
     except Exception:
         return None
@@ -264,7 +264,7 @@ def precommit_path(root, config_args=()):
     try:
         out = subprocess.run(
             ["git", *config_args, "rev-parse", "--git-path", "hooks/pre-commit"],
-            capture_output=True, text=True, timeout=5, cwd=root,
+            capture_output=True, encoding="utf-8", errors="replace", timeout=5, cwd=root,
         )
     except Exception:
         return None
@@ -312,9 +312,14 @@ def note_unregistered(root, declared):
             pass
         return
     try:
-        out = subprocess.run(["git", "ls-files"], capture_output=True, text=True,
-                             timeout=5, cwd=root)
-        found = [f for f in out.stdout.splitlines() if GUARD_FILE_RE.search(f)][:8]
+        # `-z`：不加的話 git 會把非 ASCII 檔名轉成八進位跳脫
+        # （`"tests/test_\346\270\254..."`），提示對目標讀者變成亂碼。
+        out = subprocess.run(["git", "ls-files", "-z"], capture_output=True,
+                             encoding="utf-8", errors="replace", timeout=5, cwd=root)
+        # 長度在**寫入端**截，而且以字元為單位。交給 shell 的 `cut -c` 截會切在
+        # 多位元組字元中間——GNU coreutils 的 `-c` 是逐位元組的，
+        # 而「位元組 vs 字元」正是這一批要修的那個病。
+        found = [f[:120] for f in out.stdout.split("\0") if GUARD_FILE_RE.search(f)][:8]
         if not found:
             return
         os.makedirs(NOTE_DIR, exist_ok=True)

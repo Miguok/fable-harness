@@ -130,6 +130,11 @@ def _result_text(block):
 
 
 # 也要吃掉重導向前面的檔案描述元（`2>&1` 的那個 2），否則它會留在鍵尾。
+# 這些旗標讓「測試指令」不再是一次測試執行：只列出、只算數、只印版本。
+# 拿它們的輸出當成目標的成敗，等於把「我在數東西」讀成「我的修法失敗了」。
+# 2026-09-05 實測：用 `--collect-only` 數 v1.2.0 的案例數，被算成連敗一次。
+NOT_A_RUN_RE = re.compile(r"--collect-only|--co\b|--version|--fixtures|--markers")
+
 PIPELINE_TAIL_RE = re.compile(r"\s*[0-9]?\s*[|>].*$", re.S)
 
 
@@ -220,7 +225,7 @@ def analyze_turn(turn):
             if b.get("name") not in SHELL_TOOLS:
                 continue
             cmd = (b.get("input") or {}).get("command", "")
-            if TEST_CMD_RE.search(cmd):
+            if TEST_CMD_RE.search(cmd) and not NOT_A_RUN_RE.search(cmd):
                 test_ids[b.get("id")] = True
                 commands[b.get("id")] = cmd
 
@@ -273,7 +278,7 @@ def analyze_turn(turn):
 def repo_root():
     try:
         r = subprocess.run(["git", "rev-parse", "--show-toplevel"],
-                           capture_output=True, text=True, timeout=5)
+                           capture_output=True, encoding="utf-8", errors="replace", timeout=5)
     except Exception:
         return None
     root = r.stdout.strip()

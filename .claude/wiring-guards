@@ -14,6 +14,6 @@
 # 為什麼這個 repo 自己也要接：它到 v1.3.0 為止都在守別人、自己沒接線——
 # 而「做了沒接線」正是這道閘存在的理由。
 
-# python3 優先：macOS／Linux 常常只有 python3，寫死 python 會讓那些平台
-# 的每一次 commit 都變紅（fail-closed，但等於把貢獻者全擋在門外）。
-python3 -m pytest tests/test_fable_doctor.py -q -k "d9 or d11" || python -m pytest tests/test_fable_doctor.py -q -k "d9 or d11"
+# 先決定直譯器再跑，不用 `A || B`：後者在兩個直譯器裝的套件不同時，會讓
+# 「前者紅、後者綠」變成整行綠，而且紅燈路徑要跑兩次（實測 2.3 倍）。
+PY=$(command -v python3 || command -v python); "$PY" -m pytest tests/test_fable_doctor.py -q -k "d9 or d11"

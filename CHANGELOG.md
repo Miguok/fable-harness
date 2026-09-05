@@ -12,6 +12,28 @@ The current version is also kept in [VERSION](VERSION).
 
 ## [Unreleased]
 
+## [1.4.2] — 2026-09-05
+
+1.4.1 was published without the review that 1.4.0 had just made mandatory. Running it afterwards found that 1.4.1 had fixed one instance of a class and left the class alive — plus two regressions of its own.
+
+### Fixed
+
+- **The whole gate was off in any repository whose path contains non-ASCII characters, on the platform this kit targets.** `subprocess.run(..., text=True)` decodes git's UTF-8 output with the *locale* encoding; on a factory zh-TW / ja / ko Windows (`PYTHONUTF8=0`, cp950) that raises inside subprocess's reader thread, `stdout` comes back `None`, `.strip()` raises `AttributeError`, and the hook's fail-open swallows it. Measured: `git commit --no-verify` in an opted-in repo under a Chinese path was **not blocked**, and a traceback went to stderr. All four subprocess calls in the two hooks now decode as UTF-8 explicitly.
+
+  1.4.1 changed how the *file name* was computed and never touched the decode boundary one layer earlier — the same class, one step up. The test that guarded 1.4.1's fix inherited the author's `PYTHONUTF8=1`, so it proved the author's environment rather than the fix; it now runs with the platform default.
+
+- **`cut -c1-120` truncates bytes, not characters** (GNU coreutils), so a CJK file name could be cut mid-character and put a broken UTF-8 sequence into the session context. The fix for "bytes versus characters" had committed the same error one line later. Truncation moved to the writing side, where it counts characters.
+
+- **`git ls-files` escapes non-ASCII names into octal** (`"tests/test_\346\270\254…"`), which made the hint unreadable for exactly the readers it was meant for. Now uses `-z`.
+
+- **`python3 … || python …` in the declaration could turn a red guard green** when the two interpreters differ, and ran the whole suite twice on the red path. Replaced by resolving the interpreter once.
+
+### Changed
+
+- The bounds on the injected hint are now asserted directly — eight entries, 130 characters each, checked on both the note and the injected block — rather than through a "total output under 20 000 characters" threshold that stayed green with the length cap removed.
+
+- Existing Windows clones need `git add --renormalize .claude/wiring-guards` for 1.4.1's `.gitattributes` line to take effect; the attribute alone does not rewrite a working tree.
+
 ## [1.4.1] — 2026-09-05
 
 Everything here was found by running the adversarial review **on the published

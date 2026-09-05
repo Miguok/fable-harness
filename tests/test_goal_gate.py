@@ -298,6 +298,24 @@ def test_g22_same_target_wrapped_in_shell_plumbing_is_one_target(tmp_path):
     assert streak == 0, "同一個目標修好了，連敗數卻沒歸零"
 
 
+@pytest.mark.parametrize("cmd", [
+    "python -m pytest tests/t.py --collect-only -q",
+    "pytest --version",
+    "pytest --fixtures",
+])
+def test_g23_listing_is_not_running(tmp_path, cmd):
+    """G23：`--collect-only`／`--version` 這類指令沒有執行任何測試。
+
+    把它們的輸出當成目標的成敗，等於把「我在數東西」讀成「我的修法失敗了」。
+    2026-09-05 實測：用 `--collect-only` 去數某個 tag 上的案例數（輸出含
+    `1 error`），被算成連敗一次，接著就擋下收工。
+    """
+    repo = _repo(tmp_path)
+    assert _run(repo, _turn(cmd, "no tests collected, 1 error in 0.63s")) == ""
+    streak = _state(repo)["streak"] if (repo / STATE_REL).exists() else 0
+    assert streak == 0, "只是列出測試，卻被算成一次失敗的執行"
+
+
 def test_g3_a_later_green_on_another_target_does_not_mask_a_red_one(tmp_path):
     """每個測試指令各看自己最後一次——否則事後跑一支必綠的測試就能蓋掉真失敗。"""
     repo = _repo(tmp_path)
