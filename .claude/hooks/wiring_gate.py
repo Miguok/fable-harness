@@ -150,6 +150,8 @@ def commit_segments(stripped):
 
 GIT_C_RE = re.compile(r"-C\s+(" + VALUE + r")")
 GIT_CONFIG_RE = re.compile(r"-c\s+(" + VALUE + r")")
+# 指令列前綴形式的環境變數：`GIT_CONFIG_COUNT=1 … git commit`。
+ENV_ASSIGN_RE = re.compile(r"(?:^|\s)(GIT_CONFIG_[A-Z_0-9]+)=(" + VALUE + r")")
 # 續行的寫法**依 shell 而異**，不能兩種都認：bash 的行尾反引號是命令替換
 # （`` TAG=`git describe` ``），把它當續行會把下一行併上來、讓 `git` 前面失去
 # 分隔符，反而製造一個放行漏洞。工具名已經告訴我們是哪個 shell，就照它分。
@@ -159,7 +161,7 @@ CONTINUATION_RE = {
 }
 
 
-def inline_config(options):
+def inline_config(options, line=""):
     """`-c k=v` from *this* invocation, as arguments for our own git call.
 
     `git -c core.hooksPath=/dev/null commit` points git at a hooks directory
@@ -170,6 +172,26 @@ def inline_config(options):
     args = []
     for pair in GIT_CONFIG_RE.findall(options):
         args += ["-c", pair.strip("\"'")]
+    # `GIT_CONFIG_COUNT/KEY_n/VALUE_n` 是 git ≥2.31 的公開 API，與 `-c` 同義。
+    # 只掃指令列的 `-c` 時，`GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath
+    # GIT_CONFIG_VALUE_0=/nonexistent git commit` 會整個繞過這道閘：實測守衛
+    # 一次都沒跑而 commit 成功，且 gate 沒有輸出任何 deny。
+    # 兩種來源都要看：**指令列前綴**（`VAR=x git commit`，hook 子行程看不到，
+    # 只能從指令字串撈）與**繼承的環境**。前綴站在 `git` 之前，而 `options`
+    # 只涵蓋 `git` 與 `commit` 之間那一段，所以掃的是整條指令列。
+    # ⚠ 第一版只掃 `options`，繞道照樣過——而我當時「驗證它被擋了」是假的：
+    # 那個測試 repo 本來就會因為別的理由被擋。用正確接線的 repo 才測得到。
+    inline_env = dict(ENV_ASSIGN_RE.findall(line or options))
+    for src in (inline_env, os.environ):
+        try:
+            count = int(src.get("GIT_CONFIG_COUNT", "0"))
+        except (TypeError, ValueError):
+            continue
+        for i in range(min(count, 64)):   # 上限：別讓一個大數字把我們卡住
+            key = src.get("GIT_CONFIG_KEY_%d" % i)
+            val = src.get("GIT_CONFIG_VALUE_%d" % i)
+            if key and val is not None:
+                args += ["-c", "%s=%s" % (key.strip("\"'"), val.strip("\"'"))]
     return args
 
 
@@ -426,7 +448,8 @@ def main(argv=None):
         verdict = classify(payload)
         if verdict == "SKIP":
             return 0
-        invocations = commit_invocations(normalised(payload))
+        line = normalised(payload)
+        invocations = commit_invocations(line)
         options = invocations[0][0] if invocations else ""
         root = repo_root(cwd=target_dir(options))
         if not root:
@@ -440,7 +463,7 @@ def main(argv=None):
         if verdict == "NOVERIFY":
             deny(W1_REASON)
             return 0
-        reason = check_wiring(root, inline_config(options))
+        reason = check_wiring(root, inline_config(options, line))
         if reason:
             deny(reason)
     except Exception:

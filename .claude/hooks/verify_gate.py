@@ -71,19 +71,45 @@ def shell_written_code_files(command):
             if PurePath(target).suffix.lower() in CODE_EXTS:
                 written.append(PurePath(target).name)
     return written
+# harness 注入的東西。清單由本機 200 份真實 transcript 取樣得出，不是憑想像列的
+# ——尤其 `Stop hook feedback:` 是**閘自己的擋人訊息**，把它當成新回合的開始，
+# 等於閘一邊擋人一邊把自己的擋人讀成「使用者回來了」。
 LOCAL_COMMAND_PREFIXES = (
     "<command-name>", "<local-command-stdout>",
     "<local-command-stderr>", "<local-command-caveat>",
+    "Stop hook feedback:", "<task-notification>",
+    "[Request interrupted", "[SYSTEM NOTIFICATION",
 )
 
 
 def is_real_user_prompt(entry):
+    """這一則是不是使用者真的打的字。
+
+    ⚠ **真實的 transcript 裡使用者輸入是 list 形，不是字串。** 原本的
+    `not isinstance(content, str) → False` 註解寫「tool_result 列表不是真實
+    prompt」，那句只對了一半：list 形**同時**承載 tool_result 與真實輸入，
+    而字串形承載的幾乎全是 harness 注入。2026-09-06 掃本機 200 份 transcript：
+    list/text 436 筆（427 筆是真實輸入）、str 539 筆（幾乎全是 hook 回饋與
+    背景通知）。於是這個判定在生產環境是**反的**——回合視窗不前進。
+
+    與 `goal_gate.py` 的 `prompt_text` 同一套判準；那裡是這段邏輯的正本，
+    此處刻意重寫而非 import，因為兩支 hook 必須各自獨立可執行。
+    """
     if entry.get("type") != "user":
         return False
     content = entry.get("message", {}).get("content")
-    if not isinstance(content, str):
-        return False  # tool_result 列表不是真實 prompt
-    return not content.lstrip().startswith(LOCAL_COMMAND_PREFIXES)
+    if isinstance(content, str):
+        text = content
+    elif isinstance(content, list):
+        if any(isinstance(b, dict) and b.get("type") == "tool_result" for b in content):
+            return False  # 工具回覆不是使用者輸入
+        text = "\n".join(b.get("text", "") for b in content
+                         if isinstance(b, dict) and b.get("type") == "text")
+    else:
+        return False
+    if not text.strip():
+        return False
+    return not text.lstrip().startswith(LOCAL_COMMAND_PREFIXES)
 
 
 def iter_tool_uses(entries):

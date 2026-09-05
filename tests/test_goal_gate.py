@@ -136,9 +136,24 @@ FAIL_OUT = ("collected 12 items\n...F........\n"
             "1 failed, 11 passed in 1.31s\n")
 
 
+def _user_prompt(text):
+    """一則**真實形狀**的使用者輸入。
+
+    ⚠ 2026-09-06 之前這裡寫的是 `{"content": "do the thing"}`（字串）。掃本機
+    200 份真實 transcript 才發現 Claude Code 送出的使用者輸入是 **list 形**
+    （436 筆 list/text 裡 427 筆是真的使用者打的字），而字串形的 539 筆幾乎全是
+    harness 注入——包括**這道閘自己的擋人訊息**。
+
+    也就是說在那之前，整個檔案的 67 條測試驗的是一個生產環境不會產生的格式，
+    而生產環境的真實形狀從來沒有被任何一條測試碰過。這是「測試環境必須等於
+    生產環境」最深的一種違反：不是漏測某個分支，是整套測試打在錯的靶上。
+    """
+    return {"type": "user", "message": {"content": [{"type": "text", "text": text}]}}
+
+
 def _turn(cmd=None, output=None, assistant_text=None, uid="tu1"):
     """One user prompt followed by an optional test run and its result."""
-    entries = [{"type": "user", "message": {"content": "do the thing"}}]
+    entries = [_user_prompt("do the thing")]
     if cmd is not None:
         entries.append({"type": "assistant", "message": {"content": [
             {"type": "tool_use", "id": uid, "name": "Bash",
@@ -756,7 +771,7 @@ def test_g13_outside_a_git_repo_is_silent(tmp_path):
 # ── §4b-1「同一個目標」的定義（v1.5.0）──────────────────────────────────
 def _runs(*pairs):
     """一段 turn 內依序跑數條測試指令：((cmd, output), …)。"""
-    entries = [{"type": "user", "message": {"content": "do the thing"}}]
+    entries = [_user_prompt("do the thing")]
     for i, (cmd, output) in enumerate(pairs):
         uid = f"t{i}"
         entries.append({"type": "assistant", "message": {"content": [
@@ -1105,7 +1120,16 @@ def test_g46_eviction_keeps_the_goal_that_is_climbing(tmp_path):
         "爬到第 2 格的目標被裁切掉了——淘汰照的是時間而不是次數，"
         f"而它正是最久沒動的那一個。red={sorted(st['red'].items())[:3]}…"
     )
-    assert len(st["red"]) <= 16, f"上限沒生效：{len(st['red'])} 筆"
+    # 這一回合表會超過上限，那是刻意的：20 個新鍵全部受「剛計數」保護、
+    # target 受「次數 ≥2」保護，兩邊都保護時寧可讓表暫時長大——上限是衛生
+    # 措施，不是正確性要求。但成長必須有界：下一回合那些鍵不再是「剛計數」，
+    # 就會被清掉。這兩件事要一起驗，只驗前者的話「永遠不淘汰」也會通過。
+    assert len(st["red"]) == 21, f"前置不成立：{len(st['red'])} 筆"
+
+    _run(repo, _runs(("pytest tests/test_after.py -q", FAIL_OUT)))
+    st = _state(repo)
+    assert len(st["red"]) <= 17, f"下一回合沒有把表收回來：{len(st['red'])} 筆"
+    assert st["red"].get(gg.test_key(target)) == 2, "收表時把爬梯中的目標清掉了"
 
 
 def test_g47_secrets_outside_key_equals_value_are_masked(tmp_path):
@@ -1147,9 +1171,21 @@ def test_g48_the_injected_shelf_is_bounded_and_framed_as_data(tmp_path):
 
 
 @pytest.mark.parametrize("bad,label", [
-    ({"streak": "2", "shelved": [], "red": {}}, "streak 是字串"),
+    # ⚠ 每一個參數都必須走到**只有 load_state 的守衛保護得了**的那條路。
+    # 2026-09-06 兩個獨立來源同時指出：原本的 `streak 是字串` 與
+    # `紅鍵的次數是字串` 兩個參數是**假綠**——`run_stop` 下游的
+    # `red[k] = (n if isinstance(n, int) else 0) + 1` 與
+    # `state["streak"] = red[key]` 會順手把壞值治好，於是把 load_state 的
+    # 守衛整個拿掉，測試照樣綠。要讓它們咬得住，壞值必須放在一個
+    # **這一回合不會被碰到**的旁觀鍵上，並且逼程式走到會比較大小的排序路徑。
+    ({"streak": 0, "shelved": [],
+      "red": dict({f"pytest tests/test_x{i}.py -q": 1 for i in range(17)},
+                  **{"pytest tests/test_bystander.py -q": "2"})},
+     "旁觀紅鍵的次數是字串（會進排序）"),
     ({"streak": 0, "shelved": "ok", "red": {}}, "shelved 是字串"),
-    ({"streak": 0, "shelved": [], "red": {"pytest -q": "2"}}, "紅鍵的次數是字串"),
+    ({"streak": 0, "shelved": ["goal-x"], "red": {}}, "shelved 的元素是字串"),
+    ({"streak": 0, "shelved": [{"id": "g", "note": "", "last_command": 5}],
+      "red": {}}, "last_command 是數字"),
 ])
 def test_g49_a_hand_edited_state_does_not_switch_the_gate_off(tmp_path, bad, label):
     """G49：手改壞狀態檔不得讓整道閘靜靜關掉。
@@ -1165,9 +1201,169 @@ def test_g49_a_hand_edited_state_does_not_switch_the_gate_off(tmp_path, bad, lab
     `shelved` 是字串的案例根本沒走到會碰它的那條路——把型別守衛整個拿掉，
     測試照樣綠（2026-09-06 突變實測）。斷言要能走到被保護的那段程式碼。
     """
+    before = len([i for i in bad["shelved"] if isinstance(i, dict)]) \
+        if isinstance(bad["shelved"], list) else 0
     repo = _repo(tmp_path, dict(bad, shelved=bad["shelved"]))
     for _ in range(3):
         out = _run(repo, _runs(("pytest -q", FAIL_OUT)))
     assert _blocked(out), f"{label}：整道閘被關掉了（連敗三次沒擋）"
     st = _state(repo)
-    assert len(st["shelved"]) == 1, f"{label}：連敗三次沒有擱置（shelved={st['shelved']!r}）"
+    # 起始的合法擱置項會留著（壞的元素被濾掉），所以比的是**增量**，
+    # 不是總數——寫死總數會讓「有沒有新增擱置」與「起始有幾筆」混在一起。
+    assert len(st["shelved"]) == before + 1, (
+        f"{label}：連敗三次沒有擱置（shelved={st['shelved']!r}）"
+    )
+
+
+def test_g50_the_real_transcript_shape_advances_the_turn_window(tmp_path):
+    """G50：使用者輸入的**真實形狀**必須被認成回合邊界。
+
+    2026-09-06 第三輪抗辯的 P0，我掃本機 200 份 transcript 自己確認過：
+    Claude Code 送出的使用者輸入是 **list 形**（436 筆 list/text 裡 427 筆是
+    真的使用者打的字），而字串形的 539 筆幾乎全是 harness 注入。
+
+    在那之前判定只認字串，於是它**恰好反過來**：拒絕每一則真實輸入、卻把
+    這道閘**自己的擋人訊息**（`Stop hook feedback:`）當成新回合的開始。
+    回合視窗不前進，舊紅鍵每次 Stop 都被重數，閘會對一個使用者早就放掉的
+    目標永遠擋下去——而 67 條測試全綠，因為每個 fixture 都用那個假形狀。
+
+    這條直接打 `is_real_user_prompt`，不繞路：它是被保護的那個判準本身。
+    """
+    real_list = {"type": "user",
+                 "message": {"content": [{"type": "text", "text": "狀態回報"}]}}
+    real_str = {"type": "user", "message": {"content": "只讀不動。"}}
+    own_block = {"type": "user", "message": {
+        "content": "Stop hook feedback:\n⛔ FABLE goal gate: 3 consecutive failures"}}
+    notification = {"type": "user", "message": {"content": "<task-notification>\nx"}}
+    interrupted = {"type": "user", "message": {"content": [
+        {"type": "text", "text": "[Request interrupted by user for tool use]"}]}}
+    tool_result = {"type": "user", "message": {"content": [
+        {"type": "tool_result", "tool_use_id": "t0", "content": "out"}]}}
+
+    assert gg.is_real_user_prompt(real_list), "真實形狀的使用者輸入沒被認出來"
+    assert gg.is_real_user_prompt(real_str), "字串形的真實輸入也要算"
+    assert not gg.is_real_user_prompt(own_block), "閘把自己的擋人訊息當成使用者回來了"
+    assert not gg.is_real_user_prompt(notification)
+    assert not gg.is_real_user_prompt(interrupted)
+    assert not gg.is_real_user_prompt(tool_result), "工具回覆被當成新回合"
+
+
+def test_g51_the_turn_window_does_not_swallow_a_real_prompt(tmp_path):
+    """G51：G50 的端到端配對——真實形狀之下，上一回合的紅不得被重數。
+
+    只驗判定函式不夠：回合視窗算錯的後果是**跨回合**的，而那只有驅動真實
+    transcript 才看得到。這裡的兩則使用者輸入之間夾著閘自己的擋人訊息，
+    就是生產環境的實際樣子。
+    """
+    repo = _repo(tmp_path, {"streak": 0, "shelved": []})
+    cmd = "pytest tests/test_x.py -q"
+    entries = _runs((cmd, FAIL_OUT))
+    _run(repo, entries)
+    assert _state(repo)["streak"] == 1
+
+    # 第二回合：閘的擋人訊息 + 使用者的下一句 + 這次沒有再跑測試
+    entries += [
+        {"type": "user", "message": {
+            "content": "Stop hook feedback:\n⛔ FABLE goal gate: …"}},
+        _user_prompt("換個方向試試"),
+        {"type": "assistant", "message": {"content": [
+            {"type": "text", "text": "好，我換個做法"}]}},
+    ]
+    _run(repo, entries)
+    assert _state(repo)["streak"] == 1, (
+        "上一回合的紅被重數了——回合視窗沒有跟著真實的使用者輸入前進"
+    )
+
+
+def test_g52_a_heredoc_before_the_test_command_does_not_collapse_goals(tmp_path):
+    """G52：測試指令**前面**的 `>` 或 `|` 不得把兩個目標歸成同一個鍵。
+
+    第三輪抗辯量測：4,162 次真實測試執行裡有 1,453 次（35%）算出的鍵完全不含
+    測試指令。最標準的 TDD 節奏 `cat > tests/test_x.py <<'EOF' … && pytest …`
+    讓每一個目標都變成鍵 `'cat'`，於是三個各失敗一次的無關目標會被串成一條
+    強制擱置——正是逐鍵計數要根治的那個病，從另一個入口回來。
+
+    引號裡的 `|` 也不是管線：`go test -run 'A|B'` 與 `'A|Z'` 是兩個目標。
+    """
+    alpha = "cat > tests/test_alpha.py <<'EOF'\nx\nEOF\npytest tests/test_alpha.py -q"
+    beta = "cat > tests/test_beta.py <<'EOF'\ny\nEOF\npytest tests/test_beta.py -q"
+    assert gg.test_key(alpha) != gg.test_key(beta), (
+        f"兩個無關的 TDD 目標歸成同一個鍵：{gg.test_key(alpha)!r}"
+    )
+    assert gg.test_key(alpha) == "pytest tests/test_alpha.py -q"
+
+    assert (gg.test_key("go test -run 'TestAlpha|TestBeta' ./...")
+            != gg.test_key("go test -run 'TestAlpha|TestZulu' ./...")), \
+        "引號裡的 | 被當成管線，兩個不同的測試選擇歸成同一個鍵"
+
+    # 配對：真正的管線尾巴仍必須被剝掉（同一個目標的不同觀察窗）
+    assert (gg.test_key("pytest tests/test_x.py -q | tail -4")
+            == gg.test_key("pytest tests/test_x.py -q 2>&1 | head -6")), \
+        "剝過頭了：同一個目標的不同觀察窗變成兩個鍵"
+
+
+def test_g53_a_new_goal_can_still_climb_when_the_table_is_full(tmp_path):
+    """G53：G46 的配對——追蹤表滿了，新目標仍必須爬得上階梯。
+
+    第三輪抗辯的 P0：淘汰改成「次數最低優先」之後，只要表裡已有上限個次數 ≥2
+    的舊鍵，每個新目標就會在**被計數的同一回合**因為次數最低而被刪掉，計數
+    永遠停在 1——不擋、不擱置、沒有任何訊息。實測 15/15 重現。
+
+    而且它會自己累積：階梯在第 2 格叫人「換打法」，換打法通常就是換一條測試
+    指令＝換一個鍵，於是**每一次正確使用這道閘都存入一個將來會餓死它的條目**。
+
+    只有 G46（爬最高的要活著）的話，一個「保護高次數、餓死所有新目標」的策略
+    會完美通過——這正是配對規則要防的形狀。
+    """
+    old = {f"pytest tests/test_old{i}.py -q": 2 for i in range(16)}
+    repo = _repo(tmp_path, {"streak": 0, "shelved": [], "red": old})
+    new = "pytest tests/test_new.py -q"
+
+    for expect in (1, 2):
+        out = _run(repo, _runs((new, FAIL_OUT)))
+        assert _state(repo)["red"].get(gg.test_key(new)) == expect, (
+            f"表滿時新目標被餓死了：次數={_state(repo)['red'].get(gg.test_key(new))}"
+        )
+    assert _blocked(out), "新目標連敗兩次沒有擋下來"
+
+    _run(repo, _runs((new, FAIL_OUT)))
+    assert len(_state(repo)["shelved"]) == 1, "新目標連敗三次沒有擱置"
+
+
+@pytest.mark.parametrize("shelf,label", [
+    (5, "shelved 不是可迭代的"),
+    ("ok", "shelved 是字串"),
+    ([{"id": "g", "note": "", "last_command": 5}], "last_command 是數字"),
+    ([{"id": "g", "note": "", "last_command": None}], "last_command 是 null"),
+    (["goal-x"], "shelved 的元素是字串"),
+])
+def test_g54_a_broken_shelf_still_reaches_the_unexplained_block(tmp_path, shelf, label):
+    """G54：壞掉的擱置清單不得讓「未說明擱置項」那道 block 靜默死掉。
+
+    這條走的是**沒有測試執行的回合**，因為那才是 `block_unexplained_shelf`
+    唯一會被執行到的路徑——G49 走的是連敗三次，而擱置的 block 先 return，
+    永遠到不了這裡。2026-09-06 突變實測：拿掉這段的 `str(...)`，G49 照樣綠。
+
+    這裡同時是「兩個入口都要活著」的守衛：Stop 端要擋、UserPromptSubmit 端
+    要注入。上一版兩邊會**同時**靜默死亡，而那是最難察覺的一種失效——
+    擱置項既不執行也不顯示，與從來沒有擱置過分不出差別。
+    """
+    repo = _repo(tmp_path, {"streak": 0, "shelved": shelf, "red": {}})
+
+    out = _run(repo, _turn(assistant_text="這一輪沒有跑測試"))
+    legal = [i for i in shelf if isinstance(i, dict)] if isinstance(shelf, list) else []
+    if legal:
+        assert _blocked(out), f"{label}：未說明的擱置項沒有擋下來（閘靜默死亡）"
+    else:
+        # 沒有合法的擱置項可擋，所以「沒有輸出」是正確的——但那與**崩潰後被
+        # fail-open 吞掉**長得一模一樣。要分辨兩者，唯一的辦法是證明閘還活著：
+        # 再跑一個失敗的回合，它必須被計數。只斷言「沒有輸出」會讓一個
+        # 完全死掉的閘通過（2026-09-06 突變實測，這一版就是這樣漏掉的）。
+        assert out == "", f"{label}：不該有輸出卻有：{out!r}"
+        _run(repo, _runs(("pytest tests/test_z.py -q", FAIL_OUT)))
+        st = _state(repo)
+        assert st["streak"] == 1, f"{label}：閘死了——後續的失敗沒有被計數"
+
+    ctx = _run(repo, payload={"hook_event_name": "UserPromptSubmit"})
+    if legal:
+        assert ctx, f"{label}：擱置清單沒有被注入（使用者看不到它）"

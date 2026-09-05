@@ -725,3 +725,44 @@ def test_r6_declaration_with_no_guards_is_red(tmp_path):
     """
     rc, out = _run_runner(tmp_path, "# 只有註解\n\n")
     assert rc == 1 and "declares no guards" in out
+
+
+@pytest.mark.parametrize("cmd,label", [
+    ("GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath "
+     "GIT_CONFIG_VALUE_0=/nonexistent git commit -m x", "指令列前綴形式"),
+    ('GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=user.name GIT_CONFIG_VALUE_0=x '
+     'GIT_CONFIG_KEY_1=core.hooksPath GIT_CONFIG_VALUE_1=/nonexistent '
+     'git commit -m x', "夾在多筆設定裡"),
+])
+def test_w23_git_config_env_is_not_a_way_around_the_gate(tmp_path, cmd, label):
+    """W23：`GIT_CONFIG_*` 環境變數與 `-c` 同義，兩者都不得繞過這道閘。
+
+    `GIT_CONFIG_COUNT/KEY_n/VALUE_n` 是 git ≥2.31 的公開 API。W10 早就擋了
+    `git -c core.hooksPath=…` 這條一次性繞道，但只掃指令列的 `-c`——於是同一件事
+    換個寫法就整個過去了。2026-09-06 抗辯實測：守衛一次都沒跑、commit 成功，
+    而 gate 沒有輸出任何 deny。
+
+    這條盯的是**類別**（「這次呼叫用了什麼設定」有兩種來源），不是被回報的
+    那一個變數名。W10 是它的配對：兩種寫法都要擋，缺一邊就等於沒擋。
+    """
+    # repo **正確接線**：不加旗標時是放行的。這樣唯一的變因就是這條繞道。
+    # 第一版用「pre-commit 不提宣告檔」的 repo，於是它因為**別的理由**就被擋，
+    # 把修法整個拿掉照樣綠——測試擋對了，但擋的不是它宣稱在擋的那件事。
+    repo = _git_repo(tmp_path, precommit="#!/bin/sh\n# runs .claude/wiring-guards\n")
+    assert not _is_deny(_run_gate(_bash("git commit -m x"), repo)), \
+        "前置不成立：這個 repo 本來就被擋，測不出繞道有沒有生效"
+    out = _run_gate(_bash(cmd), repo)
+    assert _is_deny(out), f"{label}：這條繞道沒被擋，接線閘等於關著"
+
+
+def test_w23b_a_harmless_git_config_env_is_not_blocked(tmp_path):
+    """W23b：W23 的配對——與 hooks 無關的 `GIT_CONFIG_*` 不得誤擋。
+
+    沒有這條，一個「看到 GIT_CONFIG_ 就擋」的實作也會讓 W23 全綠，而那會
+    讓每個設定 user.name 的人都被擋下來。
+    """
+    repo = _git_repo(tmp_path, precommit="#!/bin/sh\n# runs .claude/wiring-guards\n")
+    out = _run_gate(_bash(
+        "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=user.name GIT_CONFIG_VALUE_0=x "
+        "git commit -m x"), repo)
+    assert not _is_deny(out), "正確接線的 repo 被無關的設定誤擋了"
