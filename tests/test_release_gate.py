@@ -274,3 +274,59 @@ def test_rg13_release_script_is_reachable_and_self_describing():
     assert out.returncode == 0, f"腳本跑不起來：{out.stderr[:300]}"
     assert "--override-review" in out.stdout
     assert "--attest" in out.stdout
+
+
+def test_rg14_a_bypass_record_is_not_accepted_as_a_review(tmp_path, monkeypatch):
+    """RG14：破窗的痕跡**不是**審查——它不得讓下一次發佈免審。
+
+    2026-09-06 第二輪抗辯的 P0，兩個獨立鏡頭同時抓到：`check_review` 原本只看
+    `reviewed_commit`，於是一次 `--override-review` 留下的紀錄會在下一次**不帶
+    任何旗標**的發佈被當成合格審查放行，而發佈說明也不再標
+    `ADVERSARIAL_REVIEW_BYPASSED`。留痕是這條通道獲准存在的唯一條件，而它
+    把自己的痕跡洗掉了。
+
+    RG9 只斷言「痕跡有被寫下」，沒有斷言「痕跡會被讀」——這正是那一對裡
+    缺掉的另一半。
+    """
+    monkeypatch.setattr(rel, "ATTEST_DIR", str(tmp_path))
+    commit = "f" * 40
+    rel.write_attestation(commit, {}, "", "", override_reason="prod outage")
+
+    problem = rel.check_review(commit, "")
+    assert problem, "跳過審查的紀錄被當成一次完成的抗辯審查"
+    assert "不是審查" in problem
+
+
+def test_rg15_an_empty_lens_record_is_not_accepted(tmp_path, monkeypatch):
+    """RG15：鏡頭裁決或裁定留白的紀錄不算審查——形式齊全是最容易的假綠。"""
+    monkeypatch.setattr(rel, "ATTEST_DIR", str(tmp_path))
+    commit = "0" * 40
+    rel.write_attestation(commit, {}, "", "9 passed")
+    assert rel.check_review(commit, ""), "空的鏡頭裁決被當成審查"
+
+    rel.write_attestation(commit, {"skeptic": "REFUTED"}, "ship", "9 passed")
+    assert rel.check_review(commit, "") == "", "齊全的紀錄反而被擋——閘不得鎖死正常流程"
+
+
+def test_rg16_a_dry_run_leaves_no_record(tmp_path, monkeypatch):
+    """RG16：`--check` 是乾跑，不得留下任何紀錄。
+
+    第二輪抗辯實測：`--check --override-review --reason "just looking"` 會把該
+    commit **永久**標成已審查，而使用者只是在看看。乾跑留下持久後果，是這道閘
+    最不該有的行為。
+
+    ⚠ 這裡 in-process 呼叫 `main`，不起子行程：`--check` 會跑一次全套測試，
+    而在 pytest 裡起子行程跑 pytest 就是無限遞迴（同一個坑第二次，見 RG7）。
+    """
+    monkeypatch.setattr(rel, "ATTEST_DIR", str(tmp_path))
+    monkeypatch.setattr(rel, "check_tests", lambda: ("", "222 passed"))
+    monkeypatch.setattr(rel, "check_clean_tree", lambda: "")
+    monkeypatch.setattr(rel, "check_version_matches", lambda v: "")
+    monkeypatch.setattr(rel, "run", lambda *a, **k: SimpleNamespace(
+        returncode=0, stdout="gh version 2.90.0\n", stderr=""))
+
+    rc = rel.main(["9.9.9", "--check", "--override-review", "--reason", "just looking"])
+    assert rc == 0, "前置條件被 monkeypatch 成全過，乾跑卻沒通過"
+    assert not list(tmp_path.iterdir()), (
+        f"乾跑留下了紀錄：{[p.name for p in tmp_path.iterdir()]}"
+    )

@@ -58,7 +58,12 @@ def run(args, **kw):
     kw.setdefault("errors", "replace")
     kw.setdefault("cwd", ROOT)
     kw.setdefault("timeout", 300)
-    return subprocess.run(args, **kw)
+    try:
+        return subprocess.run(args, **kw)
+    except (OSError, subprocess.SubprocessError) as e:
+        # 執行檔不存在時 subprocess 拋的是例外而不是非零退出。讓呼叫端一律
+        # 只需要看 returncode，否則「gh 沒裝」會變成一個沒人接的 traceback。
+        return subprocess.CompletedProcess(args, 127, "", str(e))
 
 
 def head_commit():
@@ -187,6 +192,18 @@ def check_review(commit, override_reason):
     if doc.get("reviewed_commit") != commit:
         return ("審查紀錄綁的是 %s，HEAD 是 %s——審查之後程式又改過了。"
                 % (str(doc.get("reviewed_commit"))[:12], commit[:12]))
+    # 破窗的痕跡**不是**審查。這裡原本只看 `reviewed_commit`，於是一次
+    # `--override-review` 留下的紀錄會在下一次不帶旗標的發佈被當成合格審查
+    # 放行，而發佈說明也不再標 ADVERSARIAL_REVIEW_BYPASSED——留痕是這條通道
+    # 獲准存在的唯一條件，而它把自己的痕跡洗掉了。兩個獨立鏡頭同時抓到。
+    if doc.get("adversarial_review_bypassed"):
+        return ("這個 commit 只有一筆**跳過審查**的紀錄（理由：%s），那不是審查。\n"
+                "  要正式發佈就先跑三鏡頭抗辯再 --attest；仍要跳過就每次都明示 "
+                "--override-review --reason \"…\"。"
+                % (doc.get("bypass_reason") or "未填"))
+    if not doc.get("lenses") or not doc.get("judge"):
+        return ("審查紀錄缺鏡頭裁決或裁定（lenses=%r judge=%r）——形式齊全是最容易的假綠。"
+                % (doc.get("lenses"), doc.get("judge")))
     return ""
 
 
@@ -204,6 +221,12 @@ def preflight(version, override_reason):
     p = check_review(commit, override_reason)
     if p:
         problems.append(p)
+    # `gh` 在 do_release 的最後一步才用到，而它前面是 `git push`——不可逆。
+    # 沒有這條，PATH 裡少一個 gh 就會變成「tag 推上去了、Release 沒建成」，
+    # 而檔頭說這是一筆交易。前置條件要在不可逆動作之前問完。
+    if run(["gh", "--version"]).returncode != 0:
+        problems.append("`gh` 不可用——它是建立 Release 的唯一途徑，"
+                        "而它前面的 git push 不可逆")
     return problems, commit, summary
 
 
@@ -278,11 +301,6 @@ def main(argv=None):
         return 1
 
     problems, commit, summary = preflight(args.version, override)
-    if not problems and override:
-        # 破窗要留痕，而且要留在**本機**。原本只寫進 GitHub release notes，
-        # 那是同一個人事後可以編輯的東西——等於這條通道沒有紀錄，而「有紀錄」
-        # 正是它獲准存在的唯一條件。
-        write_attestation(commit, {}, "", summary, override_reason=override)
     if problems:
         print("⛔ 發佈前置條件未通過：")
         for p in problems:
@@ -292,7 +310,13 @@ def main(argv=None):
     if override:
         print("⚠ 本次跳過抗辯審查，理由：%s" % override)
     if args.check:
-        return 0
+        return 0   # 乾跑不得留下任何紀錄：一次 `--check --override-review`
+                   # 曾經就把該 commit 永久標成「已審查」，而使用者只是在看看
+
+    if override:
+        # 破窗要留痕，而且要留在**本機**：GitHub 的發佈說明是同一個人事後可以
+        # 編輯的東西。寫在這裡而不是 preflight 之後，因為只有真的要發佈才算破窗。
+        write_attestation(commit, {}, "", summary, override_reason=override)
 
     problem = do_release(args.version, commit, override)
     if problem:

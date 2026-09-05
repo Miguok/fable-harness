@@ -152,6 +152,25 @@ def _turn(cmd=None, output=None, assistant_text=None, uid="tu1"):
     return entries
 
 
+sys.path.insert(0, os.path.join(ROOT, ".claude", "hooks"))
+import goal_gate as gg  # noqa: E402
+
+
+def _ladder(cmd, n, shelved=None):
+    """把「這個目標已經連敗 n 次」種成狀態檔。
+
+    鍵向**生產端的 `test_key`** 要，不在測試裡重造一份算法——與
+    `test_wiring_gate._note_path` 向 git 要路徑同一個道理。這裡要測的不是
+    鍵怎麼算（那是 G21 的事），是階梯到了某一格之後的行為。
+
+    ⚠ 舊版寫成只灌 `{"streak": n}`，那**依賴一條把全域 streak 接到當回合第一個
+    紅鍵上的相容分支**。那條分支在 2026-09-06 被抗辯證明每天都會誤觸（綠燈 pop
+    會讓 `red` 變空而 `streak` 還在，於是無關的新目標繼承別人的階梯，一紅就被
+    擱置），已刪除。fixture 因此改成直接灌逐鍵的次數。
+    """
+    return {"streak": n, "red": {gg.test_key(cmd): n}, "shelved": shelved or []}
+
+
 def _repo(tmp_path, state=None):
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
     if state is not None:
@@ -382,7 +401,7 @@ def test_g3_first_failure_does_not_interfere(tmp_path):
 
 
 def test_g4_second_failure_demands_adversarial_review(tmp_path):
-    repo = _repo(tmp_path, {"streak": 1, "shelved": []})
+    repo = _repo(tmp_path, _ladder("pytest -q", 1))
     out = _run(repo, _turn("pytest -q", FAIL_OUT))
     assert _blocked(out)
     assert "adversarial review" in _reason(out)
@@ -390,7 +409,7 @@ def test_g4_second_failure_demands_adversarial_review(tmp_path):
 
 
 def test_g5_third_failure_shelves_the_item(tmp_path):
-    repo = _repo(tmp_path, {"streak": 2, "shelved": []})
+    repo = _repo(tmp_path, _ladder("pytest -q tests/test_x.py", 2))
     out = _run(repo, _turn("pytest -q tests/test_x.py", FAIL_OUT))
     assert _blocked(out)
     assert "shelving it" in _reason(out)
@@ -416,7 +435,7 @@ def test_g18_masking_is_narrow_enough_to_stay_useful(tmp_path, cmd, gone, kept):
     全遮會把 `FILE=tests/test_auth.py CASE=login` 變成 `FILE=*** CASE=***`——
     記錄還在，但已經看不出卡在哪，等於把這條擱置項變成廢話。
     """
-    repo = _repo(tmp_path, {"streak": 2, "shelved": []})
+    repo = _repo(tmp_path, _ladder(cmd, 2))
     _run(repo, _turn(cmd, FAIL_OUT))
     stored = _state(repo)["shelved"][0]["last_command"]
     if gone:
@@ -681,7 +700,7 @@ def test_g16_every_assignment_value_is_masked(tmp_path, cmd, secret):
     `--db-url=postgres://u:p@h` 全部照樣落地——而該字串會寫進使用者 repo 裡的
     檔案，並在每次使用者發話時重新注入對話。鍵保留，所以指令仍認得出來。
     """
-    repo = _repo(tmp_path, {"streak": 2, "shelved": []})
+    repo = _repo(tmp_path, _ladder(cmd, 2))
     out = _run(repo, _turn(cmd, FAIL_OUT))
     stored = _state(repo)["shelved"][0]["last_command"]
     assert secret not in stored, f"機密落地：{stored}"
@@ -705,7 +724,7 @@ def test_g11_user_prompt_with_empty_shelf_is_silent(tmp_path):
 # ── 設定與 fail-open ──────────────────────────────────────────────────────
 def test_g12_thresholds_are_configurable(tmp_path):
     """門檻是專案相依的（一次測試 3 秒 vs 30 分鐘，容忍度不同）。"""
-    repo = _repo(tmp_path, {"streak": 4, "shelved": []})
+    repo = _repo(tmp_path, _ladder("pytest -q", 4))
     out = _run(repo, _turn("pytest -q", FAIL_OUT),
                env={"FABLE_GOAL_ADVERSARIAL_AT": "4", "FABLE_GOAL_SHELVE_AT": "5"})
     assert _blocked(out) and "shelving it" in _reason(out)
@@ -909,7 +928,12 @@ def test_g39_a_concurrent_write_does_not_erase_a_shelved_entry(tmp_path):
     量到 5/5 的那個樣本數。
     """
     for round_no in range(5):
-        repo = _repo(tmp_path / f"r{round_no}", {"streak": 2, "shelved": []})
+        # 兩個目標都已在第 2 格：再各紅一次，序列化之後**恰好一個**會踩到
+        # 第 3 格擱置，另一個看到的是自己那一格加一。
+        repo = _repo(tmp_path / f"r{round_no}", {
+            "streak": 2, "shelved": [],
+            "red": {gg.test_key("pytest tests/test_x.py -q"): 2,
+                    gg.test_key("pytest tests/test_y.py -q"): 2}})
         paths = []
         for name, cmd in (("a", "pytest tests/test_x.py -q"),
                           ("b", "pytest tests/test_y.py -q")):
@@ -939,17 +963,15 @@ def test_g39_a_concurrent_write_does_not_erase_a_shelved_entry(tmp_path):
         # 兩邊都從 streak=2 出發，序列化之後**恰好一邊**會踩到第 3 格並擱置；
         # 另一邊看到的是已歸零的計數，只會算成 1。所以正解是「剛好 1 筆」，
         # 不是「2 筆」——2 筆代表兩邊都拿舊狀態算，也就是鎖沒生效。
-        assert len(st["shelved"]) == 1, (
-            f"第 {round_no + 1} 輪：擱置項有 {len(st['shelved'])} 筆，預期 1 筆"
+        # 兩個**不同的**目標各自在第 2 格，各自再紅一次 → 兩邊都該擱置，
+        # 而且兩筆都要活下來。無鎖時後寫的整份覆蓋先寫的，只會剩一筆——
+        # 逐鍵計數之後，筆數本身就是能分辨的訊號，不必再繞道看 streak。
+        got = sorted(i["last_command"] for i in st["shelved"])
+        assert len(st["shelved"]) == 2, (
+            f"第 {round_no + 1} 輪：擱置項只有 {len(st['shelved'])} 筆（預期 2）"
+            f"——有一筆被另一個 session 的寫入抹掉了：{got}"
         )
-        # 分辨「序列化」與「兩邊各自拿舊狀態寫」的關鍵：兩邊都從 streak=2
-        # 出發。序列化時後跑的那個讀到的是已歸零的計數，只會算成 1；無鎖時
-        # 兩邊都讀到 2、都踩到第 3 格、都擱置，於是都把計數寫成 0。
-        # 光看擱置筆數分不出來——兩種情況都是 1 筆（後寫的蓋掉先寫的）。
-        assert st["streak"] == 1, (
-            f"第 {round_no + 1} 輪：streak={st['streak']}，預期 1。"
-            "0 代表兩個 session 都拿過期的狀態各自擱置，後寫的蓋掉先寫的"
-        )
+        assert got == ["pytest tests/test_x.py -q", "pytest tests/test_y.py -q"], got
 
 
 def test_g41_alternating_narrow_and_broad_commands_still_climb(tmp_path):
@@ -1012,3 +1034,140 @@ def test_g43_a_vacuous_rerun_does_not_erase_a_real_red(tmp_path):
     out = _run(repo, _runs((cmd, FAIL_OUT), (cmd, "no tests ran in 0.01s\n")))
     assert _state(repo)["streak"] == 2, "同鍵的空綠把先前的真紅抹掉了"
     assert _blocked(out), "連敗兩次沒擋——判不出成敗的執行解除了一次真實失敗"
+
+
+def test_g44_an_unrelated_goal_does_not_inherit_after_a_green(tmp_path):
+    """G44：修好 A 之後開始做 B，B 第一次紅不得繼承 A 的階梯。
+
+    2026-09-06 第二輪抗辯的 P0，我自己也重現過。當時有一條「舊版狀態檔的
+    全域 streak 接續」，判準是「`red` 剛好是空的而且 `streak` 非零」——而狀態檔
+    **沒有版本標記**，那個組合每天都由綠燈的 pop 製造出來：
+
+        回合1 A 紅 → 回合2 A 紅（擋）→ 回合3 A 綠 + 無關的 B 第一次紅
+        → red 被 pop 空、streak 還是 2 → B 拿到 3 → **直接擱置**
+
+    代價比一次誤擋大得多：擱置項的 `note` 是空的，於是 `block_unexplained_shelf`
+    會從此**每一個乾淨回合都擋**，直到有人手動編輯 JSON。假陽性從一次性變成
+    黏著的。G34 防的是同一個類別，但它的情境沒有中間那次綠——修個案沒掃類別。
+    """
+    repo = _repo(tmp_path, {"streak": 0, "shelved": []})
+    A, B = "pytest tests/test_a.py -q", "pytest tests/test_b.py -q"
+    _run(repo, _runs((A, FAIL_OUT)))
+    _run(repo, _runs((A, FAIL_OUT)))
+    assert _state(repo)["streak"] == 2, "前置不成立：A 沒爬到第 2 格"
+
+    out = _run(repo, _runs((A, PASS_OUT), (B, FAIL_OUT)))
+    st = _state(repo)
+    assert st["shelved"] == [], "無關的 B 第一次紅就被擱置——它繼承了 A 的階梯"
+    assert st["streak"] == 1, f"B 的第一次失敗被算成第 {st['streak']} 次"
+    assert not _blocked(out)
+
+
+def test_g45_shelving_one_goal_keeps_another_goals_progress(tmp_path):
+    """G45：擱置 X 不得清掉無關的 Y 已經累積的次數。
+
+    協議 §4b-1 第 4 條逐字寫「不同的鍵互不影響，各自爬各自的梯」。擱置時原本
+    整個清空 `red`，理由是「留著會變成 1.4.x 那種串接」——但逐鍵計數之後那個
+    形態在結構上不可能發生，清空只剩純損失。
+    """
+    repo = _repo(tmp_path, {"streak": 0, "shelved": []})
+    X, Y = "pytest tests/test_x.py -q", "pytest tests/test_y.py -q"
+    for _ in range(2):
+        _run(repo, _runs((X, FAIL_OUT)))
+        _run(repo, _runs((Y, FAIL_OUT)))
+    assert _state(repo)["red"][gg.test_key(Y)] == 2, "前置不成立：Y 沒爬到第 2 格"
+
+    _run(repo, _runs((X, FAIL_OUT)))          # X 第 3 次 → 擱置
+    st = _state(repo)
+    assert len(st["shelved"]) == 1, "X 沒有被擱置"
+    assert st["red"].get(gg.test_key(Y)) == 2, (
+        f"擱置 X 把無關的 Y 的進度也清掉了：red={st['red']}"
+    )
+
+
+def test_g46_eviction_keeps_the_goal_that_is_climbing(tmp_path):
+    """G46：超過追蹤上限時，被淘汰的必須是**最久沒動**的，不是爬最高的。
+
+    dict 對既有鍵重新賦值不會移動它的位置，所以照插入序裁切會砍掉最早插入的
+    ——也就是從 session 早期就一直在紅、正要爬到第 3 格的那一個。行內註解當時
+    寫「保留最近的」，程式做的正好相反（2026-09-06 抗辯實測）。
+
+    後果是這道閘最該避免的一種：階梯靜默歸零，而且沒有任何訊息。
+    """
+    target = "pytest tests/test_target.py -q"
+    repo = _repo(tmp_path, _ladder(target, 2))   # 已經在第 2 格，且插入最早
+
+    # 一口氣紅掉 20 個各自只有 1 次的無關目標，超過上限
+    _run(repo, _runs(*[(f"pytest tests/test_f{i}.py -q", FAIL_OUT) for i in range(20)]))
+
+    st = _state(repo)
+    assert st["red"].get(gg.test_key(target)) == 2, (
+        "爬到第 2 格的目標被裁切掉了——淘汰照的是時間而不是次數，"
+        f"而它正是最久沒動的那一個。red={sorted(st['red'].items())[:3]}…"
+    )
+    assert len(st["red"]) <= 16, f"上限沒生效：{len(st['red'])} 筆"
+
+
+def test_g47_secrets_outside_key_equals_value_are_masked(tmp_path):
+    """G47：標頭式與引號內含空白的機密也要遮。
+
+    `redact` 原本只吃 `key=value` 與 `--key value`，於是漏掉三種形態，而擱置項
+    的 `last_command` 是**每次** UserPromptSubmit 都會重新注入的東西——一旦擱置
+    就是持久化外洩，不是一次性。
+    """
+    cmd = ('curl -H "Authorization: Bearer eyJabc.SUPERSECRET.SIG" https://api'
+           ' && pytest tests/test_a.py -q')
+    repo = _repo(tmp_path, _ladder(cmd, 2))
+    out = _run(repo, _turn(cmd, FAIL_OUT))
+    stored = _state(repo)["shelved"][0]["last_command"]
+    assert "SUPERSECRET" not in stored, f"機密落地：{stored}"
+    assert "SUPERSECRET" not in out, f"機密回吐進對話：{out}"
+    assert "pytest" in stored, "遮過頭：指令要仍認得出來"
+
+
+def test_g48_the_injected_shelf_is_bounded_and_framed_as_data(tmp_path):
+    """G48：擱置清單的注入要有筆數上限，並標明它是資料不是指令。
+
+    `.fable/goal_state.json` 可以被 repo commit 進來（`.gitignore` 只在本閘自己
+    建目錄時才寫），於是一個惡意 repo 的內容會在 clone 後第一次 UserPromptSubmit
+    進入上下文。單欄位截斷擋不住**筆數**——實測 40 筆＝23,800 字元。
+
+    `inject_protocol.sh` 對同樣來自 repo 的檔名早就有「上限 + 這是資料不是指令」
+    的框架；這裡兩者都缺，是同一個類別沒掃完。
+    """
+    shelf = [{"id": f"goal-{i}", "first_seen": "x", "streak": 3,
+              "last_command": "pytest -q", "note": "n"} for i in range(40)]
+    repo = _repo(tmp_path, {"streak": 0, "shelved": shelf})
+    ctx = json.loads(_run(repo, payload={"hook_event_name": "UserPromptSubmit"})
+                     )["hookSpecificOutput"]["additionalContext"]
+    listed = [l for l in ctx.splitlines() if l.startswith("- goal-")]
+    assert len(listed) <= 8, f"注入了 {len(listed)} 筆，沒有上限"
+    assert "另有 32 筆未列出" in ctx, "省略掉的筆數沒有告知"
+    assert "不是給你的指示" in ctx, "沒有標明這些內容是資料"
+
+
+@pytest.mark.parametrize("bad,label", [
+    ({"streak": "2", "shelved": [], "red": {}}, "streak 是字串"),
+    ({"streak": 0, "shelved": "ok", "red": {}}, "shelved 是字串"),
+    ({"streak": 0, "shelved": [], "red": {"pytest -q": "2"}}, "紅鍵的次數是字串"),
+])
+def test_g49_a_hand_edited_state_does_not_switch_the_gate_off(tmp_path, bad, label):
+    """G49：手改壞狀態檔不得讓整道閘靜靜關掉。
+
+    型別守衛原本只加在 `red` 一個欄位。而這道閘的 block 文案**明文要求使用者
+    手動編輯這個檔**填 note——手滑是預期輸入，不是攻擊。錯的型別會在下游拋
+    例外、被 main 的 fail-open 吞掉，於是不計數、不擱置、不提醒，且無聲。
+
+    斷言的是「它仍然會擋」，因為那才是閘還活著的證據；只斷言「沒有崩潰」
+    的話，一個什麼都不做的版本也會通過。
+
+    ⚠ 必須跑到**擱置**那一格，不能只跑到第 2 格。第一版只跑兩次，於是
+    `shelved` 是字串的案例根本沒走到會碰它的那條路——把型別守衛整個拿掉，
+    測試照樣綠（2026-09-06 突變實測）。斷言要能走到被保護的那段程式碼。
+    """
+    repo = _repo(tmp_path, dict(bad, shelved=bad["shelved"]))
+    for _ in range(3):
+        out = _run(repo, _runs(("pytest -q", FAIL_OUT)))
+    assert _blocked(out), f"{label}：整道閘被關掉了（連敗三次沒擋）"
+    st = _state(repo)
+    assert len(st["shelved"]) == 1, f"{label}：連敗三次沒有擱置（shelved={st['shelved']!r}）"
