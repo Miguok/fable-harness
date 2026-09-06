@@ -66,61 +66,100 @@ import re
 import subprocess
 import sys
 
-QUIET_PER_LABEL = 20   # 同一個標籤最多幾行
+QUIET_PER_LABEL = 20      # 同一個標籤最多幾行
+QUIET_MAX_SCAN = 1 << 20  # 數行時最多讀多少（超過就當作已滿，不再寫）
 
 
-def note_quiet(label, exc=None):
+def _quiet_lock(fd, release=False):
+    """對屍檢檔取／放獨佔鎖——拿不到就算了，絕不阻塞超過約 0.1 秒。
+
+    `O_APPEND` 在 Windows **不是原子的**：MSVCRT 的實作是 lseek(END) 之後再
+    WriteFile，兩步之間別的行程可以插進來，於是兩筆寫到同一個 offset、互相覆寫。
+    實測三個行程對齊起跑各寫一行、20 次試驗：**10 次掉筆**，還產生 4 條殘行
+    （像 `abel_for_process_one: OSError` 這種被切掉開頭的尾巴），而殘行會被
+    注入器原樣送進上下文。CRLF 那一半確實被 `O_BINARY` 修好了，原子性那一半
+    完全沒動——而我在註解裡斷言了它，commit 訊息也照著寫，卻沒有任何一條測試
+    跑並行（2026-09-06 抗辯指出；這正是那個 commit 自己在講的病）。
+
+    用短暫的非阻塞重試而不是阻塞式鎖：hook 的 timeout 是 5～15 秒，
+    `msvcrt.locking` 的阻塞模式會等到 10 秒才放棄，那會把「掉一行屍檢」升級成
+    「hook 逾時」。等不到就照寫——遺失一行遙測，遠比卡住一個回合便宜。
+    """
+    try:
+        if os.name == "nt":
+            import msvcrt
+            here = os.lseek(fd, 0, os.SEEK_CUR)
+            os.lseek(fd, 0, os.SEEK_SET)
+            try:
+                if release:
+                    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                else:
+                    import time as _t
+                    for _ in range(50):
+                        try:
+                            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                            break
+                        except OSError:  # quiet-ok: 鎖被別人持有是正常的，重試就好
+                            _t.sleep(0.002)
+            finally:
+                os.lseek(fd, here, os.SEEK_SET)
+        else:
+            import fcntl
+            fcntl.flock(fd, fcntl.LOCK_UN if release else fcntl.LOCK_EX)
+    except Exception:  # quiet-ok: 拿不到鎖就照寫，遙測絕不阻塞 session
+        pass
+
+
+def note_quiet(label, exc=None, detail=""):
     """把一次「閘判不出來／自己壞掉」寫成一行，落在同目錄的 `.gate_fail`。
 
-    這是本套件收斂的關鍵：**fail-open 沒問題，安靜的 fail-open 才是問題。**
-    三道閘的每一條 fail-open 在外部看起來都和「一切正常」一模一樣，於是它們
-    可以壞掉好幾天、跨好幾個版本而沒有人發現——2026-09-06 一輪抗辯找出 26 條
-    缺陷，其中約一半是這個形態，而且它是唯一一個「不修就會一直被重新發現」的
-    類別：其他類別修完就結案，安靜的分支可以無限新增。
+    **fail-open 沒問題，安靜的 fail-open 才是問題。** 每一條 fail-open 在外部
+    看起來都和「一切正常」一模一樣，所以它們可以壞掉好幾天而沒有人發現。
 
     契約（三支 hook 各有一份，由 tests/test_no_silent_gate.py 綁在一起）：
       - 絕不拋例外——遙測自己壞掉不得破壞 fail-open
-      - 一次一行：UTC 時間戳、呼叫點標籤、例外類別
-      - **只寫標籤與例外類別，不寫 payload**。格式化在這裡做而不是交給呼叫端：
-        第一版簽名是 `note_quiet(reason)`，於是這條不變式散在 16 個呼叫點各自
-        遵守，而當場就有 2 個沒遵守（一個用 %r 印環境變數的值、一個寫
-        `str(exc)`，而 OSError 會帶路徑）。這個檔案的內容會被注入回對話。
-      - 同一個標籤最多 `QUIET_PER_LABEL` 行。**刻意沒有全域上限**：三支寫的是
-        同一個檔，全域預算等於共用，實測一支壞掉灌滿 500 行之後，另外兩支的
-        失效永遠寫不進去且無人知道——那正是這個機制要治的病，被治療複製了
-        一份（2026-09-06 抗辯，simplifier 鏡頭指出，我實測重現）。
-        逐標籤之後成長仍有界（標籤數 × 20），而新的標籤永遠進得去。
+      - 一行的格式固定為 `<ISO 時間戳> <gate>/<label>: <例外類別><細節>`
+      - **只寫標籤與例外類別，不寫 payload**；`detail` 由呼叫端保證是自己的字面
+        文字或數字，而且**不進 dedup 鍵**——把變動的計數塞進標籤會讓每個不同的
+        值變成一個新標籤、各自吃 20 行，成長上界那句話就是假的（實測 50 個
+        不同的值寫出 1000 行 / 約 100 KB，而宣稱的上界是 20）。
+      - 標籤前面掛**這支 gate 的檔名**。四個呼叫點都叫 `main`，三支共用同一個
+        檔，於是「逐標籤上限」對最關鍵的那個標籤等於沒有：實測 `wiring_gate`
+        （PreToolUse，觸發最頻繁）連寫 20 次之後，另一支的頂層 fail-open 就
+        寫不進去了——正是這個機制宣稱治好的餓死病。
+      - 同一個標籤最多 `QUIET_PER_LABEL` 行，**沒有全域上限**：三支寫同一個檔，
+        全域預算等於共用預算，一支壞掉就會餓死另外兩支。
+      - 比對用**精確相等**而不是 `endswith`：後者讓任何以既有標籤結尾的新標籤
+        （`domain` vs `main`）吃掉對方的預算。目前 19 個標籤兩兩無前綴關係，
+        所以那是潛伏缺陷，但判準本來就該是相等。
     """
     try:
         from datetime import datetime, timezone
-        marker = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".gate_fail")
-        text = "%s: %s" % (" ".join(str(label).split())[:120],
-                           type(exc).__name__ if exc is not None else "-")
-        seen = 0
-        if os.path.exists(marker):
-            with open(marker, encoding="utf-8", errors="replace") as fh:
-                for line in fh:
-                    if line.rstrip("\r\n").endswith(text):
-                        seen += 1
-        if seen >= QUIET_PER_LABEL:
-            return
-        # 用 `os.open` + 單次 `os.write`，不是 `open(..., "a")`。三支 hook 可能同時
-        # 被叫（`verify_gate` 與 `goal_gate` 都掛 Stop），而 Python 的文字模式
-        # append 在 Windows 上實測會**掉筆**：三個行程各寫一行，30 次試驗有 20 次
-        # 少行，還會產生空白行——而空白行會被注入器原樣送進上下文。掉的那一筆
-        # 不會拋例外，所以連 `note_quiet` 自己都不知道：屍檢自己會安靜地失效
-        # （2026-09-06 抗辯量測）。O_APPEND 下的單次小量 write 是原子的。
-        # `newline` 不經文字層，順帶修掉 Windows 上寫出 CRLF 的問題——裸 CR 會
-        # 被 `tail`／`sed` 帶進上下文。
-        line = ("%s %s\n" % (datetime.now(timezone.utc).isoformat(), text))
-        # `O_BINARY`（Windows 才有）不可省：少了它 os.open 走文字模式，換行字元被
-        # 展開成 CRLF，單次 write 因此被拆開、原子性沒了——實測三行程各寫一行，
-        # 20 次試驗有 19 次只剩兩行。裸 CR 也會被注入器帶進上下文。
-        flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_BINARY", 0)
+        here = os.path.dirname(os.path.abspath(__file__))
+        marker = os.path.join(here, ".gate_fail")
+        gate = os.path.splitext(os.path.basename(os.path.abspath(__file__)))[0]
+        key = "%s/%s: %s" % (gate, " ".join(str(label).split())[:100],
+                             type(exc).__name__ if exc is not None else "-")
+        text = key + ((" " + " ".join(str(detail).split())[:60]) if detail else "")
+        flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0)
         fd = os.open(marker, flags, 0o600)
         try:
-            os.write(fd, line.encode("utf-8"))
+            _quiet_lock(fd)
+            os.lseek(fd, 0, os.SEEK_SET)
+            body = os.read(fd, QUIET_MAX_SCAN)
+            if len(body) >= QUIET_MAX_SCAN:
+                return  # 大到數不完就別再寫了；這種檔早該被人處理掉
+            seen = 0
+            for raw in body.decode("utf-8", "replace").split("\n"):
+                part = raw.split(" ", 1)
+                if len(part) == 2 and part[1].startswith(key):
+                    seen += 1
+            if seen < QUIET_PER_LABEL:
+                os.lseek(fd, 0, os.SEEK_END)
+                os.write(fd, ("%s %s\n" % (
+                    datetime.now(timezone.utc).isoformat(), text)).encode("utf-8"))
         finally:
+            _quiet_lock(fd, release=True)
             os.close(fd)
     except Exception:  # quiet-ok: 遙測自身故障不得破壞 fail-open，這裡沒有第二個出口
         pass

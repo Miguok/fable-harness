@@ -164,6 +164,7 @@ W14 原本的 fixture 寫的是 `repo: x`（別人的提示）卻斷言它必須
   沒有驗到 harness 收到它之後真的擋下那次 Bash 呼叫。解鎖條件＝在真實 session 裡
   對一個已 opt-in 的 repo 下 `git commit --no-verify` 並觀察它被拒（INSTALL.md 步驟 10）。
 """
+import atexit
 import json
 import re
 import os
@@ -190,9 +191,13 @@ _PROD_GATE = os.path.join(ROOT, ".claude", "hooks", "wiring_gate.py")
 _GATE_COPY = os.path.join(_GATE_DIR, "wiring_gate.py")
 shutil.copy(_PROD_GATE, _GATE_COPY)
 GATE = _GATE_COPY
+# 用完清掉：每個測試模組在 import 時建一個暫存目錄，沒有清理的話每跑一次全套
+# 就外洩三個（實測 %TEMP% 累積 67 個 fable-gate-*，每個裝一份 gate 副本）。
+atexit.register(shutil.rmtree, _GATE_DIR, True)
 RUNNER = os.path.join(ROOT, ".claude", "hooks", "wiring_runner.sh")
 
-sys.path.insert(0, os.path.join(ROOT, ".claude", "hooks"))
+# 同 test_goal_gate：in-process 也走副本，否則 note_quiet 會寫進生產檔。
+sys.path.insert(0, _GATE_DIR)
 import wiring_gate  # noqa: E402
 
 HEREDOC_MSG = (

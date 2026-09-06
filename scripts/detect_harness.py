@@ -107,8 +107,7 @@ def _path_matches(root: Path, rel: str, kind: str) -> bool:
         if kind == "dir":
             return p.is_dir()
         return p.is_file()
-    except OSError:
-        # 權限被拒 / 路徑異常等 → 視為未命中，維持 exit 0/2 契約，不讓例外冒出崩潰。
+    except OSError:  # quiet-ok: 權限被拒／路徑異常視為未命中，維持 exit 0/2 契約
         return False
 
 
@@ -149,7 +148,7 @@ def _scan_layer3(root: Path) -> list:
             # （巨檔不會 OOM，才符合「讀取上限 64KB」的契約）。
             with p.open("rb") as f:
                 raw = f.read(MAX_READ_BYTES)
-        except OSError:
+        except OSError:  # quiet-ok: 讀不到的檔就跳過，偵測是盡力而為、不是判定
             continue
         text = raw.decode("utf-8", errors="ignore")
         for kw, pattern in _KEYWORD_PATTERNS:

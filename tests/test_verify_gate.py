@@ -97,6 +97,8 @@ fail-then-pass guard：
   無法以 claude -p 穩定重現（-p 模式模型行為不可控）；解鎖條件＝佈署後
   以真實互動 session 手動演練一次（改一行 .py 不跑測試即結束，應見擋回訊息）。
 """
+import atexit
+import shutil
 import json
 import subprocess
 import sys
@@ -111,6 +113,8 @@ _PROD_GATE = Path(__file__).resolve().parent.parent / ".claude" / "hooks" / "ver
 _GATE_DIR = Path(tempfile.mkdtemp(prefix="fable-gate-"))
 GATE = _GATE_DIR / "verify_gate.py"
 GATE.write_text(_PROD_GATE.read_text(encoding="utf-8"), encoding="utf-8")
+# 用完清掉，否則每跑一次全套就外洩一個暫存目錄。
+atexit.register(shutil.rmtree, str(_GATE_DIR), True)
 
 
 def _user(text):

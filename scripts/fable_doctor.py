@@ -68,7 +68,7 @@ def _interpreter_of(command: str) -> str | None:
     """Return the first token of a hook command — the interpreter it will actually use."""
     try:
         tokens = shlex.split(command, posix=False)
-    except ValueError:
+    except ValueError:  # quiet-ok: 回 None，呼叫端會報 interpreter-unresolved
         return None
     if not tokens:
         return None
@@ -86,7 +86,7 @@ def _registered_script_path(command: str, script_name: str) -> Path | None:
     """The script path the command actually runs, or None if it can't be read."""
     try:
         tokens = shlex.split(command, posix=False)
-    except ValueError:
+    except ValueError:  # quiet-ok: 回 None，呼叫端會把該列標成問題
         return None
     for token in tokens:
         bare = token.strip('"').strip("'")
@@ -120,7 +120,7 @@ def check(home: Path, repo: Path) -> dict:
     else:
         try:
             settings = json.loads(settings_path.read_text(encoding="utf-8"))
-        except (ValueError, UnicodeDecodeError) as exc:
+        except (ValueError, UnicodeDecodeError) as exc:  # quiet-ok: 下一句就把它加進 problems
             problems.append(
                 {"code": "settings-unparsable", "detail": f"{settings_path}: {exc}"}
             )
@@ -150,7 +150,7 @@ def check(home: Path, repo: Path) -> dict:
         if registered is not None and registered.is_absolute():
             try:
                 same = registered.resolve() == expected
-            except OSError:
+            except OSError:  # quiet-ok: 解析不了就視為不相符，下一句會加進 problems（fail-closed）
                 same = False
             if not same:
                 row["runs"] = str(registered)
@@ -219,7 +219,7 @@ def check(home: Path, repo: Path) -> dict:
     else:
         try:
             install_marker = json.loads(marker_path.read_text(encoding="utf-8"))
-        except (ValueError, UnicodeDecodeError) as exc:
+        except (ValueError, UnicodeDecodeError) as exc:  # quiet-ok: 下一句就把它加進 problems
             problems.append({"code": "install-marker-unparsable", "detail": str(exc)})
         else:
             installed_version = str(install_marker.get("version", "")).strip()

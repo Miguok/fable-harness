@@ -143,6 +143,7 @@ G9 的期望隨之反轉（提 id 仍要擋）。文件與程式不一致時，�
   block 封包格式（該機制已由 verify_gate 在真實 session 驗證過），但本 gate 的
   兩種 block 尚未在真實 session 觸發過。解鎖條件＝連續兩次紅燈後觀察它是否擋下收工。
 """
+import atexit
 import json
 import os
 import shutil
@@ -166,9 +167,16 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # 所以搬位置不影響任何行為。
 _GATE_DIR = tempfile.mkdtemp(prefix="fable-gate-")
 _PROD_GATE = os.path.join(ROOT, ".claude", "hooks", "goal_gate.py")
+# 三支都複製過去：G66 會跨檔 import verify_gate 比對兩份 pattern，
+# 只複製一支的話那條會因為找不到模組而紅。
+for _n in ("goal_gate.py", "wiring_gate.py", "verify_gate.py"):
+    shutil.copy(os.path.join(ROOT, ".claude", "hooks", _n),
+                os.path.join(_GATE_DIR, _n))
 _GATE_COPY = os.path.join(_GATE_DIR, "goal_gate.py")
-shutil.copy(_PROD_GATE, _GATE_COPY)
 GATE = _GATE_COPY
+# 用完清掉：每個測試模組在 import 時建一個暫存目錄，沒有清理的話每跑一次全套
+# 就外洩三個（實測 %TEMP% 累積 67 個 fable-gate-*，每個裝一份 gate 副本）。
+atexit.register(shutil.rmtree, _GATE_DIR, True)
 STATE_REL = os.path.join(".fable", "goal_state.json")
 
 PASS_OUT = "collected 12 items\n............\n12 passed in 1.20s\n"
@@ -208,7 +216,10 @@ def _turn(cmd=None, output=None, assistant_text=None, uid="tu1"):
     return entries
 
 
-sys.path.insert(0, os.path.join(ROOT, ".claude", "hooks"))
+# in-process 也匯入**副本**：這裡原本插的是生產 hooks 目錄，於是任何走
+# in-process 路徑而呼叫 note_quiet 的測試，屍檢照樣寫進產品的檔案——Q8 只看
+# 模組層的 GATE 常數，完全看不到這條路（2026-09-06 抗辯實測寫進 20 行而 Q8 全綠）。
+sys.path.insert(0, _GATE_DIR)
 import goal_gate as gg  # noqa: E402
 
 
