@@ -30,6 +30,13 @@
 審查真的找出缺陷。文字規則這一層已被證明不夠。
 
 執行命令：python -m pytest tests/test_release_gate.py -q
+最後執行：2026-09-06 13:40 → 27 passed ✅（全套 352 passed in 33.62s）
+本輪新增 RG21：`--check --attest` 也不得留痕。突變（把乾跑的早退拿掉）→ RG21 紅，
+tmp 目錄裡真的出現一份 `adversarial_review_bypassed: false` 的正式審查記錄。
+RG16 早就把「乾跑不留痕」寫成不變式，卻只擋了 `--override-review` 那一半
+——同一條不變式的兩個入口只掃了一個。
+
+（以下為 09-06 00:29 那批的紀錄）
 最後執行：2026-09-06 00:29 → 17 passed ✅（全套 239 passed）
 
 驗收邊界——本檔測的是**前置條件的判定**，不是 `git push` 與 `gh release create`
@@ -466,3 +473,29 @@ def test_rg19_a_failed_release_says_the_tag_is_already_public(monkeypatch):
     problem = rel.do_release("9.9.9", "b" * 40, "")
     assert "已經推上 origin" in problem, f"沒告知 tag 已公開：{problem!r}"
     assert "push origin :refs/tags/v9.9.9" in problem, "沒給收回的方法"
+
+
+def test_rg21_a_dry_run_attest_writes_nothing(tmp_path, monkeypatch):
+    """RG21：`--check --attest` 是乾跑，同樣不得留下紀錄。
+
+    RG16 已經把「乾跑不留痕」寫成不變式，但它只擋了 `--override-review`
+    那一半：`--attest` 分支在 `--check` 之前就 return，於是
+    `--check --attest` 照樣把一份**真的**審查記錄寫進 `.fable/attestations/`，
+    把該 commit 永久標成已審查（2026-09-06 抗辯實測）。同一條不變式的兩個
+    入口，只掃了一個——正是本專案一再犯的「同類沒掃完」。
+
+    配對是後半段：格式檢查照跑、錯誤照擋，否則乾跑就變成什麼都不做的空殼。
+    """
+    monkeypatch.setattr(rel, "ATTEST_DIR", str(tmp_path))
+    monkeypatch.setattr(rel, "head_commit", lambda: "c" * 40)
+
+    rc = rel.main(["--check", "--attest",
+                   "--lenses", "skeptic:ok,red-team:ok,simplifier:ok",
+                   "--judge", "看看而已"])
+    assert rc == 0, "乾跑的格式是對的，卻沒通過"
+    assert not list(tmp_path.iterdir()), (
+        f"乾跑留下了審查記錄：{[p.name for p in tmp_path.iterdir()]}")
+
+    bad = rel.main(["--check", "--attest", "--lenses", "skeptic:ok", "--judge", "x"])
+    assert bad == 1, "乾跑不檢查鏡頭是否齊全，那它什麼都沒驗到"
+    assert not list(tmp_path.iterdir()), "失敗的乾跑也不得留痕"

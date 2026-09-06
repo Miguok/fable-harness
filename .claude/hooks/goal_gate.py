@@ -53,7 +53,7 @@ SHELL_TOOLS = {"Bash", "PowerShell"}
 TEST_CMD_RE = re.compile(
     r"(pytest"
     r"|python[3]?(\.exe)?\s+(-m\s+unittest|(\S*[/\\])?(test\S*\.py|\S*_test\.py))"
-    r"|npm\s+(run\s+)?test\b|yarn\s+test\b|pnpm\s+(run\s+)?test\b|bun\s+test\b|node\s+--test"
+    r"|npm\s+(run\s+)?test(?:[:._-][\w:.-]*)?|yarn\s+test(?:[:._-][\w:.-]*)?|pnpm\s+(run\s+)?test(?:[:._-][\w:.-]*)?|bun\s+test\b|node\s+--test"
     r"|go\s+test|cargo\s+test|\bvitest\b|\bjest\b"
     r"|mvnw?(\.cmd)?\s+(\S+\s+)*test(\s|$)|gradlew?(\.bat)?\s+(\S+\s+)*test(\s|$)"
     r"|dotnet\s+test(\s|$)|\brspec\b|\bphpunit\b|\bctest\b|make\s+test\b"
@@ -63,7 +63,16 @@ TEST_CMD_RE = re.compile(
     # 算出的鍵是 `cd=C:/…/Temp :: pytest-of-user/… && python -m pytest tests/ -q`
     # ——命中落在路徑上，整個鍵歪掉。任何含 `pytest`／`jest` 的目錄名都會踩到。
     # 前面刻意**不**限制：`./venv/bin/pytest -q` 是合法的呼叫方式。
-    r"(?![\w-]|/)"
+    #
+    # ⚠ `(?<=\s)` 那一半不可省：上面有四個分支以 `(\s|$)` 結尾，**它們會吃掉
+    # 那個空白**，於是尾界落在下一個 token 的第一個字元上，遇到 `-` 就失敗，
+    # 而 `(\s|$)` 無法回溯成零寬。第一版漏了它，於是 `dotnet test --logger`、
+    # `mvn test -Dtest=X`、`gradlew test --info`、`… --test 2>&1 | tail` 全部
+    # 不再被認成測試執行——整批生態靜默失效，而裸 `pytest`／`go test` 因為不吃
+    # 空白毫髮無傷，所以我自己的配對測試（只寫了 pytest）也沒發現。
+    # 實測 684 份真實 transcript：6,607 → 6,517，少掉的 90 條裡有 12 條是真的
+    # 測試執行。
+    r"(?:(?<=\s)|(?![\w-]|[/" + "\\\\" + r"]))"
 )
 
 # 測試摘要行：`12 passed in 1.2s`／`1 failed, 11 passed`／`3 errors in 0.5s`。
@@ -273,8 +282,20 @@ CONTEXT_SEP = " :: "
 
 
 def strip_context(key):
-    """鍵去掉 context，只留指令本身——權威驗證的比對用這個。"""
+    """鍵去掉 context，只留指令本身——權威驗證的**比對**用這個。"""
     return key.split(CONTEXT_SEP, 1)[1] if CONTEXT_SEP in key else key
+
+
+def key_context(key):
+    """鍵的 context 部分（沒有就是空字串）——權威驗證的**清除範圍**用這個。
+
+    比對與清除刻意用不同的粒度：比對要寬（宣告檔寫乾淨的指令，實際執行帶
+    `cd=…`，不放寬就對不上 93.4% 的執行），清除要窄（不同 context 是不同的
+    目標，一個的綠不得清掉另一個的紅）。把兩者混成同一個粒度時，兩邊各壞一次
+    ——寬的那次讓 `MODE=legacy` 的綠清掉 `MODE=new` 的紅，窄的那次讓整個機制
+    失效。
+    """
+    return key.split(CONTEXT_SEP, 1)[0] if CONTEXT_SEP in key else ""
 
 
 def run_context(prefix):
@@ -295,13 +316,21 @@ def run_context(prefix):
     會被上限淘汰掉。同一個改動在不同的計數模型下，好壞相反。
 
     值要先遮蔽：鍵會落地到狀態檔，而 `TOKEN=… pytest` 的值就是機密。
+    ⚠ **遮蔽要在脫引號之前**。原本是先 `strip("\"'")` 再 `redact`，於是
+    `SECRET_QUOTED_RE`（專為引號值而寫的那條）永遠命中不到，而接手的
+    `SECRET_ASSIGN_RE` 的 `(\\S+)` 只吃到第一個空白為止——
+    `AUTH_TOKEN="Bearer eyJhbGciOiJIUzI1NiJ9.PAYLOAD.SIGZZZ"` 實際落地成
+    `AUTH_TOKEN=*** eyJhbGciOiJIUzI1NiJ9.PAYLOAD.SIGZZZ`：遮罩看起來生效了，
+    酬載卻整段寫進狀態檔，再由 hook 注入回下一回合的對話（2026-09-06 抗辯實測）。
     """
     parts = []
     cds = CD_RE.findall(prefix)
     if cds:
         parts.append("cd=" + cds[-1].strip("\"'").replace("\\", "/").rstrip("/"))
     for name, value in ENV_PREFIX_RE.findall(prefix):
-        parts.append("%s=%s" % (name, value.strip("\"'")))
+        masked = redact("%s=%s" % (name, value))
+        head, _, shown = masked.partition("=")
+        parts.append("%s=%s" % (head, shown.strip("\"'")))
     return redact(" ".join(parts))
 
 
@@ -808,16 +837,25 @@ def run_stop(data, root):
     # 而那是一道會被靜默關掉的閘——正是退回上一版修法的理由。
     latest_red = max((order.get(k, 0) for k, v in verdicts.items() if v == "fail"),
                      default=0)
-    # 權威驗證的比對**只看指令本身，不看 context**。宣告檔裡寫的是乾淨的
-    # `python -m pytest tests/ -q`，而真實執行幾乎都帶著 `cd=…`——實測本機
-    # 6,485 條真實測試執行，**93.4% 帶 context**，只有 6.6% 對得上宣告。
-    # 也就是說 context 一進鍵，這個解除機制就對 93.4% 的執行失效了，而它正是
-    # 用來修最初那個誤判的東西。context 存在的理由是「別讓 A 專案的綠清掉 B
-    # 專案的紅」，那個理由在這裡不成立：宣告檔與狀態檔都在**同一個 repo** 內。
+    # 權威驗證的比對**只看指令本身**（宣告檔寫的是乾淨的
+    # `python -m pytest tests/ -q`，而真實執行 93.4% 帶著 `cd=…`，不剝掉的話
+    # 這個解除機制對 93.4% 的執行失效），但**清除的範圍只到同一個 context**。
+    #
+    # ⚠ 一小時前這裡是 `red.clear()`，而我在 CHANGELOG 寫「跨專案的問題不會經由
+    # 這條路徑發生，因為宣告檔與狀態檔都在同一個 repo」。那句話被實測推翻兩次：
+    # 一是 `cd /other/project && pytest -q` 的綠清掉本 repo 的紅；二是**同一個
+    # repo 內** `MODE=legacy` 與 `MODE=new` 就足以觸發——後者連「跨專案」都不用。
+    # 真實資料：4,922 條執行裡 58.1% 落在「同一個指令由多個 context 到達」的
+    # 群組，最大一組 `pytest -q` 由 98 個不同 context 到達、橫跨三個專案。
+    #
+    # 那句辯護的錯在於：「宣告檔在這個 repo」推不出「這個綠來自這個 repo」——
+    # `cd` 不受宣告檔約束。屬〈引用≠推論〉。
     declared = load_verifiers(root)
-    if any(order.get(k, 0) > latest_red
-           for k in greens if strip_context(k) in declared):
-        red.clear()
+    verified_ctx = {key_context(k) for k in greens
+                    if strip_context(k) in declared and order.get(k, 0) > latest_red}
+    if verified_ctx:
+        for k in [k for k in red if key_context(k) in verified_ctx]:
+            red.pop(k, None)
         state["streak"] = 0
         if (dict(red), state["streak"]) != before:
             save_or_complain(root, state)

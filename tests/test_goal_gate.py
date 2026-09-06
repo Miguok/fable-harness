@@ -79,6 +79,15 @@ G9 的期望隨之反轉（提 id 仍要擋）。文件與程式不一致時，�
   ② 讀取端當時根本沒有測試。
   另外 G27 的第一版把「repo 外」的目錄建在 repo 內（repo 根就是 tmp_path），
   情境根本不成立。三者都是「突變沒翻紅」才抓到的。
+最後執行：2026-09-06 13:40 → 116 passed ✅（全套 352 passed in 33.62s）
+本輪（第五、六輪抗辯）新增 G65-G71，逐條突變驗過：
+  尾界回到「會吃掉分支自帶空白」的版本 → G65/G66 紅（四個生態的測試指令被丟掉）
+  npm 後綴放寬成無分隔符 → 既有的 T10 紅（`npm run testbed` 被當成測試）
+  run_context 改回「先脫引號再遮蔽」→ G71 紅，實際落地的鍵是
+    `AUTH_TOKEN=*** eyJhbGciOiJIUzI1NiJ9.SUPERSECRETPAYLOAD.SIGZZZ :: pytest -q tests/`
+    ——遮罩看起來生效了，酬載整段跟在後面
+
+（以下為 09-05 21:5x 那批的紀錄）
 最後執行：2026-09-05 21:5x → 48 passed ✅
 
 ⏳ 已知限制（本檔未涵蓋，非本輪引入）：
@@ -1641,3 +1650,164 @@ def test_g64_a_path_containing_a_runner_name_is_not_the_test_command(cmd, expect
     否則修法會把一整類合法用法變成「沒有跑測試」。
     """
     assert gg.test_key(cmd) == expect
+
+
+@pytest.mark.parametrize("cmd", [
+    "dotnet test --logger trx",
+    "mvn test -Dtest=FooTest",
+    "./gradlew test --info",
+    "python probe.py --test 2>&1 | tail -3",
+    "make test",
+    "npm test",
+    "go test ./...",
+    "pytest -q",
+])
+def test_g65_every_ecosystem_is_still_recognised_after_the_tail_boundary(cmd):
+    """G65：G64 缺掉的那一半——尾界不得把整批生態變成「沒有跑測試」。
+
+    G64 加尾界是為了擋路徑誤命中，配對案例卻只寫了 `pytest`。而 `pytest` 與
+    `go test` 的分支**不吃結尾空白**，`dotnet test(\s|$)` 這一類**會吃**，於是
+    尾界落在下一個 token 的第一個字元上，遇到 `-` 就失敗，而 `(\s|$)` 無法
+    回溯成零寬。結果：`dotnet test --logger`、`mvn test -Dtest=X`、
+    `gradlew test --info`、`… --test 2>&1 | tail` 全部不再被認成測試執行。
+
+    實測 684 份真實 transcript：6,607 → 6,517，少掉的 90 條裡 12 條是真的
+    測試執行。端到端：那些指令連敗三回合，一次都不擋。
+
+    配對測試只挑了與被改動處**同一類**的案例（都是裸分支），等於沒有配對。
+    這一條把四個生態都列出來，因為它們是不同的分支形狀。
+    """
+    assert gg.TEST_CMD_RE.search(cmd), f"{cmd!r} 不再被認成一次測試執行"
+
+
+def test_g66_both_gates_agree_on_what_a_test_run_is():
+    """G66：`goal_gate` 與 `verify_gate` 的測試指令辨識**不得漂移**。
+
+    兩支各有一份幾乎相同的 `TEST_CMD_RE`。2026-09-06 尾界只加在其中一份，
+    於是同一條 `./gradlew test --info` 在兩支得到相反的答案——而
+    `test_verify_gate.py` 還釘住了其中一個，兩份測試互相打臉。
+
+    這是「同一段文字有多份副本」那個已知反模式的實例。刻意保留兩份副本
+    （兩支 hook 必須各自獨立可執行），所以改用一條測試把它們綁在一起：
+    改一份而不改另一份，這裡會叫。
+    """
+    import verify_gate as vg
+    cases = [
+        "dotnet test --logger trx", "mvn test -Dtest=FooTest",
+        "./gradlew test --info", "python p.py --test 2>&1 | tail -3",
+        "make test", "npm test", "go test ./...", "pytest -q",
+        "cd /tmp/pytest-of-user/x && python -m pytest tests/ -q",
+        "rm -rf .pytest-tmp-c2", "ls .pytest_cache/",
+        "grep pytest-of-user .gitignore",
+    ]
+    drift = [c for c in cases
+             if bool(gg.TEST_CMD_RE.search(c)) != bool(vg.TEST_CMD_RE.search(c))]
+    assert not drift, f"兩支 hook 對這些指令的判定不一致：{drift}"
+
+
+def test_g67_a_verifier_green_only_clears_its_own_context(tmp_path):
+    """G67：權威綠只清掉**同一個 context** 的紅。
+
+    2026-09-06 第五輪抗辯推翻了我一小時前寫進 CHANGELOG 的辯護
+    （「宣告檔與狀態檔都在同一個 repo，跨專案的問題不會經由這條路徑發生」）。
+    兩個實測反例：
+      · `cd /other/project && pytest -q` 的綠清掉本 repo 的紅
+      · **同一個 repo 內**，`MODE=legacy` 的綠清掉 `MODE=new` 的紅——連跨專案
+        都不需要，而 `run_context` 的註解自己就寫著這兩個是不同的目標
+
+    那句辯護的錯在於「宣告檔在這個 repo」推不出「這個綠來自這個 repo」：
+    `cd` 不受宣告檔約束。真實資料 4,922 條執行裡 58.1% 落在「同一個指令由多個
+    context 到達」的群組。
+
+    比對與清除因此用不同粒度：比對寬（否則對不上 93.4% 的執行），清除窄。
+    """
+    repo = _repo(tmp_path, {"streak": 0, "shelved": [], "red": {}})
+    _declare_verifier(repo, "pytest -q")
+
+    _run(repo, _runs(("MODE=new pytest -q", FAIL_OUT)))
+    _run(repo, _runs(("MODE=new pytest -q", FAIL_OUT)))
+    assert _state(repo)["streak"] == 2, "前置不成立：沒爬到第 2 格"
+
+    _run(repo, _runs(("MODE=legacy pytest -q", PASS_OUT)))
+    left = _state(repo)["red"]
+    assert left, "另一個 context 的權威綠把這個 context 的紅清掉了"
+    assert "MODE=new" in list(left)[0], left
+
+
+def test_g68_a_verifier_green_still_clears_its_own_context(tmp_path):
+    """G68：G67 的配對——同一個 context 的權威綠仍必須清得掉。
+
+    只有 G67 的話，一個「權威驗證整個不生效」的實作也會通過，而那正是
+    2026-09-06 稍早才修掉的另一半（宣告對不上 93.4% 的執行）。
+    """
+    repo = _repo(tmp_path, {"streak": 0, "shelved": [], "red": {}})
+    _declare_verifier(repo, "python -m pytest tests/ -q")
+    here = "cd %s" % str(repo).replace("\\", "/")
+
+    out = _run(repo, _runs(
+        ("%s && python -m pytest tests/test_x.py -q -k g27" % here, FAIL_OUT),
+        ("%s && python -m pytest tests/ -q" % here, PASS_OUT)))
+    st = _state(repo)
+    assert st.get("red", {}) == {}, f"同一個 context 的權威綠沒清掉紅：{st['red']}"
+    assert st["streak"] == 0 and not _blocked(out)
+
+
+@pytest.mark.parametrize("cmd,expect", [
+    ("npm run test-ci", True),      # JS 生態常見的腳本名，尾界一度把它丟掉
+    ("npm run test-unit", True),
+    ("yarn test-watch", True),
+    ("pnpm run test_e2e", True),
+    ("npm run test:unit", True),
+    ("npm test", True),
+    ("npm run testbed", False),     # 配對：不是測試腳本，不得誤認
+    ("npm run testify", False),
+])
+def test_g69_script_names_with_a_suffix_are_still_test_runs(cmd, expect):
+    """G69：`npm run test-ci` 這類帶後綴的腳本名仍是測試執行。
+
+    尾界的第一版丟掉它們（實測 75/4,997 ≈ 1.5% 的真實執行），因為
+    `test\b` 之後接 `-` 就被尾界擋下。整個 JS 專案的階梯會靜默關閉。
+
+    配對是後兩條：放寬成 `test[\w:.-]*` 時 `npm run testbed` 也被當成測試——
+    那是既有的 T10（verify_gate 的假放行守衛）當場抓到的，所以收窄成
+    **必須有分隔符**（`test-`／`test:`／`test_`），`testbed` 不算。
+    """
+    assert bool(gg.TEST_CMD_RE.search(cmd)) is expect
+
+
+def test_g70_a_windows_path_containing_a_runner_name_is_not_the_test_command():
+    """G70：G64 的反斜線版——尾界排除了 `/` 卻沒排除 `\`。
+
+    `cd C:\Temp\pytest\tmp && python -m pytest tests/ -q` 的命中一度落在
+    路徑上，算出 `cd=C:/Temp :: pytest\tmp && python -m pytest tests/ -q`。
+    真實語料 141/4,937（2.86%）的鍵仍含 `&&`，正是這個形態。
+
+    這是 G64 修的同一類，只是換了分隔字元——「同一類沒掃完」的又一次。
+    """
+    key = gg.test_key(r"cd C:\Temp\pytest\tmp && python -m pytest tests/ -q")
+    assert key == "cd=C:/Temp/pytest/tmp :: pytest tests/ -q", key
+    assert "&&" not in key, f"指令半邊仍含 &&，命中落在路徑上：{key}"
+
+
+def test_g71_a_quoted_secret_with_a_space_does_not_reach_the_key():
+    """G71：引號裡帶空白的機密，必須整段被遮掉。
+
+    `run_context` 原本先 `strip("\"'")` 再 `redact`，於是專為引號值而寫的
+    `SECRET_QUOTED_RE` 永遠命中不到，接手的 `SECRET_ASSIGN_RE` 只吃到第一個
+    空白為止——遮罩看起來生效了（鍵裡確實有 `***`），酬載卻整段跟在後面
+    落進 `.fable/goal_state.json`，再由 hook 注入回下一回合的對話。
+
+    配對是後兩條：不像機密的鍵要保留原值，否則擱置項看不出你卡在哪；
+    引號本身仍要脫掉，否則 `MODE="new"` 與 `MODE=new` 會變成兩個目標。
+    """
+    payload = "eyJhbGciOiJIUzI1NiJ9.SUPERSECRETPAYLOAD.SIGZZZ"
+    key = gg.test_key('AUTH_TOKEN="Bearer %s" pytest -q tests/' % payload)
+    assert payload not in key, f"機密酬載進了鍵：{key}"
+    assert key == "AUTH_TOKEN=*** :: pytest -q tests/", key
+
+    spaced = gg.test_key("API_KEY='sk live AAAABBBBCCCC' pytest -q tests/")
+    assert "AAAABBBBCCCC" not in spaced, f"機密酬載進了鍵：{spaced}"
+
+    assert gg.test_key("FILE=tests/test_auth.py pytest -q") == \
+        "FILE=tests/test_auth.py :: pytest -q"
+    assert gg.test_key('MODE="new" pytest -q') == gg.test_key("MODE=new pytest -q")

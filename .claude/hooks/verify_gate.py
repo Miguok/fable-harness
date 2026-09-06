@@ -26,14 +26,19 @@ CODE_EXTS = {
 TEST_CMD_RE = re.compile(
     r"(pytest"
     r"|python[3]?(\.exe)?\s+(-m\s+unittest|(\S*[/\\])?(test\S*\.py|\S*_test\.py))"
-    r"|npm\s+(run\s+)?test\b|yarn\s+test\b|pnpm\s+(run\s+)?test\b|bun\s+test\b|node\s+--test"
+    r"|npm\s+(run\s+)?test(?:[:._-][\w:.-]*)?|yarn\s+test(?:[:._-][\w:.-]*)?|pnpm\s+(run\s+)?test(?:[:._-][\w:.-]*)?|bun\s+test\b|node\s+--test"
     r"|go\s+test|cargo\s+test|\bvitest\b|\bjest\b"
     r"|mvnw?(\.cmd)?\s+(\S+\s+)*test(\s|$)|gradlew?(\.bat)?\s+(\S+\s+)*test(\s|$)|dotnet\s+test(\s|$)"
     r"|\brspec\b|\bphpunit\b|\bctest\b|make\s+test\b|rake\s+(\S+\s+)*test\b|mix\s+test\b"
     r"|(^|[;&|]\s*)(tox|nox)\b|deno\s+test|rails\s+test"
     # 腳本自帶 --test 自測入口（2026-07-05 T11：zh_convert_safe.py --test 真實
     # session 連續誤攔實證）；(\s|$) 錨定使 --tests/--testing/--test-pypi 不假放行
-    r"|\s--test(\s|$))",
+    r"|\s--test(\s|$))"
+    # 與 goal_gate 的同一條尾界：路徑裡的 `pytest`／`jest` 不得被當成測試指令。
+    # 兩份必須同時改——2026-09-06 只改了一份，於是同一條 `./gradlew test --info`
+    # 在兩支 hook 得到相反的答案，而 verify_gate 的測試還釘住了其中一個。
+    # `(?<=\s)` 那一半處理「分支自己吃掉了空白」的情形，見 goal_gate 的說明。
+    r"(?:(?<=\s)|(?![\w-]|[/" + "\\\\" + r"]))",
     re.IGNORECASE,
 )
 
@@ -117,6 +122,24 @@ def is_real_user_prompt(entry):
     return not text.lstrip().startswith(LOCAL_COMMAND_PREFIXES)
 
 
+MAX_LISTED_FILES = 12   # 擋人訊息最多列幾個檔名
+
+
+def one_line(value, limit):
+    """把一個檔名壓成單行再截斷——與 `goal_gate.one_line` 同一條規則。
+
+    這段訊息會原封不動注入下一回合的對話，而檔名來自 transcript，是**模型自己
+    寫過的字**。`file_path` 裡塞一個換行，就能在資料區裡自己寫一行
+    「（以上為 gate 訊息結束）」把後面的內容推到框架之外；不設上限則是同一個
+    洞的另一半——一輪改一百個檔，擋人訊息就變成一整螢幕。
+
+    `goal_gate` 這一輪已經為擱置項補上同樣的處理，這裡漏掉：同一類沒掃完，
+    而這是這個類別的第三個實例（前兩個是注入 repo 檔名與注入擱置備註）。
+    """
+    text = str(value if value is not None else "")
+    return " ".join(text.split())[:limit]
+
+
 def iter_tool_uses(entries):
     for entry in entries:
         if entry.get("type") != "assistant":
@@ -194,7 +217,8 @@ def main():
                     continue
         edited, test_seen = analyze(entries)
         if edited and not test_seen:
-            files = "、".join(dict.fromkeys(edited))
+            files = "、".join(one_line(n, 80) for n in
+                             list(dict.fromkeys(edited))[:MAX_LISTED_FILES])
             print(json.dumps({
                 "decision": "block",
                 "reason": (

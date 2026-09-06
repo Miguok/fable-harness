@@ -326,6 +326,15 @@ def main(argv=None):
         if not args.judge:
             print("⛔ --judge 不得留白：三個鏡頭之後還要有一個裁決")
             return 1
+        # 乾跑不得留下任何紀錄——這條在下面 `--check` 那裡寫過一次，卻只擋了
+        # `--override-review` 那一半：`--check --attest` 照樣把一份真的審查記錄
+        # 寫進 .fable/attestations/，於是「只是看看」就把該 commit 永久標成已審查
+        # （2026-09-06 抗辯實測）。同一條不變式的兩個入口，只掃了一個。
+        # 上面的格式檢查照跑，所以 `--check --attest` 仍是有用的乾跑：它會告訴你
+        # 鏡頭字串與裁決寫對了沒，只是不落地。
+        if args.check:
+            print("✅ 乾跑：審查記錄格式正確，未寫入 %s" % attestation_path(commit))
+            return 0
         # 不在這裡跑測試：`tests` 欄位沒有任何讀者（`check_review` 只讀
         # `reviewed_commit`），而跑一次全套要 20 秒——一次發佈會跑三次，
         # 其中這一次的結果直接被丟掉。要記就由使用者用 --tests 貼進來。

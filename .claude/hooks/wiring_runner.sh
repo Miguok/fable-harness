@@ -20,7 +20,19 @@
 # must stay in the seconds, because a slow gate gets bypassed, and a bypassed
 # gate is not a gate. Full regression stays your responsibility before pushing.
 
-DECL="${WIRING_DECL:-.claude/wiring-guards}"
+# 宣告檔的位置從**第一個參數**取，不從環境變數。
+#
+# ⚠ 這裡原本是 `DECL="${WIRING_DECL:-.claude/wiring-guards}"`，一個為了測試而
+# 開的環境變數。它是**生產環境的靜默繞道**：實測
+# `WIRING_DECL=<內容只有 true 的檔案> git commit` → 守衛一次都沒跑、rc=0、
+# commit 成立、沒有任何訊息。比官方認可的 `ALLOW_UNWIRED=1` 還糟——後者至少
+# 會印一行留痕。而它在 wiring_gate.py、任何 .md、甚至本檔的檔頭都沒被提過，
+# 全 repo 只有一個測試在用（2026-09-06 抗辯實測）。
+#
+# 改成參數之後，生產環境沒有這個縫：git 呼叫 pre-commit 時不帶參數，
+# 想改宣告檔位置的人得自己直接執行這支腳本，那本來就繞得過任何東西。
+# 「為了測試而在生產程式碼上開的縫」正是這套工具存在的理由，而它就在自己身上。
+DECL="${1:-.claude/wiring-guards}"
 [ -f "$DECL" ] || exit 0
 
 wiring_failed=""

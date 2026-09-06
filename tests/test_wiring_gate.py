@@ -95,6 +95,17 @@ R1/R2/R3 同理：拿掉 `</dev/null`、拿掉 `|| [ -n "$line" ]`、拿掉假�
 A 補上宣告檔會刪掉碰撞 repo B 的提示，B 永遠不會知道（被刪與從未產生同形）。
 
 執行命令：python -m pytest tests/test_wiring_gate.py -q -k "w14 or w22"
+最後執行：2026-09-06 13:40 → 107 passed ✅（全套 352 passed in 33.62s）
+本輪（第五、六輪抗辯）新增 W32-W36，逐條突變驗過：
+  git_env_prefix 改回讀整條指令列 → W33 紅
+  runner 的 WIRING_DECL 環境接縫復活 → W34 紅
+  包裝器退回只認 command／time → W35 的 9 個參數紅（`env`／`sudo`／`nice`／
+    `nohup` 包裝的 --no-verify 原本回 SKIP，也就是閘完全不介入）
+  GIT_COMMON_DIR 從 keep 拿掉 → W36 紅。⚠ 補這條之前它零覆蓋，而實測
+    `GIT_COMMON_DIR=<剝掉 hooks 的同一份 .git> git commit` **commit 成立、
+    pre-commit 一次都沒跑**（git 2.53.0.windows.1）。
+
+（以下為 09-05 23:25 那批的紀錄）
 最後執行：2026-09-05 23:25 → 2 passed ✅（全套 216 passed）
 
 fail-then-pass 實測值：
@@ -131,6 +142,7 @@ W14 原本的 fixture 寫的是 `repo: x`（別人的提示）卻斷言它必須
 import json
 import re
 import os
+import shutil
 import subprocess
 import sys
 
@@ -684,9 +696,12 @@ def test_gate_fails_open_on_garbage_input(tmp_path):
 def _run_runner(tmp_path, decl_text, env=None):
     decl = tmp_path / "decl"
     decl.write_text(decl_text, encoding="utf-8", newline="")
-    e = dict(os.environ, WIRING_DECL=str(decl))
+    e = dict(os.environ)
     e.update(env or {})
-    out = subprocess.run(["sh", RUNNER], capture_output=True, text=True,
+    # 宣告檔的位置用**參數**傳，不用環境變數：環境變數版是生產環境的靜默繞道
+    # （`WIRING_DECL=<無害檔案> git commit` 讓守衛一次都不跑而 rc=0），
+    # 而 git 呼叫 pre-commit 時不帶參數，所以參數版在生產環境沒有這個縫。
+    out = subprocess.run(["sh", RUNNER, str(decl)], capture_output=True, text=True,
                          cwd=str(tmp_path), env=e, timeout=120)
     return out.returncode, out.stdout + out.stderr
 
@@ -1027,3 +1042,164 @@ def test_w31_a_hostile_home_gitconfig_does_not_get_executed(tmp_path):
     assert not marker.exists(), (
         "探測讀了惡意 .gitconfig 並執行了它的指令——防繞道的修法變成了 RCE"
     )
+
+
+@pytest.mark.parametrize("form", ["=", " "])
+def test_w32_git_dir_on_the_command_line_is_followed_too(tmp_path, form):
+    """W32：`git --git-dir <別的 .git>` 與環境變數同義，兩種拼法都要擋。
+
+    W30 擋的是 `GIT_DIR=` 環境變數。指令列上的 `--git-dir` 是同一件事，而
+    2026-09-06 的實測是：`=` 的寫法漏擋、**空格的寫法連 commit 都沒被認出來**
+    ——`GIT_GLOBAL_OPT` 只認 `--opt=value`，於是 `git --git-dir /alt/.git commit`
+    整條樣式比不中，整道閘完全不介入。兩個層次的洞疊在同一個選項上。
+
+    這條先驗「繞道真的成立」（哨兵不跑）再驗 gate 擋下來。
+    """
+    alt = tmp_path / "alt.git"
+    repo = _wired_repo_with_sentinel(tmp_path / "r")
+    import shutil
+    shutil.copytree(str(repo / ".git"), str(alt))
+    shutil.rmtree(str(alt / "hooks"), ignore_errors=True)
+
+    args = (["--git-dir=%s" % alt, "--work-tree=%s" % repo] if form == "="
+            else ["--git-dir", str(alt), "--work-tree", str(repo)])
+    assert not _commit_with(repo, args), "前置不成立：這條沒有真的跳過 hook"
+
+    sep = "=" if form == "=" else " "
+    cmd = "git --git-dir%s%s --work-tree%s%s commit -m x" % (sep, alt, sep, repo)
+    assert _is_deny(_run_gate(_bash(cmd), repo)), f"--git-dir（{form!r} 寫法）沒被擋"
+
+
+def test_w33_a_decoy_later_on_the_line_does_not_override_this_invocation(tmp_path):
+    """W33：指令列後段的同名變數不得覆蓋掉這一次呼叫自己的前綴。
+
+    `git_env_prefix` 一度讀**整條指令列**，於是
+    `GIT_CONFIG_GLOBAL=<惡意> git commit -m x ; GIT_CONFIG_GLOBAL=<乾淨> true`
+    會讓探測讀到後面那個乾淨的值而放行——守衛不跑、commit 成立。
+
+    這是同一類的**第三個**實例：`commit_invocations` 與 `target_dir` 的說明
+    都寫著「從整條指令列讀會讓整道閘關掉」，而它已經被修過兩次。類別是
+    「讀這一次呼叫自己的範圍，不是讀整行」。
+    """
+    empty = tmp_path / "no-hooks"
+    empty.mkdir()
+    evil = tmp_path / "evil.cfg"
+    evil.write_text("[core]\n\t%s = %s\n" % (_HP, str(empty).replace("\\", "/")),
+                    encoding="utf-8", newline="")
+    clean = tmp_path / "clean.cfg"
+    clean.write_text("[user]\n\tname = x\n", encoding="utf-8", newline="")
+    repo = _wired_repo_with_sentinel(tmp_path / "r")
+
+    cmd = ("GIT_CONFIG_GLOBAL=%s git commit -m x ; GIT_CONFIG_GLOBAL=%s true"
+           % (evil, clean))
+    assert _is_deny(_run_gate(_bash(cmd), repo)), "後段的誘餌把真正的前綴蓋掉了"
+
+
+def test_w33b_an_unrelated_later_segment_is_not_a_false_deny(tmp_path):
+    """W33b：W33 的配對——commit 之後**無關**的段落不得讓 commit 被誤擋。
+
+    同一個缺陷的另一個方向：讀整行時，`git commit -m x && GIT_DIR=<別處> git log`
+    會讓 commit 被擋，而且擋人的說明還叫你去改**另一個 repo** 的 hooks——
+    照做會改到不相干的專案，而且修不好眼前這個。
+    """
+    other = _git_repo(tmp_path / "other", declare=False)
+    repo = _wired_repo_with_sentinel(tmp_path / "r")
+    cmd = "git commit -m x && GIT_DIR=%s git log --oneline -1" % (other / ".git")
+    assert not _is_deny(_run_gate(_bash(cmd), repo)), "無關的後段造成誤擋"
+
+
+def test_w34_the_runner_has_no_environment_seam(tmp_path):
+    """W34：runner 不得有「用環境變數換掉宣告檔」的接縫。
+
+    `DECL="${WIRING_DECL:-…}"` 是為了測試而開的，但它是**生產環境的靜默繞道**：
+    實測 `WIRING_DECL=<內容只有 true 的檔案> git commit` → 守衛一次都沒跑、
+    rc=0、commit 成立、**沒有任何訊息**。比官方認可的 `ALLOW_UNWIRED=1` 還糟，
+    後者至少印一行留痕。而它在任何文件、甚至 runner 自己的檔頭都沒被提過。
+
+    「為了測試而在生產程式碼上開的縫」正是這套工具存在的理由，而它就在自己
+    身上。改用參數之後生產環境沒有這個縫：git 呼叫 pre-commit 時不帶參數。
+    """
+    decl = tmp_path / "real"
+    decl.write_text('sh -c "echo REAL-GUARD-RAN >&2; exit 1"\n',
+                    encoding="utf-8", newline="")
+    harmless = tmp_path / "harmless"
+    harmless.write_text("true\n", encoding="utf-8", newline="")
+
+    work = tmp_path / "w"
+    work.mkdir()
+    (work / ".claude").mkdir()
+    (work / ".claude" / "wiring-guards").write_text(
+        'sh -c "echo REAL-GUARD-RAN >&2; exit 1"\n', encoding="utf-8", newline="")
+
+    out = subprocess.run(["sh", RUNNER], capture_output=True, text=True,
+                         cwd=str(work), timeout=120,
+                         env=dict(os.environ, WIRING_DECL=str(harmless)))
+    both = out.stdout + out.stderr
+    assert "REAL-GUARD-RAN" in both, (
+        "WIRING_DECL 換掉了宣告檔——測試接縫變成生產環境的靜默繞道"
+    )
+    assert out.returncode != 0, "守衛紅了卻回綠"
+
+
+@pytest.mark.parametrize("cmd,expect", [
+    # 讓 `git commit --no-verify` 原封不動跑起來的包裝器。原本只認
+    # `command`／`time`，其餘三種整條樣式比不中——回的不是誤判成 COMMIT，
+    # 是 SKIP：閘完全不介入（2026-09-06 抗辯實測三條全 SKIP）。
+    ("env git commit --no-verify -m x", "NOVERIFY"),
+    ("sudo git commit --no-verify -m x", "NOVERIFY"),
+    ("nice git commit --no-verify -m x", "NOVERIFY"),
+    ("nohup git commit -n -m x", "NOVERIFY"),
+    ("sudo -u root git commit --no-verify -m x", "NOVERIFY"),
+    ("env GIT_DIR=/x git commit --no-verify -m x", "NOVERIFY"),
+    # 配對：放寬前綴不得把正常形態變成誤擋——誤擋比漏擋更糟，
+    # 因為它會讓人把整道閘關掉。
+    ("env git commit -m x", "COMMIT"),
+    ("sudo git commit -m 'fix: x'", "COMMIT"),
+    ("git commit -Sjohn -m x", "COMMIT"),
+    ('echo "sudo git commit --no-verify" > note.txt', "SKIP"),
+    ("sudo apt install git", "SKIP"),
+])
+def test_w35_command_wrappers_are_still_a_commit(cmd, expect):
+    """W35：`env`／`sudo`／`nice`／`nohup` 包裝的 commit 仍要被判定。"""
+    assert wiring_gate.classify(_bash(cmd)) == expect
+
+
+def test_w35b_an_env_wrapper_still_hands_its_assignments_to_the_probe():
+    """W35b：`env FOO=1 git commit` 的賦值必須進得了 env 前綴。
+
+    放寬前綴時最容易踩的坑：把 `env` 排除在捕捉群組之外，賦值就跟著被排除，
+    探測子行程於是拿**真 repo** 的設定去解析一個指向別處的 commit——
+    答錯的方向是放行。所以整段前綴用同一個群組吃下來，再由 `ENV_ASSIGN_RE`
+    挑出賦值（`sudo`、`-u root` 會被它忽略）。
+    """
+    invocations = wiring_gate.commit_invocations(
+        "env GIT_DIR=/tmp/elsewhere/.git git commit -m x")
+    assert len(invocations) == 1, invocations
+    env = wiring_gate.git_env_prefix(invocations[0][2], invocations[0][0])
+    assert env.get("GIT_DIR") == "/tmp/elsewhere/.git", env
+
+
+def test_w36_git_common_dir_redirects_the_hook_and_must_be_denied(tmp_path):
+    """W36：`GIT_COMMON_DIR` 是第七條改道通道，而它零覆蓋。
+
+    `keep` 裡有這個名字，卻沒有任何一條測試單獨盯著它：把它從 `keep` 拿掉，
+    89 條 wiring 測試全綠（2026-09-06 突變實測；W30 只咬得住 `GIT_DIR`）。
+
+    先量測再斷言——hooks 住在 common dir，所以指到一份**剝掉 hooks 的同一份
+    `.git`**，commit 照樣成立而 pre-commit 一次都沒跑（實測 git 2.53.0）。
+    配對是第二半：指回自己的 `.git` 是 worktree 的正常寫法，不得誤擋。
+    """
+    repo = _wired_repo_with_sentinel(tmp_path / "r")
+    stripped = tmp_path / "r" / "nohooks.git"
+    shutil.copytree(str(repo / ".git"), str(stripped))
+    os.remove(str(stripped / "hooks" / "pre-commit"))
+
+    assert not _commit_with(repo, (), {"GIT_COMMON_DIR": str(stripped)}), \
+        "前置不成立：GIT_COMMON_DIR 沒有真的讓 hook 不跑，這條測不到東西"
+
+    deny = _run_gate(_bash("GIT_COMMON_DIR=%s git commit -m x" % stripped), repo)
+    assert _is_deny(deny), "GIT_COMMON_DIR 改道到沒有 hooks 的地方，卻沒被擋"
+
+    allow = _run_gate(
+        _bash("GIT_COMMON_DIR=%s git commit -m x" % (repo / ".git")), repo)
+    assert not _is_deny(allow), "指回自己的 .git 是正常寫法，卻被誤擋"

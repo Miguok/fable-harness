@@ -76,11 +76,35 @@ DECL_REL = os.path.join(".claude", "wiring-guards")
 # 都可以插在 `git` 與 `commit` 之間，而它們原本讓整個樣式比不中——
 # `git --no-pager commit -n` 因此完全不被檢查。引號路徑同理（Windows 常態）。
 VALUE = r"(?:\"[^\"]*\"|'[^']*'|\S+)"
-GIT_GLOBAL_OPT = r"(?:-[cC]\s+" + VALUE + r"|--[\w-]+(?:=" + VALUE + r")?)"
+# git 的全域長選項有一批是**吃下一個 token 當值**的（`--git-dir <path>`）。
+# 原本只認 `--opt=value`，於是 `git --git-dir /alt/.git commit` 整條樣式比不中
+# ——不是放行，是**根本沒被認成 commit**，整道閘完全不介入。實測那條指令
+# 讓守衛不跑而 commit 成立，gate 一聲不吭。`=` 的寫法擋得住、空格的擋不住，
+# 是同一個選項的兩種拼法，屬「同一類沒掃完」。
+GIT_VALUE_OPTS = (r"--(?:git-dir|work-tree|namespace|exec-path|super-prefix"
+                  r"|attr-source|config-env)")
+GIT_GLOBAL_OPT = (r"(?:-[cC]\s+" + VALUE + r"|" + GIT_VALUE_OPTS + r"\s+" + VALUE
+                  + r"|--[\w-]+(?:=" + VALUE + r")?)")
+# `git` 之前那一段。原本只認「環境變數指派」加 `command`／`time` 兩個包裝器，
+# 於是 `env git commit --no-verify`、`sudo git commit --no-verify`、
+# `nice git commit --no-verify` 三種寫法**整條樣式比不中**——回的是 SKIP，
+# 也就是閘完全不介入，而那三條指令跑起來與裸的 `--no-verify` 一模一樣
+# （2026-09-06 抗辯實測三條全 SKIP）。這是「同一件事的多種拼法只掃了一種」，
+# 與 `--git-dir` 空格寫法同一類。
+#
+# 整段用**同一個捕捉群組**吃下來（不是像從前那樣把包裝器排除在群組外），
+# 因為 `env GIT_DIR=/x git commit` 的賦值必須進得了 env 前綴：探測子行程
+# 少了它就會拿真 repo 的設定去解析一個指向別處的 commit，答錯的方向是放行。
+# `ENV_ASSIGN_RE` 只挑得出賦值，`sudo`／`-u root` 這些會被它忽略。
+WRAPPER_NAME = r"(?:command|time|env|sudo|doas|nice|nohup|stdbuf)"
+# 包裝器自己的旗標可以帶一個獨立的值（`sudo -u root`）。那個值用否定環視
+# 擋住 `git` 與另一個旗標，免得把整條指令吃過頭變成誤擋——誤擋比漏擋更糟。
+PREFIX_TOKEN = (r"(?:" + WRAPPER_NAME +
+                r"|[A-Za-z_][A-Za-z0-9_]*=" + VALUE +
+                r"|-\S+(?:\s+(?!git(?:\.exe)?[\s]|-)[^\s;&|]+)?)")
 GIT_COMMIT_RE = re.compile(
     r"(?:^|[;&|(){\n\r]|\bthen\b|\bdo\b)\s*"
-    r"(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*"
-    r"(?:command\s+|time\s+)?"
+    r"((?:" + PREFIX_TOKEN + r"\s+)*)"
     r"git(?:\.exe)?((?:\s+" + GIT_GLOBAL_OPT + r")*)"
     r"\s+commit(?:\s|$)"
 )
@@ -165,7 +189,8 @@ def commit_invocations(stripped):
     for m in GIT_COMMIT_RE.finditer(stripped):
         rest = stripped[m.end():]
         end = SEGMENT_END_RE.search(rest)
-        out.append((m.group(1) or "", rest[:end.start()] if end else rest))
+        out.append((m.group(2) or "", rest[:end.start()] if end else rest,
+                    m.group(1) or ""))
     return out
 
 
@@ -179,7 +204,7 @@ def commit_segments(stripped):
     first segment has the opposite failure: `git commit -m "x" && git commit -n`
     would pass while the second commit skips the hook.
     """
-    return [seg for _, seg in commit_invocations(stripped)]
+    return [seg for _, seg, _env in commit_invocations(stripped)]
 
 
 GIT_C_RE = re.compile(r"-C\s+(" + VALUE + r")")
@@ -267,7 +292,7 @@ def inline_config(options, line=""):
     return args
 
 
-def git_env_prefix(line):
+def git_env_prefix(env_prefix, options=""):
     """指令列上那些**會改變 git 行為**的環境變數前綴。
 
     交給探測子行程，讓 git 自己解析實際生效的設定。只取 git 自己會讀的那些，
@@ -281,8 +306,22 @@ def git_env_prefix(line):
     keep = ("GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM",
             "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR",
             "HOME", "USERPROFILE", "XDG_CONFIG_HOME")
+    # `git --git-dir=<路徑>` 與 `--work-tree=` 是**指令列**上的同義寫法，
+    # 效果與同名環境變數一樣。只掃 env 賦值時它們一個都收不到：實測
+    # `git --git-dir=<剝掉 hooks 的 .git> --work-tree=<repo> commit -am x`
+    # 真的產出 commit、哨兵不跑、gate 放行，而同語意的 `GIT_DIR=` 被擋下。
+    # 這一段的檔頭註解早就知道這兩個選項會插在 `git` 與 `commit` 之間
+    # （用來對樣式），卻沒把它們當成 hooks 改道——同一類沒掃完。
     out = {}
-    for name, value in ENV_ASSIGN_RE.findall(line):
+    for opt, var in (("git-dir", "GIT_DIR"), ("work-tree", "GIT_WORK_TREE"),
+                     ("git-common-dir", "GIT_COMMON_DIR")):
+        # `--git-dir` 這類在**選項段**（git 與 commit 之間），env 賦值在**前綴**，
+        # 兩者是這一次呼叫的不同部位，都要各自傳進來——傳整條指令列的話，
+        # 後面無關的段落會覆蓋或誤擋（那正是這一輪抓到的第三個同類實例）。
+        m = re.search(r"--%s(?:=|\s+)(%s)" % (opt, VALUE), options)
+        if m:
+            out[var] = m.group(1).strip("\"'")
+    for name, value in ENV_ASSIGN_RE.findall(env_prefix):
         if name in keep:
             out[name] = value.strip("\"'")
     return out
@@ -593,6 +632,13 @@ def main(argv=None):
         line = normalised(payload)
         invocations = commit_invocations(line)
         options = invocations[0][0] if invocations else ""
+        # **這一次呼叫自己的** env 前綴，不是整條指令列的。讀整條的話，
+        # `git commit -m x ; GIT_CONFIG_GLOBAL=<乾淨的> true` 這種尾巴會覆蓋掉
+        # 真正的前綴（漏擋），而 `git commit -m x && GIT_DIR=<別處> git log`
+        # 這種無關的後段會讓 commit 被誤擋、還叫人去改另一個 repo 的 hooks。
+        # 檔內的 `commit_invocations` 與 `target_dir` 兩處的說明都寫著同一件事
+        # 已經修過——這是同一類的第三個實例（2026-09-06 抗辯）。
+        own_env = invocations[0][2] if invocations else ""
         root = repo_root(cwd=target_dir(options))
         if not root:
             return 0
@@ -609,7 +655,7 @@ def main(argv=None):
         if unaccounted_hookspath(line, options, config_args):
             deny(HOOKSPATH_REASON)
             return 0
-        reason = check_wiring(root, config_args, git_env_prefix(line))
+        reason = check_wiring(root, config_args, git_env_prefix(own_env, options))
         if reason:
             deny(reason)
     except Exception:
