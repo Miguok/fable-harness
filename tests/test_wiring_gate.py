@@ -8,7 +8,8 @@
   W4 pre-commit 存在但內容不提及宣告檔 → 擋（裝了別的 hook，守衛仍不會跑）
   W5 正確接線 → 放行
   W6 指令判定不受 commit 訊息內文左右（訊息裡寫到旗標不得讓整道閘放行）
-  W7 `--amend`、非 commit 指令、其他工具 → SKIP；PowerShell 與 Bash 同樣受管
+  W7 非 commit 指令、其他工具 → SKIP；PowerShell 與 Bash 同樣受管
+     （`--amend` 2026-09-06 起改回 COMMIT：實測它會執行 pre-commit，見 W38）
   W8 旗標只讀 `git commit` 那一段，且短旗標叢集要拆開：
      `-nm`／`-anm`／`--amend --no-verify` 要擋；`&& git log -n 1`、`; sort -n f` 不得擋
   W9 pre-commit 路徑向 git 問（`rev-parse --git-path`），不是拼 `.git/hooks/`
@@ -95,6 +96,18 @@ R1/R2/R3 同理：拿掉 `</dev/null`、拿掉 `|| [ -n "$line" ]`、拿掉假�
 A 補上宣告檔會刪掉碰撞 repo B 的提示，B 永遠不會知道（被刪與從未產生同形）。
 
 執行命令：python -m pytest tests/test_wiring_gate.py -q -k "w14 or w22"
+最後執行：2026-09-06 14:1x → 109 passed ✅（全套 360 passed in 37.77s）
+第六輪抗辯新增 W37／W38，兩條都以突變驗過：
+  main 退回只判第一個 commit → W37 紅。⚠ 這是一個**已兌現的 P0**：
+    `git -C vendor commit -m bump && git commit -am x --no-verify` 在 opt-in
+    且正確接線的 repo 上實測 **ALLOW**，而裸的同一條 DENY。`classify` 掃全部
+    segment、`main` 只取 invocations[0]，範圍不一致。107 條測試全綠是因為每一條
+    --no-verify 案都斷言在 classify 上，而 classify 是對的。
+  amend 豁免復活 → W38 紅。amend 原本整條回 SKIP，於是沒接線的 repo 換一個旗標
+    就免罰；實測 `git commit --amend --no-edit` 與 `--amend -m` 都會執行
+    pre-commit（git 2.53.0，哨兵印出 SENTINEL_RAN）。
+
+（以下為 09-06 13:40 那批的紀錄）
 最後執行：2026-09-06 13:40 → 107 passed ✅（全套 352 passed in 33.62s）
 本輪（第五、六輪抗辯）新增 W32-W36，逐條突變驗過：
   git_env_prefix 改回讀整條指令列 → W33 紅
@@ -200,7 +213,9 @@ def _is_deny(stdout):
 # ── 判定層（不碰檔案系統）────────────────────────────────────────────
 @pytest.mark.parametrize("cmd,expect", [
     ('git commit -m "fix: x"', "COMMIT"),
-    ('git commit --amend -m "x"', "SKIP"),
+    # `--amend` 不再豁免：實測兩種 amend 寫法都會執行 pre-commit，所以
+    # opt-in 卻沒接線的 repo 用 amend 一樣是「守衛沒跑」的 commit。
+    ('git commit --amend -m "x"', "COMMIT"),
     ('git commit --no-verify -m "x"', "NOVERIFY"),
     ('git commit -n -m "x"', "NOVERIFY"),
     ('git add -A && git commit -m "x"', "COMMIT"),
@@ -243,9 +258,9 @@ def test_w6_message_body_does_not_steer_the_verdict(cmd):
     ('git commit -am "never use --no-verify"', "COMMIT"),
     # 一列裡有兩個 commit，第二個才帶 -n：只看第一段就會放行。
     ('git commit -m "x" && git commit -n -m "y"', "NOVERIFY"),
-    # 兩個都是 amend 才算 SKIP；一個 amend 一個不是，仍要走接線檢查。
+    # amend 與非 amend 混在一列，兩者都要走接線檢查。
     ('git commit --amend --no-edit && git commit -m "y"', "COMMIT"),
-    ('git commit --amend --no-edit; git commit --amend -m "y"', "SKIP"),
+    ('git commit --amend --no-edit; git commit --amend -m "y"', "COMMIT"),
     # 換行也是命令分隔符：多行 shell 是代理最常寫的形態，而它原本讓整道閘失效。
     ('git add -A\ngit commit --no-verify -m "x"', "NOVERIFY"),
     ('cd .\ngit commit -m "x"', "COMMIT"),
@@ -1203,3 +1218,65 @@ def test_w36_git_common_dir_redirects_the_hook_and_must_be_denied(tmp_path):
     allow = _run_gate(
         _bash("GIT_COMMON_DIR=%s git commit -m x" % (repo / ".git")), repo)
     assert not _is_deny(allow), "指回自己的 .git 是正常寫法，卻被誤擋"
+
+
+def test_w37_a_second_commit_on_the_line_is_judged_on_its_own_repo(tmp_path):
+    """W37：一列裡有多個 commit 時，每一個都要用**自己的** repo 判定。
+
+    `classify` 掃全部 segment 找 `--no-verify`，而 `main` 原本只拿
+    `invocations[0]` 決定 repo 與 opt-in。兩邊範圍不一致，於是第一個 commit
+    指向未 opt-in 的 repo 時，`not declared` 的早退把後面那個真正的
+    `--no-verify` 連同判定一起丟掉。實測（2026-09-06 抗辯，pristine 4435f9a）：
+
+        git commit -am x --no-verify                          → DENY
+        git -C vendor commit -m bump && git commit -am x -nv  → **ALLOW**
+        git -C vendor status && git commit -am x --no-verify  → DENY
+
+    107 條測試全綠，因為每一條 `--no-verify` 案都斷言在 `classify` 上，而
+    `classify` 是對的——沒有一條把整支 gate 端到端餵一條**多個 commit** 的
+    指令列。最接近的 W8（`git -C /other status && git commit -n`）用的是
+    `status`，它不產生 commit invocation，所以 `[0]` 還是真的那個。
+
+    第三個案例是對照組，用來分辨「修好了」與「什麼都擋」。
+    """
+    repo = _git_repo(tmp_path / "r", declare=True, precommit=(
+        "#!/bin/sh\n# runs .claude/wiring-guards\nexit 0\n"))
+    _git_repo(tmp_path / "r" / "vendor", declare=False)   # 沒有 opt-in
+
+    nv = "--no-" + "verify"
+    bare = _run_gate(_bash("git commit -am x %s" % nv), repo)
+    assert _is_deny(bare), "前置不成立：裸的 --no-verify 就沒擋，這條測不到東西"
+
+    hidden = _run_gate(
+        _bash("git -C vendor commit -m bump && git commit -am x %s" % nv), repo)
+    assert _is_deny(hidden), (
+        "前面掛一個指向未 opt-in repo 的 commit，後面的 --no-verify 就免罰了")
+
+    control = _run_gate(_bash("git -C vendor status && git commit -am x %s" % nv), repo)
+    assert _is_deny(control), "對照組：status 不產生 commit invocation，仍應擋"
+
+
+def test_w38_an_amend_in_an_unwired_repo_is_still_caught(tmp_path):
+    """W38：`--amend` 不再是接線檢查的豁免。
+
+    `classify` 原本對整列都是 amend 的指令回 SKIP，而 `main` 在 SKIP 就 return
+    ——於是一個 opt-in 卻沒接線的 repo，`git commit -m x` 被擋、
+    `git commit --amend -m x` 放行。豁免沒有留下任何理由，1.2.0 以來就是這樣。
+
+    前提先量過：`git commit --amend --no-edit` 與 `--amend -m` **兩種寫法都會
+    執行 pre-commit**（git 2.53.0，哨兵印出 SENTINEL_RAN），所以那次 amend
+    同樣是「守衛一次都沒跑」的 commit，正是 W2 要抓的病。
+
+    配對是第二半：接線正確的 repo 用 amend **不得**被擋，否則這個修法會把
+    一個極常見的動作變成永遠過不去，而那種閘會被整個關掉。
+    """
+    unwired = _git_repo(tmp_path / "u", declare=True)     # opt-in 但沒有 pre-commit
+    assert _is_deny(_run_gate(_bash('git commit -m "x"'), unwired)), \
+        "前置不成立：沒接線的 repo 連一般 commit 都沒擋"
+    assert _is_deny(_run_gate(_bash('git commit --amend -m "x"'), unwired)), \
+        "沒接線的 repo 用 --amend 就免罰了"
+
+    wired = _git_repo(tmp_path / "w", declare=True, precommit=(
+        "#!/bin/sh\n# runs .claude/wiring-guards\nexit 0\n"))
+    assert not _is_deny(_run_gate(_bash('git commit --amend --no-edit'), wired)), \
+        "接線正確的 repo 用 --amend 被誤擋——誤擋比漏擋更糟"

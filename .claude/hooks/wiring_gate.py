@@ -425,8 +425,13 @@ def classify(payload):
     # first let that shape through as an untraceable bypass.
     if any(skips_the_hook(s) for s in segments):
         return "NOVERIFY"
-    if all(AMEND_RE.search(s) for s in segments):
-        return "SKIP"
+    # `--amend` 以前整條回 SKIP，於是 `main` 在接線檢查之前就 return——
+    # 一個 opt-in 卻沒接線的 repo，`git commit -m x` 被擋，
+    # `git commit --amend -m x` 卻放行。實測 `git commit --amend --no-edit`
+    # 與 `--amend -m` **兩種寫法都會執行 pre-commit**（git 2.53.0，哨兵印出
+    # SENTINEL_RAN），所以那次 amend 同樣是「守衛一次都沒跑」的 commit
+    # ——正是 W2 要抓的病，只是換一個旗標就免罰（2026-09-06 抗辯）。
+    # 豁免它沒有留下任何理由，1.2.0 以來就是這樣。
     return "COMMIT"
 
 
@@ -632,34 +637,52 @@ def main(argv=None):
         if verdict == "SKIP":
             return 0
         line = normalised(payload)
-        invocations = commit_invocations(line)
-        options = invocations[0][0] if invocations else ""
-        # **這一次呼叫自己的** env 前綴，不是整條指令列的。讀整條的話，
-        # `git commit -m x ; GIT_CONFIG_GLOBAL=<乾淨的> true` 這種尾巴會覆蓋掉
-        # 真正的前綴（漏擋），而 `git commit -m x && GIT_DIR=<別處> git log`
-        # 這種無關的後段會讓 commit 被誤擋、還叫人去改另一個 repo 的 hooks。
-        # 檔內的 `commit_invocations` 與 `target_dir` 兩處的說明都寫著同一件事
-        # 已經修過——這是同一類的第三個實例（2026-09-06 抗辯）。
-        own_env = invocations[0][2] if invocations else ""
-        root = repo_root(cwd=target_dir(options))
-        if not root:
-            return 0
-        declared = os.path.isfile(os.path.join(root, DECL_REL))
-        note_unregistered(root, declared)
-        # W1 only applies to repos that opted in, so an unrelated repo using
-        # --no-verify is none of this gate's business.
-        if not declared:
-            return 0
-        if verdict == "NOVERIFY":
-            deny(W1_REASON)
-            return 0
-        config_args = inline_config(options, line)
-        if unaccounted_hookspath(line, options, config_args):
-            deny(HOOKSPATH_REASON)
-            return 0
-        reason = check_wiring(root, config_args, git_env_prefix(own_env, options))
-        if reason:
-            deny(reason)
+        # **每一個 commit 各自判定**，不是只判第一個。
+        #
+        # 這裡原本取 `invocations[0]` 決定 repo 與 opt-in，而 `classify` 是掃
+        # **全部** segment 找 `--no-verify`。兩邊的範圍不一樣，於是只要第一個
+        # commit 指向一個沒有 opt-in 的 repo，`not declared` 的早退就把後面那個
+        # 真正的 `--no-verify` 連同判定一起丟掉。實測（2026-09-06 抗辯，
+        # 已 opt-in 且正確接線的 repo，內含未 opt-in 的 vendor）：
+        #   `git commit -am x --no-verify`                        → DENY
+        #   `git -C vendor commit -m bump && git commit -am x --no-verify` → ALLOW
+        #   `git -C vendor status && git commit -am x --no-verify` → DENY（對照組：
+        #      `status` 不產生 commit invocation，所以 [0] 還是真的那個）
+        # 107 條測試全綠，因為每一條 `--no-verify` 案都斷言在 `classify` 上，
+        # 而 `classify` 是對的——沒有一條把整支 gate 端到端餵一條**多個 commit**
+        # 的指令列。
+        #
+        # ⚠ 這是這個檔案自己記載過兩次的那一類的**第四個實例**：判定的範圍與
+        # 取值的範圍不一致。前三次都是「該用單一呼叫的值，卻讀了整條指令列」，
+        # 這一次方向相反——判定看了整條，取值只看第一個。
+        seen_roots = set()
+        for options, segment, own_env in commit_invocations(line):
+            # **這一次呼叫自己的** env 前綴，不是整條指令列的。讀整條的話，
+            # `git commit -m x ; GIT_CONFIG_GLOBAL=<乾淨的> true` 這種尾巴會覆蓋掉
+            # 真正的前綴（漏擋），而 `git commit -m x && GIT_DIR=<別處> git log`
+            # 這種無關的後段會讓 commit 被誤擋、還叫人去改另一個 repo 的 hooks。
+            root = repo_root(cwd=target_dir(options))
+            if not root:
+                continue
+            declared = os.path.isfile(os.path.join(root, DECL_REL))
+            if root not in seen_roots:
+                seen_roots.add(root)
+                note_unregistered(root, declared)
+            # W1 only applies to repos that opted in, so an unrelated repo using
+            # --no-verify is none of this gate's business.
+            if not declared:
+                continue
+            if skips_the_hook(segment):
+                deny(W1_REASON)
+                return 0
+            config_args = inline_config(options, line)
+            if unaccounted_hookspath(line, options, config_args):
+                deny(HOOKSPATH_REASON)
+                return 0
+            reason = check_wiring(root, config_args, git_env_prefix(own_env, options))
+            if reason:
+                deny(reason)
+                return 0
     except Exception:
         return 0
     return 0
