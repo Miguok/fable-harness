@@ -344,27 +344,86 @@ def test_rg16_a_dry_run_leaves_no_record(tmp_path, monkeypatch):
     )
 
 
-def test_rg17_a_later_attest_does_not_erase_the_bypass_trace(tmp_path, monkeypatch):
-    """RG17：事後補一次 `--attest` 不得把破窗的痕跡抹掉。
+def test_rg17_a_later_attest_keeps_the_trace_without_locking_the_release(
+        tmp_path, monkeypatch):
+    """RG17：事後補審查要**留住痕跡**，但不得把發佈鎖死。
 
-    RG14 堵的是正向（破窗紀錄不能當審查），反向沒堵：對同一個 commit 補一次
-    完整的 `--attest`，`adversarial_review_bypassed` 就變回 false，痕跡消失
-    且沒有任何警告。而觸發者不是攻擊者——那正是這個專案檔頭自己描述的形態
-    （1.4.1／1.4.2 都是「發佈後才補審查」）。
+    這條測試上一版斷言的是缺陷本身（`adversarial_review_bypassed is True`），
+    於是把它鎖進了規格：破窗之後補跑三鏡頭再 `--attest`，紀錄仍被標成破窗，
+    `check_review` 永遠擋，而它的錯誤訊息叫人做的**正是剛剛做過的那件事**。
+    唯一的出口是再破窗一次，把一個確實審過的版本標成未審查。
 
-    留痕是這條通道獲准存在的**唯一**條件；能被自家指令抹掉的痕跡不算痕跡。
+    根因是兩件事被混成一個旗標。分開之後：
+      `adversarial_review_bypassed` ＝ **這一筆**是破窗收據，不是審查
+      `bypassed_earlier`            ＝ 這個 commit 曾經破窗過（永久痕跡）
+
+    率是 0——要先破窗一次才會遇到。但性質是閂鎖：發生之後永久。而測試把缺陷
+    寫成預期行為，比缺陷本身更難清，因為它會讓正確的修法變成「破壞測試」。
     """
     monkeypatch.setattr(rel, "ATTEST_DIR", str(tmp_path))
     commit = "a" * 40
     rel.write_attestation(commit, {}, "", "", override_reason="prod outage")
+    assert rel.check_review(commit, ""), "前置不成立：破窗紀錄本來就該擋"
 
     doc = rel.write_attestation(
         commit, {"skeptic": "REFUTED", "red-team": "REFUTED",
                  "simplifier": "REFUTED"}, "ship", "9 passed")
-    assert doc["adversarial_review_bypassed"] is True, "破窗的痕跡被事後的審查抹掉了"
-    assert doc.get("bypassed_earlier") is True
-    assert doc["bypass_reason"] == "prod outage", "跳過的理由不見了"
 
+    assert doc["bypassed_earlier"] is True, "破窗的痕跡被事後的審查抹掉了"
+    assert doc["earlier_bypass_reason"] == "prod outage", "跳過的理由不見了"
+    assert doc["adversarial_review_bypassed"] is False, (
+        "補跑了完整審查，紀錄卻仍被標成破窗——發佈從此鎖死"
+    )
+    assert rel.check_review(commit, "") == "", (
+        "補跑了完整審查仍然發不出去；錯誤訊息叫人做的正是剛剛做過的事"
+    )
+
+
+def test_rg20_the_earlier_bypass_is_still_announced_in_the_release_notes(
+        tmp_path, monkeypatch):
+    """RG20：RG17 的配對——痕跡留住了，就必須**被看見**。
+
+    只有 RG17 的話，一個「把 `bypassed_earlier` 寫進檔案然後從不讀它」的實作
+    也會通過，而那等於沒有留痕：留痕的意義是下游讀得到。
+    """
+    monkeypatch.setattr(rel, "ATTEST_DIR", str(tmp_path))
+    commit = "b" * 40
+    rel.write_attestation(commit, {}, "", "", override_reason="prod outage")
+    rel.write_attestation(commit, {"skeptic": "REFUTED", "red-team": "REFUTED",
+                                   "simplifier": "REFUTED"}, "ship", "9 passed")
+
+    captured = {}
+
+    def fake_run(args, **kw):
+        if args[:2] == ["gh", "release"]:
+            captured["notes"] = args[args.index("--notes") + 1]
+        return SimpleNamespace(returncode=0, stdout=commit, stderr="")
+
+    monkeypatch.setattr(rel, "run", fake_run)
+    assert rel.do_release("9.9.9", commit, "") == ""
+    assert "曾經以緊急出口發佈過" in captured.get("notes", ""), (
+        f"發佈說明沒有帶出曾經破窗的痕跡：{captured.get('notes')!r}"
+    )
+    assert "prod outage" in captured["notes"], "理由沒有帶出來"
+
+
+def test_rg20b_an_ordinary_release_says_nothing_about_a_bypass(
+        tmp_path, monkeypatch):
+    """RG20b：從沒破窗過的版本，發佈說明不得無中生有地提到破窗。"""
+    monkeypatch.setattr(rel, "ATTEST_DIR", str(tmp_path))
+    commit = "c" * 40
+    rel.write_attestation(commit, {"skeptic": "REFUTED", "red-team": "REFUTED",
+                                   "simplifier": "REFUTED"}, "ship", "9 passed")
+    captured = {}
+
+    def fake_run(args, **kw):
+        if args[:2] == ["gh", "release"]:
+            captured["notes"] = args[args.index("--notes") + 1]
+        return SimpleNamespace(returncode=0, stdout=commit, stderr="")
+
+    monkeypatch.setattr(rel, "run", fake_run)
+    assert rel.do_release("9.9.9", commit, "") == ""
+    assert "緊急出口" not in captured.get("notes", ""), captured.get("notes")
 
 def test_rg18_preflight_checks_that_gh_is_usable_not_merely_installed(monkeypatch):
     """RG18：`gh` 要驗**用得了**，不是驗 PATH 上有沒有這個執行檔。

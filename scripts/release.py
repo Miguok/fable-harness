@@ -112,15 +112,20 @@ def write_attestation(commit, lenses, judge, tests, override_reason=""):
         "adversarial_review_bypassed": bool(override_reason),
         "bypass_reason": override_reason,
     }
+    # 兩件事必須分開，混成一個旗標會把「留痕」變成「鎖死」：
+    #   `adversarial_review_bypassed` ＝ **這一筆**是破窗收據，不是審查。
+    #   `bypassed_earlier`            ＝ 這個 commit 曾經破窗過（永久痕跡）。
+    #
+    # 上一版兩者合一：破窗之後補跑三鏡頭再 `--attest`，仍被標成 bypassed，
+    # 於是 `check_review` 永遠擋，而它的錯誤訊息叫人做的正是剛剛做過的那件事
+    # ——唯一的出口變成再破窗一次，把一個**確實審過**的版本標成未審查。
+    # 率是 0，但發生之後是永久的；而 RG17 當時還把這個行為斷言成預期。
     prev = read_attestation(commit)
-    if prev and prev.get("adversarial_review_bypassed") and not override_reason:
-        # 破窗的痕跡不得被一次事後的 `--attest` 抹掉。第二輪只堵了「破窗紀錄
-        # 不能當審查」這個正向，反向沒堵：對同一個 commit 補一次 --attest，
-        # `adversarial_review_bypassed` 就變回 false，痕跡消失且無警告。
-        # 而觸發者不是攻擊者，是檔頭自己描述的正常流程（發佈後才補審查）。
+    if prev and (prev.get("adversarial_review_bypassed")
+                 or prev.get("bypassed_earlier")):
         doc["bypassed_earlier"] = True
-        doc["bypass_reason"] = prev.get("bypass_reason", "")
-        doc["adversarial_review_bypassed"] = True
+        doc["earlier_bypass_reason"] = (prev.get("earlier_bypass_reason")
+                                        or prev.get("bypass_reason") or "")
     with open(attestation_path(commit), "w", encoding="utf-8", newline="") as fh:
         json.dump(doc, fh, ensure_ascii=False, indent=2)
         fh.write("\n")
@@ -261,6 +266,15 @@ def do_release(version, commit, override_reason):
     if override_reason:
         notes += ("\n\n⚠ ADVERSARIAL_REVIEW_BYPASSED\n理由：%s\ncommit：%s"
                   % (override_reason, commit))
+    else:
+        # 事後補審查的版本仍要帶著它曾經破窗的痕跡——留痕是那條通道獲准存在的
+        # 條件，而「後來補審了」不等於「沒有發生過」。這一行讓痕跡活下來，
+        # 同時不再把一個確實審過的版本標成未審查。
+        prev = read_attestation(commit)
+        if prev and prev.get("bypassed_earlier"):
+            notes += ("\n\nℹ️ 這個 commit 曾經以緊急出口發佈過一次（理由：%s），"
+                      "之後補跑了完整的抗辯審查。"
+                      % (prev.get("earlier_bypass_reason") or "未記錄"))
     out = run(["git", "tag", "-a", tag, "-m", "release %s" % version])
     if out.returncode != 0 and "already exists" not in (out.stderr or ""):
         return "建立 tag 失敗：%s" % (out.stderr or "").strip()
