@@ -365,20 +365,67 @@ def test_g21_same_target_through_a_different_pipe_is_one_target(tmp_path):
     assert streak == 0, "同一個目標修好了，連敗數卻沒歸零"
 
 
-def test_g22_same_target_wrapped_in_shell_plumbing_is_one_target(tmp_path):
-    """G22：`cd x && sed -i … && pytest t.py` 與單獨的 `pytest t.py` 是同一個目標。
+def test_g22_code_edits_before_a_test_run_are_not_part_of_the_target(tmp_path):
+    """G22：`sed -i … && pytest t.py` 與單獨的 `pytest t.py` 是同一個目標。
 
     G21 只切掉了管線尾巴，前綴仍然進鍵——於是「改完順手重跑」與「單獨重跑」
     落在兩個鍵上，紅的那個永遠留著。2026-09-05 第三次擋到這道閘自己的作者，
     就是這個形態。
+
+    ⚠ **2026-09-06 窄化**：原本這條連 `cd x &&` 一起當雜訊剝掉，本輪縮小為
+    「只有改碼指令算雜訊，`cd` 與環境變數前綴算 context」。原決議的論證
+    （為了跑這次測試而做的準備不是目標的一部分）仍然成立，`sed`／`echo`
+    照舊剝掉；改的只是 `cd` 與 env 的歸類。
+
+    縮小的理由是外部審查實測的一個反例：`cd package_A && pytest -q` 與
+    `cd package_B && pytest -q` 算出同一個鍵，於是 **B 的綠清掉 A 的真紅**。
+    兩害相權——把 cd 當雜訊會誤清（閘該出聲時安靜），當 context 只會讓同一個
+    目標爬得慢一點（少擋一次，而那是文件已載明可接受的方向）。
     """
     repo = _repo(tmp_path)
     _run(repo, _multi_turn([
-        ('cd d:/x && sed -i "s/a/b/" t.py && python -m pytest tests/t.py -q', FAIL_OUT),
+        ('sed -i "s/a/b/" t.py && python -m pytest tests/t.py -q', FAIL_OUT),
         ('python -m pytest tests/t.py -q 2>&1 | tail -4', PASS_OUT),
     ]))
     streak = _state(repo)["streak"] if (repo / STATE_REL).exists() else 0
     assert streak == 0, "同一個目標修好了，連敗數卻沒歸零"
+
+
+def test_g56_a_green_in_one_project_does_not_clear_a_red_in_another(tmp_path):
+    """G56：G22 的配對——不同 cwd／環境的同一條指令是**不同的目標**。
+
+    2026-09-06 外部審查（GPT-5.6 Sol）指出、我實測確認：`cd package_A && pytest -q`
+    紅之後 `cd package_B && pytest -q` 綠，A 的紅就沒了。方向是危險的那一邊
+    ——真紅被誤清，閘在該出聲的時候安靜。
+
+    只有 G22 的話，一個「把前綴全部當雜訊」的實作會完美通過；只有這一條的話，
+    一個「整條指令當鍵」的實作也會通過，而那是 2026-09-05 已經修掉的病。
+    兩條一起才把界線定在「改碼是雜訊、執行環境是 context」。
+    """
+    repo = _repo(tmp_path, {"streak": 0, "shelved": [], "red": {}})
+    _run(repo, _runs(("cd package_A && pytest -q", FAIL_OUT)))
+    assert _state(repo)["red"], "前置不成立：A 的紅沒被記下來"
+
+    _run(repo, _runs(("cd package_B && pytest -q", PASS_OUT)))
+    left = list(_state(repo)["red"])
+    assert left, "另一個專案的綠把這個專案的真紅清掉了"
+    assert "package_A" in left[0], left
+
+    # 配對：同一個專案的綠仍必須解除
+    _run(repo, _runs(("cd package_A && pytest -q", PASS_OUT)))
+    assert not _state(repo)["red"], "同一個專案的綠沒有解除自己的紅"
+
+
+def test_g57_a_secret_in_an_env_prefix_does_not_reach_the_key(tmp_path):
+    """G57：環境變數前綴進了鍵，那個值就會落地到狀態檔——必須先遮蔽。
+
+    鍵是寫進 `.fable/goal_state.json` 的東西，而 `GITHUB_TOKEN=… pytest` 的
+    值就是機密。把 env 從「雜訊」改判成「context」時，順手把這條路也開了，
+    所以同批補上遮蔽。
+    """
+    key = gg.test_key("GITHUB_TOKEN=ghp_SUPERSECRET pytest tests/x.py -q")
+    assert "ghp_SUPERSECRET" not in key, f"機密進了鍵：{key}"
+    assert "GITHUB_TOKEN" in key and "pytest" in key, f"遮過頭，認不出來了：{key}"
 
 
 @pytest.mark.parametrize("cmd", [
@@ -1402,3 +1449,83 @@ def test_g55_repo_data_cannot_start_its_own_line_in_the_injection(tmp_path):
     stray2 = [l for l in reason.splitlines()
               if "偽造" in l and not l.startswith("  ")]
     assert not stray2, f"未說明擱置項的 block：repo 內容自己起了一行 → {stray2}"
+
+
+# ── golden fixture：形狀來自產品本身，不是我發明的 ──────────────────────
+GOLDEN = os.path.join(ROOT, "tests", "fixtures", "real_user_prompt_shapes.json")
+
+
+def _golden():
+    with open(GOLDEN, encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+@pytest.mark.parametrize("kind,is_boundary", [
+    ("real_list", True),    # 使用者真的打的字（實測 591 次，最常見的形狀）
+    ("real_str", True),     # 同樣是真實輸入，只是字串形（實測 289 次）
+    ("harness_str", False), # 背景通知等 harness 注入（實測 477 次）
+    ("harness_list", False),  # 被中斷的訊息（實測 10 次）
+    ("tool_result", False),   # 工具回覆（實測 24,884 次，絕大多數）
+])
+def test_g58_turn_boundary_is_decided_on_shapes_captured_from_production(
+        kind, is_boundary):
+    """G58：回合邊界的判定要用**產品實際產生的形狀**驗，不是我手寫的。
+
+    這條的存在理由是一次已經發生的事故：2026-09-06 之前，本檔每一個 fixture
+    都用 `{"content": "字串"}`，而 Claude Code 的使用者輸入是 list 形。67 條
+    測試全綠，而判定在生產環境是**反的**——它拒絕每一則真實輸入，卻把這道閘
+    自己的擋人訊息當成新回合的開始。
+
+    修程式與修手寫 fixture 都還不夠：下一次 schema 變動，手寫的 fixture 一樣
+    會全綠。所以資料來源必須接回產品本身——`tests/fixtures/` 那份是從本機真實
+    transcript 擷取的，內容已置換成佔位字串，只保留結構與判別標記。
+    """
+    entry = _golden()["shapes"][kind]
+    assert gg.is_real_user_prompt(entry) is is_boundary, (
+        f"{kind}：這個形狀的判定與生產環境不符（fixture 取自真實 transcript）"
+    )
+
+
+def test_g59_the_golden_fixture_still_matches_what_the_product_emits():
+    """G59：golden fixture 的結構要與真實 transcript 一致，過期就要叫。
+
+    fixture 一旦凍結就會腐爛，而腐爛的 fixture 與正確的 fixture 一樣是綠的
+    ——那正是 G58 要防的病換一個地方復發。這條掃本機真實 transcript，
+    確認每一種形狀都還存在；若某一種在真實資料裡消失了，代表產品換了格式，
+    fixture 必須重新擷取。
+
+    本機沒有 transcript 時 skip 而不是綠：無法驗證與驗證通過不是同一件事。
+    """
+    import glob
+    base = os.path.expanduser("~/.claude/projects")
+    files = sorted(glob.glob(os.path.join(base, "**", "*.jsonl"), recursive=True))
+    if not files:
+        pytest.skip("本機沒有真實 transcript，無法比對 fixture 是否過期")
+
+    seen = set()
+    for f in files[:60]:
+        try:
+            with open(f, encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    try:
+                        e = json.loads(line)
+                    except Exception:
+                        continue
+                    if e.get("type") != "user":
+                        continue
+                    c = e.get("message", {}).get("content")
+                    if isinstance(c, str):
+                        seen.add("str")
+                    elif isinstance(c, list):
+                        kinds = {b.get("type") for b in c if isinstance(b, dict)}
+                        if "tool_result" in kinds:
+                            seen.add("list/tool_result")
+                        elif "text" in kinds:
+                            seen.add("list/text")
+        except OSError:
+            pass
+
+    assert {"str", "list/text", "list/tool_result"} <= seen, (
+        f"真實 transcript 裡只看到 {sorted(seen)}——產品的格式可能變了，"
+        f"{GOLDEN} 需要重新擷取"
+    )

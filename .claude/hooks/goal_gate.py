@@ -240,7 +240,42 @@ def test_key(command):
     # 兩者都變成 `go test -run 'A`，一邊的綠會清掉另一邊的紅。
     m = TEST_CMD_RE.search(command)
     stripped = command[m.start():] if m else command
-    return " ".join(strip_pipeline_tail(stripped).split())
+    run = " ".join(strip_pipeline_tail(stripped).split())
+    ctx = run_context(command[:m.start()] if m else "")
+    return ("%s :: %s" % (ctx, run)) if ctx else run
+
+
+CD_RE = re.compile(r"(?:^|[;&|]|\bthen\b|\bdo\b)\s*cd\s+(\"[^\"]*\"|'[^']*'|\S+)")
+ENV_PREFIX_RE = re.compile(r"(?:^|[;&|]|\s)([A-Za-z_][A-Za-z0-9_]*)="
+                           r"(\"[^\"]*\"|'[^']*'|\S*)")
+
+
+def run_context(prefix):
+    """測試指令**前面**那段裡，會改變測試語義的部分。
+
+    `cd package_A && pytest -q` 與 `cd package_B && pytest -q` 跑的是兩個
+    專案的測試，卻算出同一個鍵——於是 B 的綠把 A 的真紅清掉。方向是危險的
+    那一邊：閘該出聲時安靜。`MODE=legacy pytest x` 與 `MODE=new pytest x`
+    同理（2026-09-06 外部審查指出，我實測確認）。
+
+    只取兩樣：**最後一個 `cd` 的目標**與**環境變數前綴**。`sed -i …`、`echo …`
+    這類改碼指令不取——它們是「為了跑這次測試而做的準備」，不是測試跑在哪。
+    那個區分是 2026-09-05 的既有決議，這裡沿用，只把 cwd 與 env 從「雜訊」
+    改判成「context」。
+
+    ⚠ 這在**逐鍵計數**之下才安全。舊版是單一全域計數，鍵分得太細會讓紅永遠
+    清不掉、閘一直嘮叨；現在一個沒被解掉的舊鍵只是躺著，不影響別的鍵，而且
+    會被上限淘汰掉。同一個改動在不同的計數模型下，好壞相反。
+
+    值要先遮蔽：鍵會落地到狀態檔，而 `TOKEN=… pytest` 的值就是機密。
+    """
+    parts = []
+    cds = CD_RE.findall(prefix)
+    if cds:
+        parts.append("cd=" + cds[-1].strip("\"'").replace("\\", "/").rstrip("/"))
+    for name, value in ENV_PREFIX_RE.findall(prefix):
+        parts.append("%s=%s" % (name, value.strip("\"'")))
+    return redact(" ".join(parts))
 
 
 def strip_pipeline_tail(s):
