@@ -3,6 +3,7 @@
 
 # gate fail-open 屍檢遙測（含本機例外訊息，不進版控）
 .claude/hooks/.gate_fail
+.claude/hooks/.gate_fail.lock
 
 # Python
 __pycache__/

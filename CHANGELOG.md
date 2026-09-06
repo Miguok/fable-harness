@@ -380,6 +380,27 @@ Q1 的判定漏掉 `contextlib.suppress`（含別名）、把條件式 `raise` �
 
 ### Known limitations
 
+- **接線閘的指令樣式有兩處指數級回溯（ReDoS），本版新種進去的。** 兩處都在
+  `wiring_gate.py`，都是「巢狀重複 × 外層重複」而兩層吃得下同一批 token：
+  - 前綴那層（`PREFIX_TOKEN` 內的包裝器參數）：把 `sudo -u ci env PATH=/x
+    nice -n 10 timeout 60 ` 連續重複 4 次（193 字元）要 **6.63 秒**，重複 3 次
+    只要 0.13 秒——每多一段約 ×50。
+  - git 全域選項那層（`GIT_GLOBAL_OPT`）：`git ` 後接 `--git-dir --foo ` ×22
+    （365 字元）要 **4.28 秒**；透過真實 hook 子行程量 ×24／397 字元是 28.18 秒，
+    **超過 hook 的 10 秒 timeout**。
+  1.4.3 兩處都是 0.000 秒，所以這是本版的退步，來源是把包裝器清單從 9 個擴到 17 個、
+  以及新增 git 全域選項的解析。⚠ **只在比對失敗時爆**：結尾若真的是 `git commit`
+  就立刻比中，0.000 秒。
+  **實際觸發機率低**：量了 8 條真實形態的指令列（含 `sudo -u ci env PATH=/x nice
+  -n 10 timeout 60 git commit`、`git -c … --git-dir=.git … commit`、管線與迴圈），
+  最慢 **0.00005 秒**；要爆需要同一串 token 連續重複四次以上，而指令列是由模型
+  產生的，不是外部輸入。真的踩到時是那一次工具呼叫逾時、閘 fail-open，不是持續故障。
+  **沒有在本版修**：試過用原子群組 `(?>…)`，發佈前抗辯三個鏡頭全部推翻——它同時
+  改變了判定（`sudo -u "ci" git commit` 由擋變放行，12 條手挑形態翻轉 7 條，方向全是
+  漏擋），而且 `(?>…)` 需要 Python 3.11，而本套件從未宣告版本下限。該修法已回復。
+  正解是不要用單一巨型正則做 token 切分，改成引號感知的 tokenizer（O(n)，語意可
+  精確保留）——那是下一版的第一件事，不是發佈當天該動的刀。
+
 - **`_quiet_lock` 的 POSIX 分支從未在任何平台被執行過。** 屍檢的檔案鎖有兩個
   分支：Windows 走 `msvcrt.locking`、POSIX 走 `fcntl.flock`。本機沒有可用的
   POSIX runtime，而唯一的並行測試（Q13）標了 `skipif(os.name != "nt")`，所以
