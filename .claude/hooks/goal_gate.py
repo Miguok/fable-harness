@@ -106,8 +106,24 @@ SOFT_FAIL_MARKERS = (
     re.compile(r"^E\s+\w+Error", re.M),
 )
 
-ADVERSARIAL_AT = int(os.environ.get("FABLE_GOAL_ADVERSARIAL_AT", "2"))
-SHELVE_AT = int(os.environ.get("FABLE_GOAL_SHELVE_AT", "3"))
+def _env_int(name, default):
+    """環境變數轉整數，壞值就退回預設——**不得拋例外**。
+
+    這兩個常數在模組頂層讀取，也就是在 `main` 的 try **之外**。`int("x")` 會讓
+    整支 hook 印出 traceback 並以 rc=1 結束，而檔頭逐字承諾「任何錯誤一律
+    fail-open（exit 0 無輸出）」。實測 `FABLE_GOAL_ADVERSARIAL_AT=x` → 完整
+    traceback、rc=1（2026-09-06 抗辯）。非正整數同樣退回預設：`0` 會讓階梯
+    在第一次失敗就擱置。
+    """
+    try:
+        value = int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return int(default)
+    return value if value > 0 else int(default)
+
+
+ADVERSARIAL_AT = _env_int("FABLE_GOAL_ADVERSARIAL_AT", "2")
+SHELVE_AT = _env_int("FABLE_GOAL_SHELVE_AT", "3")
 STATE_REL = os.path.join(".fable", "goal_state.json")
 # 權威驗證指令的宣告檔。放 `.claude/` 而不是 `.fable/`：後者被本閘自己寫的
 # `.gitignore` 蓋成 `*`，宣告會變成每個人各留一份、無法隨 repo 傳遞——而
@@ -128,7 +144,14 @@ def load_verifiers(root):
     """
     p = os.path.join(root, VERIFIER_REL)
     try:
-        with open(p, encoding="utf-8") as fh:
+        # `errors="replace"`：這個檔是文件明示要人**手寫**的，而 Windows 記事本
+        # 與 PowerShell 5.1 預設不是 UTF-8。原本只接 OSError，於是一個 cp950
+        # 編碼的中文註解就讓 UnicodeDecodeError 冒到 main 的 fail-open 被吞掉
+        # ——兩回合連紅**零輸出、連 .fable/ 都沒建**，整道閘靜默關閉
+        # （2026-09-06 抗辯實測）。同檔的 load_state 接 Exception、load_entries
+        # 用 errors="replace"、wiring_gate 讀 hook 也用 errors="replace"，
+        # 只有這一處沒掃到：同一類沒掃完。
+        with open(p, encoding="utf-8", errors="replace") as fh:
             lines = fh.read().splitlines()
     except OSError:
         return frozenset()
@@ -512,6 +535,10 @@ def state_path(root):
     return os.path.join(root, STATE_REL)
 
 
+# 手改壞掉、無法處理但**也不刪除**的擱置資料放這裡（見 load_state）。
+UNREADABLE_SHELF = "_unreadable_shelved"
+
+
 def load_state(root):
     """Return the state, or None when the file is there but cannot be read.
 
@@ -546,12 +573,27 @@ def load_state(root):
     # 靜靜關掉。守衛只加在其中一個欄位＝同一類沒掃完（2026-09-06 抗辯）。
     if not isinstance(s.get("streak"), int) or isinstance(s.get("streak"), bool):
         s["streak"] = 0
+    # ⚠ 型別不對的**不刪，只是不用**。這道閘的 block 文案明文要使用者手動編這個
+    # 檔填 `note`，所以手滑是預期輸入；而原本的做法是把不合型別的東西直接丟掉，
+    # 下一次 `save_state` 就把刪除結果落地——實測把 `"shelved"` 誤寫成物件，
+    # 跑一次 Stop 之後磁碟上變成 `"shelved": []`，使用者寫的
+    # `"blocked on vendor API key rotation"` 消失，全程沒有任何訊息
+    # （2026-09-06 抗辯）。那正是「空輸入不得默默覆蓋既有狀態檔」那一類。
+    # 同一個風險在 JSON 壞掉時是大聲擋人並逐字保證「一個位元組都沒動」，
+    # 兩條路徑的處置不該相反。原值搬到 `_unreadable_shelved` 留在檔案裡。
     if not isinstance(s.get("shelved"), list):
+        if s.get("shelved") is not None:
+            s[UNREADABLE_SHELF] = s["shelved"]
         s["shelved"] = []
     # **元素層也要驗**。上一版只驗了容器，於是 `shelved: ["goal-x"]` 或
     # 一個 `None` 元素會在 `i.get(...)` 拋 AttributeError，被 fail-open 吞掉，
     # 兩個入口（Stop 與 UserPromptSubmit）**同時**靜默死亡——擱置清單既不
     # 執行也不顯示。這正是上面那句話說要掃完的類別，當時只掃到容器就停了。
+    dropped = [i for i in s["shelved"] if not isinstance(i, dict)]
+    if dropped:
+        kept = s.get(UNREADABLE_SHELF)
+        s[UNREADABLE_SHELF] = (list(kept) if isinstance(kept, list) else
+                               ([] if kept is None else [kept])) + dropped
     s["shelved"] = [i for i in s["shelved"] if isinstance(i, dict)]
     s.setdefault("streak", 0)
     s.setdefault("shelved", [])
@@ -584,9 +626,33 @@ SECRET_ASSIGN_RE = re.compile(r"(?i)\b(-{0,2}" + SECRET_KEY + r")=(\S+)")
 # 明碼——那比完全不遮更危險，因為旁邊有 `***`，讀的人會判定已經遮過了。
 # `<<<` 與 `<<EOF` 也要一起吃：`gh auth login --with-token <<< ghp_x` 會讓
 # `***` 落在那個記號上，真正的 token 留在後面（2026-09-06 抗辯實測）。
+# ⚠ 旗標形式的鍵比賦值形式**窄**：前綴必須以分隔符收尾（`--github-token`、
+# `--api_key`），不能是隨便黏上去的字母。原本共用 `[\w.-]*` 的寬版本時，
+# `mysql -u root -pMYSQLPASS && pytest -q` 裡的 `-pMYSQLPASS` 被拆成
+# 「鍵 `-pMYSQLPASS`」＋「值 `&&`」，輸出是
+# `mysql -u root -pMYSQLPASS *** pytest -q`——**密碼原封不動，旁邊立著一個
+# `***`**。那正是本檔上面那段註解說「比完全不遮更危險」的形態，因為讀的人
+# 會判定已經遮過了；而且它把指令分隔符吃掉，鍵本身也歪了（2026-09-06 抗辯）。
+SECRET_FLAG_KEY = (r"(?:[\w.-]*[-._])?"
+                   r"(?:token|secret|password|passwd|pass|apikey|api_key|key"
+                   r"|auth|credential|cred)")
 SECRET_SPACED_RE = re.compile(
-    r"(?i)(\s--?" + SECRET_KEY + r")\s+(?:<<<?\s*\S*\s+)?"
+    r"(?i)(\s--?" + SECRET_FLAG_KEY + r")\s+(?:<<<?\s*\S*\s+)?"
     r"(\"[^\"]*\"|'[^']*'|\S+)")
+# PowerShell 的環境變數寫法：`$env:GITHUB_TOKEN = "ghp_…"`。等號兩側有空白、
+# 前面還有 `$env:`，前面每一條都碰不到它——而 SHELL_TOOLS 明文含 PowerShell。
+# 實測三回合紅之後，`.fable/goal_state.json` 的 last_command 逐字含明碼 token，
+# 且 UserPromptSubmit 的注入內容裡 grep 得到同一串（2026-09-06 抗辯）。
+SECRET_PS_ENV_RE = re.compile(
+    r"(?i)(\$env:" + SECRET_KEY + r")\s*=\s*(\"[^\"]*\"|'[^']*'|\S+)")
+# `curl -u alice:pw` / `--user alice:pw`：帳密用冒號連在一起，沒有 `=`，
+# 也不是 URL 內嵌，所以 URL_CRED_RE 碰不到。只認 `-u`／`--user` 這兩個確定
+# 是帳密的旗標，且值必須含冒號——`docker run -u 1000` 這種不會被動到。
+FLAG_USERPASS_RE = re.compile(r"(?i)(\s--?u(?:ser)?\s+[^\s:]+):(\S+)")
+# MySQL 家族把密碼黏在 `-p` 後面：`mysql -pSECRET`。`-p` 太常見（`mkdir -p`），
+# 所以限定在同一段裡出現 mysql 系指令時才處理，且 `-p` 後面不得是空白。
+MYSQL_GLUED_PW_RE = re.compile(
+    r"(?i)\b(mysql\w*\b[^;&|\n]*?\s-p)(?=[^\s-])(\S+)")
 # URL 內嵌帳密：`postgres://user:pw@host/db`。
 URL_CRED_RE = re.compile(r"(://[^:/\s]+):([^@/\s]+)@")
 # 引號包住、值裡有空白：`TOKEN="ghp_xxx and more"`。只吃 `\S+` 的話會在第一個
@@ -627,10 +693,13 @@ def redact(command):
     exists to show what you were stuck on, and `FILE=tests/test_auth.py`
     masked into `FILE=***` throws that away to buy nothing.
     """
-    out = SECRET_QUOTED_RE.sub(r"\1=***", command)
+    out = SECRET_PS_ENV_RE.sub(r"\1 = ***", command)
+    out = SECRET_QUOTED_RE.sub(r"\1=***", out)
     out = SECRET_ASSIGN_RE.sub(r"\1=***", out)
     out = SECRET_HEADER_RE.sub(r"\1: ***", out)
     out = SECRET_SPACED_RE.sub(r"\1 ***", out)
+    out = MYSQL_GLUED_PW_RE.sub(r"\1***", out)
+    out = FLAG_USERPASS_RE.sub(r"\1:***", out)
     return URL_CRED_RE.sub(r"\1:***@", out)
 
 
@@ -652,13 +721,22 @@ def inside(root, path):
     return pp == rp or pp.startswith(rp + os.sep)
 
 
-def ensure_state_dir(d):
+def ensure_state_dir(root, d):
     """建 `.fable`，而且**只在自己建立它時**寫 `.gitignore`。
 
     唯一正本：鎖與 `save_state` 都走這裡。兩處各寫一次的話，先跑到的那個
     會把目錄建出來，另一個的「是我建的嗎」就永遠是 False——`.gitignore`
     從此不會被寫，狀態檔開始出現在使用者的 `git status`。
+
+    ⚠ **圍籬在這裡，不是只在 `save_state`**。`save_state` 的 `inside()` 原本
+    寫在這個呼叫的**後面**，於是 `.fable` 是一個指向 repo 外的 junction 時，
+    狀態檔正確地拒寫並大聲擋人，`.gitignore` 卻已經被建到外面去了——內容是
+    `*`，指到另一個 repo 的根目錄就等於讓那個 repo 的 `git status` 全盲
+    （2026-09-06 抗辯實測，junction 在 Windows 免管理員權限）。鎖那條路徑
+    也走這裡，同樣沒有圍籬。守衛要放在**唯一正本**上，不是放在其中一個呼叫端。
     """
+    if not inside(root, d):
+        return
     os.makedirs(d, exist_ok=True)
     # 判準是「**這個目錄裡有沒有 `.gitignore`**」，不是「目錄是不是我建的」。
     # 後者在一個 repo 自己帶了 `.fable/`（例如 commit 了一個 .gitkeep）時永遠
@@ -714,6 +792,7 @@ class state_lock(object):
     """
 
     def __init__(self, root):
+        self.root = root
         self.path = os.path.join(root, LOCK_REL)
         self.fd = None
 
@@ -736,7 +815,7 @@ class state_lock(object):
                 # 用共用的建立函式，不自己 makedirs：`save_state` 只在
                 # **它自己建立目錄時**才寫 `.gitignore`，鎖若搶先把目錄建出來，
                 # 那個判斷會變成 False，狀態檔就會出現在使用者的 git status 裡。
-                ensure_state_dir(os.path.dirname(self.path))
+                ensure_state_dir(self.root, os.path.dirname(self.path))
                 self.fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
                 return self
             except FileExistsError:
@@ -776,9 +855,11 @@ def save_state(root, state):
         # that raise used to happen outside where the caller's blanket except
         # swallowed it — the gate went quiet while an unreadable state file
         # blocks loudly. Both failures behave the same way now.
-        ensure_state_dir(d)
+        # 圍籬先於建立。`ensure_state_dir` 自己也有一道（那是唯一正本，
+        # 鎖那條路徑同樣經過它），這裡保留是因為 `p` 本身也要檢查。
         if not inside(root, d) or not inside(root, p):
             return False
+        ensure_state_dir(root, d)
         with open(tmp, "w", encoding="utf-8", newline="") as fh:
             json.dump(state, fh, ensure_ascii=False, indent=2)
             fh.write("\n")
@@ -976,7 +1057,7 @@ def run_stop(data, root):
             return 0
         block(
             f"⛔ FABLE goal gate: this goal has now failed {streak} times in a row.\n\n"
-            f"Last failing command:\n  {cmd}\n\n"
+            f"Last failing command:\n  {one_line(cmd, 300)}\n\n"
             "Two failures means the root cause you identified is probably not the root "
             "cause. A third attempt built on the same reading of the problem is the same "
             "attempt wearing different clothes.\n\n"
@@ -1009,7 +1090,7 @@ def run_stop(data, root):
             return 0
         block(
             f"⛔ FABLE goal gate: {streak} consecutive failures on this goal — shelving it.\n\n"
-            f"Last failing command:\n  {cmd}\n\n"
+            f"Last failing command:\n  {one_line(cmd, 300)}\n\n"
             f"Shelved as {item['id']} in {STATE_REL}.\n\n"
             "Stop working this item. Three attempts without reaching the goal means the "
             "problem is not what you think it is, and further attempts spend the user's "

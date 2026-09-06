@@ -96,10 +96,19 @@ GIT_GLOBAL_OPT = (r"(?:-[cC]\s+" + VALUE + r"|" + GIT_VALUE_OPTS + r"\s+" + VALU
 # 因為 `env GIT_DIR=/x git commit` 的賦值必須進得了 env 前綴：探測子行程
 # 少了它就會拿真 repo 的設定去解析一個指向別處的 commit，答錯的方向是放行。
 # `ENV_ASSIGN_RE` 只挑得出賦值，`sudo`／`-u root` 這些會被它忽略。
-WRAPPER_NAME = r"(?:command|time|env|sudo|doas|nice|nohup|stdbuf)"
-# 包裝器自己的旗標可以帶一個獨立的值（`sudo -u root`）。那個值用否定環視
-# 擋住 `git` 與另一個旗標，免得把整條指令吃過頭變成誤擋——誤擋比漏擋更糟。
-PREFIX_TOKEN = (r"(?:" + WRAPPER_NAME +
+WRAPPER_NAME = (r"(?:command|time|env|sudo|doas|nice|nohup|stdbuf"
+                # 這一批 2026-09-06 補上：全部實測讓整條樣式比不中 → SKIP →
+                # 無條件放行。`winpty` 在 Git for Windows 是預設安裝的，是
+                # 這台機器上最順手的那一個。
+                r"|timeout|winpty|setsid|unbuffer|chronic|ionice|strace|busybox)")
+# 包裝器後面可以接自己的參數（`timeout 60`、`busybox sh -c`、`strace -f`）。
+# 那些參數限定成「不含引號的字詞」並用否定環視擋住 `git`：允許任意 token 的話，
+# `echo "git commit is fun"` 會因為引號可以被單獨吃掉而變成一次 commit——
+# 那是誤擋，比漏擋更糟。
+_WRAP_ARG = r"(?!git(?:\.exe)?(?:\s|$))[-\w./=:+]+"
+# 包裝器自己的旗標可以帶一個獨立的值（`sudo -u root`）。那個值同樣用否定環視
+# 擋住 `git` 與另一個旗標。
+PREFIX_TOKEN = (r"(?:" + WRAPPER_NAME + r"(?:\s+" + _WRAP_ARG + r")*"
                 r"|[A-Za-z_][A-Za-z0-9_]*=" + VALUE +
                 r"|-\S+(?:\s+(?!git(?:\.exe)?[\s]|-)[^\s;&|]+)?)")
 GIT_COMMIT_RE = re.compile(
@@ -151,6 +160,23 @@ Pick one:
   2. The guards are genuinely red and you must defer → ALLOW_UNWIRED=1 git commit ...
   3. This is a spelling the gate should understand → open an issue with the exact
      command; enumerating spellings is how this gate got here, so it wants the case."""
+
+UNPARSED_REASON = """This looks like a commit the gate could not parse (fable wiring_gate).
+
+The command has a bare `git … commit` on it, and it also carries either a flag
+that skips the pre-commit hook or a core.hooksPath setting — but the gate could
+not resolve it into a single invocation it can check.
+
+Rewrite it in a shape the gate can read, or state the exception out loud:
+
+  1. Drop the wrapper or the shell quoting and run `git commit …` directly.
+  2. A guard is genuinely red and you must defer → ALLOW_UNWIRED=1 git commit ...
+
+Why this is a deny and not a pass: the alternative is that every spelling the
+gate has not enumerated becomes a silent bypass. Measured 2026-09-06 — a plain
+`timeout 60 git commit -m x --no-verify` produced a commit with the guards never
+running and this gate saying nothing at all.
+"""
 
 W1_REASON = """This commit uses --no-verify (fable wiring_gate).
 
@@ -413,6 +439,45 @@ def normalised(payload):
     return strip_message_bodies(joiner.sub(" ", command) if joiner else command)
 
 
+_QUOTED_SPAN_RE = re.compile(r"\$?'[^']*'|\"[^\"]*\"")
+# 引號遮蔽之後，一個**裸的** `git … commit`。用來回答「這條指令列到底是不是在
+# 做 commit」，而不必先能把它解析成一次可檢查的呼叫。
+_BARE_GIT_COMMIT_RE = re.compile(
+    r"(?:^|[;&|(){\n\r])[^;&|\n\r]*?\bgit(?:\.exe)?\s[^;&|\n\r]*?\bcommit\b")
+
+
+def mask_quoted(text):
+    """把引號內容換成等長的底線——`$'…'`（bash ANSI-C quoting）也算。
+
+    `echo "git commit is fun"` 與 `timeout 60 git commit -n` 的差別，是前者的
+    `git commit` **在引號裡**。不遮蔽就分不出來，而分不出來的代價是誤擋一整類
+    文件與搜尋指令。
+    """
+    return _QUOTED_SPAN_RE.sub(lambda m: "_" * len(m.group(0)), text)
+
+
+def unparsed_commit_risk(line):
+    """解析不出呼叫、卻明顯是一次會繞過 hook 的 commit —— 回傳擋人理由。
+
+    這道閘的檔頭寫著「偵測不到就擋」，而 `unaccounted_hookspath` 這個 fail-closed
+    兜底掛在 `main` 的 SKIP 早退**下游**——也就是說「認不出來就擋」原本只適用於
+    「已經被認出來的那些」。實測兩條繞道（2026-09-06 抗辯）：
+
+      timeout 60 git commit -m x --no-verify        → 樣式比不中 → SKIP → 放行
+      git -c core.hooksPath=$'/tmp/a b' commit -m x → 同上（`$'…'` 不在 VALUE 裡）
+
+    範圍刻意收窄成這道閘真正在保護的兩件事（跳過 hook 的旗標、hooksPath），
+    不是「所有解析不出來的 commit 都擋」——後者會讓 `git log --grep commit`
+    這種唯讀指令變成誤擋，而誤擋比漏擋更糟。
+    """
+    masked = mask_quoted(line)
+    if not _BARE_GIT_COMMIT_RE.search(masked):
+        return ""
+    if skips_the_hook(masked) or HOOKSPATH_MENTION_RE.search(masked):
+        return UNPARSED_REASON
+    return ""
+
+
 def classify(payload):
     """Return 'SKIP', 'NOVERIFY' or 'COMMIT' for one PreToolUse payload."""
     if payload.get("tool_name") not in ("Bash", "PowerShell"):
@@ -633,10 +698,18 @@ def main(argv=None):
         return 0  # fail-open: a gate must never break the session
 
     try:
-        verdict = classify(payload)
-        if verdict == "SKIP":
+        if payload.get("tool_name") not in ("Bash", "PowerShell"):
             return 0
         line = normalised(payload)
+        if not commit_invocations(line):
+            # 解析不出任何一次呼叫。fail-closed 兜底在這裡，**不是**在下面——
+            # 掛在下游等於「認不出來就擋」只適用於認得出來的那些。
+            risk = unparsed_commit_risk(line)
+            if risk:
+                root = repo_root()
+                if root and os.path.isfile(os.path.join(root, DECL_REL)):
+                    deny(risk)
+            return 0
         # **每一個 commit 各自判定**，不是只判第一個。
         #
         # 這裡原本取 `invocations[0]` 決定 repo 與 opt-in，而 `classify` 是掃

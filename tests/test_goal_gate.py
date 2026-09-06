@@ -1852,3 +1852,118 @@ def test_g72_a_1_4_x_state_file_starts_the_new_ladder_from_one(tmp_path):
     assert state["streak"] == 1, state
     assert state.get("episode") == "ep-1788625552", (
         "舊版留下的未知欄位被清掉了——不搬移不等於清掉別人的東西：" + str(state))
+
+
+@pytest.mark.parametrize("cmd,leak,label", [
+    ('$env:GITHUB_TOKEN = "ghp_LIVE_SECRET_abc123"; pytest -q',
+     "ghp_LIVE_SECRET_abc123", "PowerShell 的 $env: 寫法"),
+    ("$env:API_KEY='ghp_LIVE_SECRET_abc123'; pytest -q",
+     "ghp_LIVE_SECRET_abc123", "PowerShell 單引號"),
+    ("curl -u alice:S3CRETpw https://x/ && pytest -q",
+     "S3CRETpw", "curl -u 帳密"),
+    ("curl --user alice:S3CRETpw https://x/ && pytest -q",
+     "S3CRETpw", "curl --user 帳密"),
+    ("mysql -u root -pMYSQLPASS && pytest -q",
+     "MYSQLPASS", "mysql 黏在 -p 後面的密碼"),
+])
+def test_g73_more_secret_shapes_are_masked(cmd, leak, label):
+    """G73：三種還會外洩的機密形態。
+
+    鍵與 last_command 會落地到 `.fable/goal_state.json`，再由 hook 注入回下一
+    回合的對話。實測（2026-09-06 抗辯）三回合紅之後，狀態檔的 last_command
+    逐字含 `ghp_LIVE_SECRET_abc123`，而 UserPromptSubmit 的注入內容裡 grep
+    得到同一串——`SHELL_TOOLS` 明文含 PowerShell，這不是理論上的路徑。
+
+    `mysql -pMYSQLPASS` 那條更糟：舊版把 `-pMYSQLPASS` 當成鍵、把**指令分隔符
+    `&&`** 當成值遮掉，輸出是 `mysql -u root -pMYSQLPASS *** pytest -q`
+    ——密碼原封不動，旁邊立著一個 `***`。本檔自己的註解說過那「比完全不遮
+    更危險」，因為讀的人會判定已經遮過了。
+    """
+    out = gg.redact(cmd)
+    assert leak not in out, "%s：機密仍在明碼裡 → %s" % (label, out)
+
+
+@pytest.mark.parametrize("cmd,must_keep,label", [
+    ("make test FILE=tests/test_auth.py CASE=login", "tests/test_auth.py",
+     "不像機密的鍵要保留原值，否則擱置項看不出卡在哪"),
+    ("mkdir -p build && pytest -q", "mkdir -p build", "`-p` 太常見，不得誤遮"),
+    ("docker run -u 1000 img && pytest -q", "-u 1000", "`-u` 不帶冒號不是帳密"),
+    ("python -u script.py && pytest -q", "-u script.py", "python 的 -u 是無緩衝"),
+    ("git commit -m x && pytest -q", "git commit -m x", "一般指令原樣保留"),
+])
+def test_g74_masking_does_not_swallow_ordinary_commands(cmd, must_keep, label):
+    """G74：G73 的配對——遮蔽不得把正常指令吃掉。
+
+    只有 G73 的話，一個「什麼都遮」的版本也會全綠，而那會讓每一筆擱置項變成
+    看不懂的 `***`，也會把不同的目標遮成同一個鍵。
+    """
+    assert must_keep in gg.redact(cmd), "%s：%s" % (label, gg.redact(cmd))
+
+
+def test_g75_a_hand_edited_shelf_is_not_deleted(tmp_path):
+    """G75：手改壞掉的擱置資料**不得被刪掉**。
+
+    這道閘的 block 文案明文要使用者手動編狀態檔填 `note`，所以手滑是預期輸入。
+    舊做法是把不合型別的東西直接丟掉，下一次 save 就把刪除結果落地——實測把
+    `shelved` 誤寫成物件，跑一次 Stop 之後磁碟上變成 `"shelved": []`，
+    使用者寫的 note 消失，全程沒有任何訊息（2026-09-06 抗辯）。
+
+    同一個風險在 JSON 壞掉時是大聲擋人並逐字保證「一個位元組都沒動」；
+    兩條路徑的處置不該相反。現在改成**濾掉不用、原值留在檔案裡**。
+    """
+    note = "blocked on vendor API key rotation"
+    bad = {"streak": 0, "red": {},
+           "shelved": {"goal-1": {"id": "goal-1", "note": note}}}
+    repo = _repo(tmp_path, bad)
+    _run(repo, _turn("python -m pytest tests/ -q", "1 failed"))
+
+    raw = (repo / ".fable" / "goal_state.json").read_text(encoding="utf-8")
+    assert note in raw, "使用者手寫的 note 被靜默刪掉了：" + raw
+    st = json.loads(raw)
+    assert st["shelved"] == [], "壞型別不該進入處理路徑"
+
+    mixed = {"streak": 0, "red": {}, "shelved": ["goal-x", {"id": "g", "note": note}]}
+    repo2 = _repo(tmp_path / "second", mixed)
+    _run(repo2, _turn("python -m pytest tests/ -q", "1 failed"))
+    raw2 = (repo2 / ".fable" / "goal_state.json").read_text(encoding="utf-8")
+    assert "goal-x" in raw2, "陣列裡的壞元素被靜默刪掉了：" + raw2
+    assert note in raw2, "合法的擱置項也不見了：" + raw2
+
+
+def test_g76_a_non_utf8_verifier_file_does_not_switch_the_gate_off(tmp_path):
+    """G76：`.claude/fable-verifier` 帶非 UTF-8 位元組不得讓整道閘靜默死亡。
+
+    這個檔是文件明示要人**手寫**的，而 Windows 記事本與 PowerShell 5.1 預設
+    不是 UTF-8。舊版只接 `OSError`，於是 `UnicodeDecodeError` 一路冒到 main
+    的 fail-open 被吞掉——實測兩回合連紅**零輸出、連 `.fable/` 都沒建**，
+    而對照組（沒有這個檔）第二回合會擋（2026-09-06 抗辯）。
+
+    斷言的是「它仍然會擋」，因為那才是閘還活著的證據。
+    """
+    repo = _repo(tmp_path)
+    (repo / ".claude").mkdir(exist_ok=True)
+    (repo / ".claude" / "fable-verifier").write_bytes(
+        "# 權威驗證\npython -m pytest tests/ -q\n".encode("cp950"))
+
+    for _ in range(2):
+        out = _run(repo, _turn("python -m pytest tests/ -q", "1 failed, 3 passed"))
+    assert _blocked(out), "非 UTF-8 的宣告檔把整道閘關掉了（連敗兩次沒擋）"
+
+
+def test_g77_a_bad_env_threshold_does_not_break_the_fail_open_contract(tmp_path):
+    """G77：模組頂層讀環境變數不得違反 fail-open 契約。
+
+    `ADVERSARIAL_AT`／`SHELVE_AT` 在模組頂層讀取，也就是在 `main` 的 try
+    **之外**。`int("x")` 會讓整支 hook 印 traceback 並 rc=1，而檔頭逐字承諾
+    「任何錯誤一律 fail-open（exit 0 無輸出）」。實測 rc=1（2026-09-06 抗辯）。
+
+    `_run` 自己就斷言 rc==0（fail-open 契約），所以壞值下它必須跑得完；
+    再加上「行為要退回預設」——只驗不崩潰的話，一個把門檻設成 0 的版本
+    （第一次失敗就擱置）也會通過。
+    """
+    repo = _repo(tmp_path)
+    env = {"FABLE_GOAL_ADVERSARIAL_AT": "x", "FABLE_GOAL_SHELVE_AT": "0"}
+    out = _run(repo, _turn("python -m pytest tests/ -q", "1 failed"), env=env)
+    assert not _blocked(out), "門檻壞值讓第一次失敗就擋了：" + (out[:200] if out else "")
+    out = _run(repo, _turn("python -m pytest tests/ -q", "1 failed"), env=env)
+    assert _blocked(out), "門檻壞值之後階梯不動了（第二次仍不擋）"

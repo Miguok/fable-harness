@@ -1280,3 +1280,57 @@ def test_w38_an_amend_in_an_unwired_repo_is_still_caught(tmp_path):
         "#!/bin/sh\n# runs .claude/wiring-guards\nexit 0\n"))
     assert not _is_deny(_run_gate(_bash('git commit --amend --no-edit'), wired)), \
         "接線正確的 repo 用 --amend 被誤擋——誤擋比漏擋更糟"
+
+
+_NV = "--no-" + "verify"
+
+
+@pytest.mark.parametrize("cmd,want_deny,label", [
+    # 認不出來 → 以前回 SKIP → 無條件放行。實測 `timeout 60 git commit -m x
+    # --no-verify` 真的產出 commit、守衛一次都沒跑、gate 一聲不吭。
+    ("timeout 60 git commit -m x %s" % _NV, True, "timeout 包裝"),
+    ("winpty git commit -m x %s" % _NV, True, "winpty 包裝（Git for Windows 預設安裝）"),
+    ("setsid git commit -m x %s" % _NV, True, "setsid 包裝"),
+    # bash 的 ANSI-C quoting 不在 VALUE 的三種寫法裡，於是連「這是一次 commit」
+    # 都認不出來，而 fail-closed 兜底原本掛在早退的下游。
+    ("git -c core.hooksPath=$'/tmp/a b' commit -m x", True, "$'…' 包住的 hooksPath"),
+    ("git -c core.hooksPath=$'/tmp/no such\ndir' commit -m x", True, "$'…' 帶換行"),
+    # ── 配對：以下每一條都**必須仍然放行**。少了它們，一個「認不出來就全擋」
+    # 的兜底也會全綠，而那會讓人把整道閘關掉。
+    ('git commit -m "fix: x"', False, "正常 commit"),
+    ('git commit -m "never use %s"' % _NV, False, "訊息裡寫到那個旗標"),
+    ('echo "git commit %s is bad"' % _NV, False, "引號裡的 git commit 不是 commit"),
+    ("git log --grep commit --oneline -5", False, "唯讀 git log 也有 git 與 commit"),
+    ('grep -rn "git commit %s" docs/' % _NV, False, "搜原始碼"),
+    ("git config --get core.hooksPath", False, "讀 hooksPath 不是設定它"),
+])
+def test_w39_a_commit_the_gate_cannot_parse_fails_closed(tmp_path, cmd, want_deny, label):
+    """W39：解析不出來的 commit 不得等於放行。
+
+    這道閘的檔頭寫著「偵測不到就擋」，而那個 fail-closed 兜底
+    （`unaccounted_hookspath`）掛在 `main` 的 SKIP 早退**下游**——也就是說
+    「認不出來就擋」原本只適用於「已經被認出來的那些」。兩條實測繞道：
+    外部包裝器（`timeout`／`winpty`／`setsid`…，列舉永遠慢一步）與 bash 的
+    `$'…'` 引號。
+
+    兜底的範圍刻意收窄成這道閘真正保護的兩件事（跳過 hook 的旗標、hooksPath），
+    靠的是**引號遮蔽**分辨「裸的 git commit」與「引號裡的那串字」。六條配對案例
+    就是這個收窄的驗收：全擋的兜底過不了它們。
+    """
+    repo = _git_repo(tmp_path, declare=True, precommit=(
+        "#!/bin/sh\n# runs .claude/wiring-guards\nexit 0\n"))
+    out = _run_gate(_bash(cmd), repo)
+    assert _is_deny(out) is want_deny, (
+        "%s：預期 %s，實際 %s" % (label, "DENY" if want_deny else "ALLOW",
+                              "DENY" if _is_deny(out) else "ALLOW"))
+
+
+def test_w39b_the_fallback_only_applies_to_repos_that_opted_in(tmp_path):
+    """W39b：兜底同樣只管 opt-in 的 repo。
+
+    這道閘是純 opt-in 的——沒有宣告檔的 repo 不該被擋下任何 commit。新增的
+    fail-closed 兜底若忘了這一條，會變成對全世界的 repo 都生效。
+    """
+    plain = _git_repo(tmp_path, declare=False)
+    out = _run_gate(_bash("timeout 60 git commit -m x %s" % _NV), plain)
+    assert not _is_deny(out), "沒有 opt-in 的 repo 被兜底擋了"
