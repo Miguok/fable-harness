@@ -180,51 +180,70 @@ QUIET_PER_LABEL = 20      # 同一個標籤最多幾行
 # 標籤 × 20 行 ≈ 31 KB），自家寫入者永遠碰不到 1 MB。它防的是**別人污染這個
 # 檔**：`.gate_fail` 可以被 `git add -f` 提交進一個會收 PR 的 repo，而每一次
 # fail-open 都要把它讀一遍數行數（實測 90 MB 要 0.32 秒）。
-# 第一版的註解把它寫成防成長，那是錯的對象（2026-09-06 簡潔性鏡頭指出）。
+# ⚠ 它**是**一個全域上限：檔案超過這個大小之後，三支 gate 的屍檢全部停寫。
+# 那是刻意的取捨（被污染的檔已經沒有診斷價值，而每次 fail-open 讀 90 MB 更糟），
+# 但不要再說「沒有全域上限」——第一版的 docstring 那樣寫，與這一行矛盾。
 QUIET_MAX_SCAN = 1 << 20
 
 
 def _quiet_lock(fd, release=False):
-    """對屍檢檔取／放獨佔鎖——拿不到就算了，絕不阻塞超過約 0.1 秒。
+    """對**獨立的鎖檔**取／放獨佔鎖——拿不到就算了，絕不阻塞超過約 0.1 秒。
 
     `O_APPEND` 在 Windows **不是原子的**：MSVCRT 的實作是 lseek(END) 之後再
-    WriteFile，兩步之間別的行程可以插進來，於是兩筆寫到同一個 offset、互相覆寫。
-    實測三個行程對齊起跑各寫一行、20 次試驗：**10 次掉筆**，還產生 4 條殘行
-    （像 `abel_for_process_one: OSError` 這種被切掉開頭的尾巴），而殘行會被
-    注入器原樣送進上下文。CRLF 那一半確實被 `O_BINARY` 修好了，原子性那一半
-    完全沒動——而我在註解裡斷言了它，commit 訊息也照著寫，卻沒有任何一條測試
-    跑並行（2026-09-06 抗辯指出；這正是那個 commit 自己在講的病）。
+    WriteFile，兩步之間別的行程可以插進來。實測三個行程對齊起跑各寫一行、
+    20 次試驗 **10 次掉筆**，還產生被切掉開頭的殘行。
 
-    用短暫的非阻塞重試而不是阻塞式鎖：hook 的 timeout 是 5～15 秒，
-    `msvcrt.locking` 的阻塞模式會等到 10 秒才放棄，那會把「掉一行屍檢」升級成
-    「hook 逾時」。等不到就照寫——遺失一行遙測，遠比卡住一個回合便宜。
+    ⚠ **鎖的對象是 `.gate_fail.lock`，不是 `.gate_fail` 本身。** 第一版直接鎖
+    資料檔的第 0 byte，而 Windows 的 `msvcrt.locking` 是**強制鎖**不是勸告鎖：
+    重試耗盡之後程式繼續走到 `os.read`，那個讀取踩到被鎖的 byte → PermissionError
+    → 被最外層的 except 吞掉，**一個字都沒寫**。docstring 當時寫「等不到就照寫，
+    遺失一行遙測比卡住一個回合便宜」，而 Windows 上的實際行為是整筆消失——
+    也就是說這個機制自己犯了它要治的病（2026-09-06 抗辯實測：鎖被別的行程持有
+    時 `note_quiet` 0.137 秒回來、victim 那筆不在檔案裡）。
+    改鎖獨立的檔案之後，讀寫資料檔完全不碰被鎖的區域，「拿不到鎖就照寫」才是真的。
+
+    用短暫的非阻塞重試而不是阻塞式鎖：hook 的 timeout 是 5～15 秒，阻塞式
+    `msvcrt.locking` 會等到 10 秒才放棄，那會把「掉一行屍檢」升級成「hook 逾時」。
+    ⚠ POSIX 分支第一版寫的是 `flock(fd, LOCK_EX)`——**沒有 LOCK_NB**，也就是
+    無上限阻塞，正好是上一句禁止的事（同一輪抗辯指出；本機沒有 POSIX 環境可以
+    實跑，是讀碼認定的）。現在兩邊都是有界的非阻塞重試。
     """
     try:
+        deadline = 0.1
         if os.name == "nt":
             import msvcrt
-            here = os.lseek(fd, 0, os.SEEK_CUR)
-            os.lseek(fd, 0, os.SEEK_SET)
+            import time as _t
+            if release:
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                return True
+            end = _t.time() + deadline
+            while _t.time() < end:
+                try:
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                    return True
+                except OSError:  # quiet-ok: 鎖被別人持有是正常的，重試就好
+                    _t.sleep(0.002)
+            return False
+        import fcntl
+        import time as _t
+        if release:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            return True
+        end = _t.time() + deadline
+        while _t.time() < end:
             try:
-                if release:
-                    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
-                else:
-                    import time as _t
-                    for _ in range(50):
-                        try:
-                            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
-                            break
-                        except OSError:  # quiet-ok: 鎖被別人持有是正常的，重試就好
-                            _t.sleep(0.002)
-            finally:
-                os.lseek(fd, here, os.SEEK_SET)
-        else:
-            import fcntl
-            fcntl.flock(fd, fcntl.LOCK_UN if release else fcntl.LOCK_EX)
-    except Exception:  # quiet-ok: 拿不到鎖就照寫，遙測絕不阻塞 session
-        pass
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return True
+            except OSError:  # quiet-ok: 同上，非阻塞重試
+                _t.sleep(0.002)
+        return False
+    except Exception:  # quiet-ok: 鎖機制本身壞掉就不鎖，照寫，絕不阻塞 session
+        return False
 
 
-def note_quiet(label, exc=None, detail=""):
+def note_quiet(label, exc=None, count=None):
     """把一次「閘判不出來／自己壞掉」寫成一行，落在同目錄的 `.gate_fail`。
 
     **fail-open 沒問題，安靜的 fail-open 才是問題。** 每一條 fail-open 在外部
@@ -232,20 +251,20 @@ def note_quiet(label, exc=None, detail=""):
 
     契約（三支 hook 各有一份，由 tests/test_no_silent_gate.py 綁在一起）：
       - 絕不拋例外——遙測自己壞掉不得破壞 fail-open
-      - 一行的格式固定為 `<ISO 時間戳> <gate>/<label>: <例外類別><細節>`
-      - **只寫標籤與例外類別，不寫 payload**；`detail` 由呼叫端保證是自己的字面
-        文字或數字，而且**不進 dedup 鍵**——把變動的計數塞進標籤會讓每個不同的
-        值變成一個新標籤、各自吃 20 行，成長上界那句話就是假的（實測 50 個
-        不同的值寫出 1000 行 / 約 100 KB，而宣稱的上界是 20）。
-      - 標籤前面掛**這支 gate 的檔名**。四個呼叫點都叫 `main`，三支共用同一個
-        檔，於是「逐標籤上限」對最關鍵的那個標籤等於沒有：實測 `wiring_gate`
-        （PreToolUse，觸發最頻繁）連寫 20 次之後，另一支的頂層 fail-open 就
-        寫不進去了——正是這個機制宣稱治好的餓死病。
-      - 同一個標籤最多 `QUIET_PER_LABEL` 行，**沒有全域上限**：三支寫同一個檔，
-        全域預算等於共用預算，一支壞掉就會餓死另外兩支。
-      - 比對用**精確相等**而不是 `endswith`：後者讓任何以既有標籤結尾的新標籤
-        （`domain` vs `main`）吃掉對方的預算。目前 19 個標籤兩兩無前綴關係，
-        所以那是潛伏缺陷，但判準本來就該是相等。
+      - 一行的格式固定為 `<ISO 時間戳> <gate>/<label>: <例外類別>[ ×N]`
+      - **只寫標籤與例外類別，不寫 payload**。這條不變式必須是**結構性**的，
+        不能靠呼叫端自律：`label` 由呼叫端提供但只該是字面字串，而第三個參數
+        限定成**整數**（`count`）。⚠ 它上一版叫 `detail` 且收任意字串，於是
+        「不寫 payload」又退回成一句註解——實測把某個呼叫點改成
+        `detail=str(exc)` 就把絕對路徑寫進檔案，全套 390 passed 無人叫，
+        而那一行開頭是合法時間戳，會原樣通過注入器的白名單（2026-09-06 抗辯）。
+      - 標籤前面掛**這支 gate 的檔名**：四個呼叫點都叫 `main`，而三支共用同一個
+        檔，否則觸發最頻繁的那支會餓死其他兩支。
+      - 同一個標籤最多 `QUIET_PER_LABEL` 行。
+      - 比對是**整段相等或後接空白**，不是純 `startswith`：鍵的結尾是例外類別
+        名，而 `Exception`／`ExceptionGroup`、`BaseException`／`BaseExceptionGroup`
+        是 stdlib 真實存在的前綴對。⚠ 我在上一個 commit 寫「構造不出真實案例」，
+        那句話只檢查了標籤段、沒檢查例外類別段，是錯的（同一輪抗辯指出）。
     """
     try:
         from datetime import datetime, timezone
@@ -254,27 +273,40 @@ def note_quiet(label, exc=None, detail=""):
         gate = os.path.splitext(os.path.basename(os.path.abspath(__file__)))[0]
         key = "%s/%s: %s" % (gate, " ".join(str(label).split())[:100],
                              type(exc).__name__ if exc is not None else "-")
-        text = key + ((" " + " ".join(str(detail).split())[:60]) if detail else "")
+        text = key + ((" x%d" % int(count)) if count is not None else "")
         flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0)
-        fd = os.open(marker, flags, 0o600)
+        lfd = os.open(marker + ".lock", flags, 0o600)
         try:
-            _quiet_lock(fd)
-            os.lseek(fd, 0, os.SEEK_SET)
-            body = os.read(fd, QUIET_MAX_SCAN)
-            if len(body) >= QUIET_MAX_SCAN:
-                return  # 大到數不完就別再寫了；這種檔早該被人處理掉
-            seen = 0
-            for raw in body.decode("utf-8", "replace").split("\n"):
-                part = raw.split(" ", 1)
-                if len(part) == 2 and part[1].startswith(key):
-                    seen += 1
-            if seen < QUIET_PER_LABEL:
-                os.lseek(fd, 0, os.SEEK_END)
-                os.write(fd, ("%s %s\n" % (
-                    datetime.now(timezone.utc).isoformat(), text)).encode("utf-8"))
+            _quiet_lock(lfd)
+            fd = os.open(marker, flags, 0o600)
+            try:
+                try:
+                    body = os.read(fd, QUIET_MAX_SCAN)
+                except OSError:  # quiet-ok: 數不了就不數，直接寫，見下方說明
+                    # 數不了就不數，直接寫。別的行程（防毒、索引器，或任何用
+                    # 限制性 sharing 開這個檔的東西）在 Windows 上會讓這個讀取
+                    # 拋 PermissionError；讓它冒到外層就是**整筆消失**，而
+                    # docstring 承諾的是「拿不到就照寫」。重複一行遠比消失一行好
+                    # ——屍檢的用途是「有東西壞著」，不是精確計數（2026-09-06 抗辯）。
+                    body = b""
+                if len(body) >= QUIET_MAX_SCAN:
+                    return  # 大到數不完就別再寫了；這種檔早該被人處理掉
+                seen = 0
+                for raw in body.decode("utf-8", "replace").split("\n"):
+                    part = raw.split(" ", 1)
+                    if len(part) == 2 and (part[1] == key
+                                           or part[1].startswith(key + " ")):
+                        seen += 1
+                if seen < QUIET_PER_LABEL:
+                    os.lseek(fd, 0, os.SEEK_END)
+                    os.write(fd, ("%s %s\n" % (
+                        datetime.now(timezone.utc).isoformat(),
+                        text)).encode("utf-8"))
+            finally:
+                os.close(fd)
         finally:
-            _quiet_lock(fd, release=True)
-            os.close(fd)
+            _quiet_lock(lfd, release=True)
+            os.close(lfd)
     except Exception:  # quiet-ok: 遙測自身故障不得破壞 fail-open，這裡沒有第二個出口
         pass
 
@@ -305,7 +337,7 @@ def main():
             # 實測（2026-09-06 抗辯指出，我重現）：完整 blocked=False、
             # 同一份只截斷那一行 blocked=True。方向是誤擋，而誤擋掛在一道硬閘上。
             # 記一次而不是逐行記：逐行會把屍檢灌爆，真正的失效反而寫不進去。
-            note_quiet("transcript 有行讀不動，這一輪的判定可能不完整", detail="%d 行" % torn)
+            note_quiet("transcript 有行讀不動，這一輪的判定可能不完整", count=torn)
         edited, test_seen = analyze(entries)
         if edited and not test_seen:
             files = "、".join(one_line(n, 80) for n in

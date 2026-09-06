@@ -129,40 +129,82 @@ def _records_directly(stmts):
     return False
 
 
-def _always_raises(stmts):
-    """這個 handler 是不是**對每一種例外**都往上丟。
+def _exits_early(node):
+    """這一句會不會讓控制流**離開這個 handler**（而不是往上丟例外）。
 
-    ⚠ 這裡也修過兩次。第一版找子樹裡有沒有 `Raise`，於是
-    `if DEBUG: raise` / `return None` 全綠。第二版只認「最後一句是 raise」，
-    擋住了那個方向，卻放行它的**鏡像**：
+    `Return`／`Break`／`Continue` 之外，還要算 `sys.exit(...)`／`os._exit(...)`
+    與 `raise SystemExit(...)`：那三個是這個專案自己的 fail-open 慣用式
+    （三支 hook 的頂層都是 `sys.exit(main())`，而 `main` 回 0）。
+    ⚠ 第一版只認前三種，於是
 
         except Exception as exc:
             if isinstance(exc, OSError):
-                return ""        # 對 OSError 完全安靜
+                sys.exit(0)      # 對 OSError 完全安靜，而且這就是「放行」
             raise
 
-    最後一句確實是 `raise`，而它對 OSError 一個字都不說。實測把這段加進
-    `goal_gate.py`，全套 425 passed（2026-09-06 抗辯指出）。
+    整段全綠——修法擋住的是它自己舉的那個例子，不是那一類
+    （2026-09-06 抗辯指出）。
 
-    現在的判準是「**整段只有 raise**」：最後一句是 raise，而且前面每一句都不是
-    會提前離開的（return／break／continue／另一個 raise 之外的分支）。保守是
-    刻意的——判不出來就當成安靜，寫 `# quiet-ok:` 說明即可，那本來就是這條
-    規則要的動作。
+    ⚠ `Break`／`Continue` 只有在**不被 handler 內的迴圈接住**時才算離開。
+    第一版用 `ast.walk` 一律算，於是「handler 裡跑一個迴圈、裡面 continue、
+    最後無條件 raise」這種正當寫法被判成安靜——誤擋，而誤擋比漏擋更糟。
+    """
+    for n in ast.walk(node):
+        if isinstance(n, ast.Return):
+            return True
+        if isinstance(n, (ast.Break, ast.Continue)):
+            if not _inside_loop(node, n):
+                return True
+        if isinstance(n, ast.Raise):
+            exc = n.exc
+            name = None
+            if isinstance(exc, ast.Call):
+                name = getattr(exc.func, "id", getattr(exc.func, "attr", None))
+            elif isinstance(exc, ast.Name):
+                name = exc.id
+            if name in ("SystemExit",):
+                return True
+        if isinstance(n, ast.Call):
+            f = n.func
+            name = f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", "")
+            if name in ("exit", "_exit"):
+                return True
+    return False
+
+
+def _inside_loop(root, target):
+    """`target` 這個 break/continue 是不是被 `root` 裡的某個迴圈接住了。"""
+    for n in ast.walk(root):
+        if not isinstance(n, (ast.For, ast.AsyncFor, ast.While)):
+            continue
+        for k in ast.walk(n):
+            if k is target:
+                return True
+    return False
+
+
+def _always_raises(stmts):
+    """這個 handler 是不是**對每一種例外**都往上丟。
+
+    ⚠ 這裡修過三次。第一版找子樹裡有沒有 `Raise`，於是 `if DEBUG: raise` 全綠。
+    第二版只認「最後一句是 raise」，卻放行它的**鏡像**（`if isinstance(exc,
+    OSError): return` 之後才 `raise`）。第三版把「提前離開」從三種擴到含
+    `sys.exit`／`SystemExit`，並修掉迴圈內 `continue` 的誤判——見 `_exits_early`。
+
+    判準：最後一句是 raise，而且前面每一句都不會提前離開這個 handler。
+    保守是刻意的——判不出來就當成安靜，寫 `# quiet-ok:` 說明即可。
     """
     if not stmts or not isinstance(stmts[-1], ast.Raise):
         return False
-    for s in stmts[:-1]:
-        for n in ast.walk(s):
-            if isinstance(n, (ast.Return, ast.Break, ast.Continue)):
-                return False
-    return True
+    return not any(_exits_early(s) for s in stmts[:-1])
 
 
 def _suppress_lines(tree):
     """`with contextlib.suppress(...)`——它**不產生** ExceptHandler 節點。
 
-    語意上等同一個什麼都不做的 except。別名（`from contextlib import suppress
-    as hush`）也要認：只比對呼叫的名字會漏掉它，所以連 import 的別名一起收。
+    語意上等同一個什麼都不做的 except。兩種別名都要認：
+      `from contextlib import suppress as hush`（import 別名）
+      `_hush = contextlib.suppress`（**指派**別名——第一版看不到，實測全綠）
     """
     aliases = {"suppress"}
     for n in ast.walk(tree):
@@ -170,6 +212,14 @@ def _suppress_lines(tree):
             for a in n.names:
                 if a.name == "suppress":
                     aliases.add(a.asname or a.name)
+        if isinstance(n, ast.Assign):
+            v = n.value
+            name = (v.attr if isinstance(v, ast.Attribute)
+                    else getattr(v, "id", None))
+            if name == "suppress":
+                for tgt in n.targets:
+                    if isinstance(tgt, ast.Name):
+                        aliases.add(tgt.id)
     out = []
     for n in ast.walk(tree):
         if not isinstance(n, (ast.With, ast.AsyncWith)):
@@ -189,19 +239,15 @@ def _swallowing_finally(tree):
     """`finally:` 裡的 `return`／`break`／`continue` 會把飛在半空的例外吞掉。
 
     這是第三種寫得出安靜分支的語法，而它連 `except` 都不需要。
+    `ast.TryStar`（`try/except*`）也要掃——第一版只比對 `ast.Try`，漏掉它。
     """
     out = []
+    kinds = (ast.Try, getattr(ast, "TryStar", ast.Try))
     for n in ast.walk(tree):
-        if not isinstance(n, ast.Try) or not n.finalbody:
+        if not isinstance(n, kinds) or not n.finalbody:
             continue
-        for s in n.finalbody:
-            for k in ast.walk(s):
-                if isinstance(k, (ast.Return, ast.Break, ast.Continue)):
-                    out.append(n.finalbody[0].lineno)
-                    break
-            else:
-                continue
-            break
+        if any(_exits_early(s) for s in n.finalbody):
+            out.append(n.finalbody[0].lineno)
     return out
 
 
@@ -635,7 +681,20 @@ def test_q11_one_gate_cannot_starve_another(tmp_path):
     assert lines[0].endswith("the first thing that ever failed: OSError"), (
         "最早那一筆被擠掉了——上限變成了淘汰最舊：%s" % lines[0])
 
-    # ⚠ 前綴碰撞（`domain` 吃掉 `main` 的預算）在標籤掛上 gate 檔名之後
+    # 真實的前綴碰撞對在**例外類別名**那一段：`Exception` 是 `ExceptionGroup`
+    # 的前綴，兩個都是 stdlib 實際存在的類別。純 `startswith` 會讓 20 筆
+    # `ExceptionGroup` 把 `Exception` 的預算吃光。
+    # ⚠ 我在前一個 commit 寫「構造不出真實案例」，那句話只檢查了標籤段、
+    # 沒檢查例外類別段，是錯的（2026-09-06 抗辯指出）。
+    for _ in range(20):
+        mods["goal_gate.py"].note_quiet("collide", ExceptionGroup("g", [ValueError()]))
+    mods["goal_gate.py"].note_quiet("collide", Exception())
+    body = marker.read_text(encoding="utf-8")
+    plain = [l for l in body.splitlines()
+             if l.endswith("goal_gate/collide: Exception")]
+    assert plain, "前綴碰撞：20 筆 ExceptionGroup 把 Exception 的預算吃光了"
+
+    # ⚠ 標籤段的碰撞（`domain` 吃掉 `main`）在標籤掛上 gate 檔名之後
     # **構造不出真實案例**：比對的鍵含 `goal_gate/`，而每一行只有一個 `gate/`，
     # 所以沒有任何合法標籤能讓另一個標籤的鍵成為它的後綴。比對從 `endswith`
     # 改成前綴相等仍然做了（那才是精確的判準），但這裡不放假的斷言假裝驗過它
@@ -643,8 +702,104 @@ def test_q11_one_gate_cannot_starve_another(tmp_path):
     # **照樣綠**，因為那兩個根本不碰撞（2026-09-06 自查）。
     # 真正關掉這個風險的是上面那段（標籤掛 gate 檔名），它有突變覆蓋。
 
+    # 第三參數改叫 `count` 且**只收整數**：它上一版叫 `detail` 收任意字串，於是
+    # 「不寫 payload」這條不變式又退回成一句註解——實測把某個呼叫點改成
+    # `detail=str(exc)` 就把絕對路徑寫進檔案，全套 390 passed 無人叫，而那一行
+    # 開頭是合法時間戳，會原樣通過注入器的白名單（2026-09-06 抗辯）。
     for i in range(60):
-        mods["goal_gate.py"].note_quiet("torn", ValueError(), detail="%d 行" % i)
+        mods["goal_gate.py"].note_quiet("torn", ValueError(), count=i)
     body = marker.read_text(encoding="utf-8")
     assert body.count("goal_gate/torn") <= 25, (
-        "可變細節進了 dedup 鍵——每個不同的值都變成一個新標籤，上界那句話就是假的")
+        "可變的數字進了 dedup 鍵——每個不同的值都變成一個新標籤，上界那句話就是假的")
+    # 結構性保證：第三參數只收整數，所以呼叫端沒有辦法把 payload 塞進來。
+    # 斷言的是「檔案裡不會出現它」而不是「會拋例外」——`note_quiet` 依契約吞掉
+    # 自己的所有例外，所以型別錯誤的後果是那一筆不寫，不是拋出來。
+    secret = "C:/Users/somebody/secret/path"
+    # ⚠ 用**全新的**標籤：沿用上面那個已經寫滿 20 行的標籤時，這條斷言會因為
+    # 「根本沒寫」而通過，而不是因為型別擋住了——突變（第三參數收回任意字串）
+    # 照樣綠（2026-09-06 自查）。
+    mods["goal_gate.py"].note_quiet("payload probe", ValueError(), count=secret)
+    assert secret not in marker.read_text(encoding="utf-8"), (
+        "第三參數把任意字串寫進了屍檢檔——payload 又進得來了")
+
+
+@pytest.mark.parametrize("gate", GATES)
+def test_q12_no_shadowed_duplicate_definitions(gate):
+    """Q12：同一個檔裡不得有兩個同名的頂層定義。
+
+    ⚠ 這條是我自己踩出來的。用正則替換 `note_quiet` 時只換掉了前半段，舊版
+    留在後面——而 Python 取**後定義**的那一份，所以整批修法（鎖改成獨立鎖檔、
+    `detail` 收成整數、比對改成相等）**一行都沒有生效**，而全套測試照樣綠。
+    是探針的行為對不上程式碼，才逼我去數定義有幾個（2026-09-06）。
+
+    影子定義是最難看見的一種錯：檔案裡有正確的程式碼、審查時讀得到、測試也綠，
+    而執行的是另一份。
+    """
+    tree = ast.parse(_source(gate))
+    names = {}
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.setdefault(node.name, []).append(node.lineno)
+    dupes = {n: ls for n, ls in names.items() if len(ls) > 1}
+    assert not dupes, "%s 有同名的頂層定義（後面那個會蓋掉前面）：%s" % (gate, dupes)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="強制鎖是 Windows 的行為")
+def test_q13_an_external_lock_on_the_file_does_not_swallow_the_entry(tmp_path):
+    """Q13：別人鎖住屍檢檔時，這一筆仍然要寫進去。
+
+    契約寫的是「拿不到鎖就照寫——遺失一行遙測，遠比卡住一個回合便宜」。在
+    Windows 上那句話一度是假的：`msvcrt.locking` 是**強制鎖**不是勸告鎖，而
+    第一版鎖的是資料檔本身的第 0 byte，所以重試耗盡之後的 `os.read` 會踩到
+    被鎖的區域 → PermissionError → 被最外層吞掉 → **整筆消失**。實測另一個
+    行程持鎖時 `note_quiet` 0.137 秒回來、那一筆不在檔案裡（2026-09-06 抗辯）。
+
+    兩層修法，這條同時盯著：鎖的對象改成獨立的 `.gate_fail.lock`（讀寫資料檔
+    不再碰被鎖的區域），以及讀取失敗時退回「不數、直接寫」（防毒或索引器用
+    限制性 sharing 開這個檔時同一條路）。
+
+    ⚠ Q10 覆蓋不到這個情境：它的三個寫入者都是短命的自家行程，沒有人長期
+    持有強制鎖。
+    """
+    copy = tmp_path / "goal_gate.py"
+    copy.write_text(_source(".claude/hooks/goal_gate.py"), encoding="utf-8")
+    marker = tmp_path / ".gate_fail"
+    marker.write_text("2026-09-06T00:00:00+00:00 goal_gate/pre: OSError\n",
+                      encoding="utf-8", newline="")
+
+    holder_src = (
+        "import msvcrt, os, sys, time\n"
+        "fd = os.open(sys.argv[1], os.O_RDWR | os.O_BINARY)\n"
+        "os.lseek(fd, 0, os.SEEK_SET)\n"
+        "msvcrt.locking(fd, msvcrt.LK_LOCK, 1)\n"
+        "sys.stderr.write('HELD' + chr(10)); sys.stderr.flush()\n"
+        "time.sleep(4)\n")
+    holder = subprocess.Popen([sys.executable, "-c", holder_src, str(marker)],
+                              stderr=subprocess.PIPE)
+    try:
+        assert holder.stderr.readline().strip() == b"HELD", "前置不成立：沒鎖住"
+        time.sleep(0.2)
+        # 在子行程**內部**量 note_quiet 自己的耗時：從外面量會被行程啟動的
+        # 約 100 毫秒蓋掉，而那剛好與鎖的逾時同一個量級，於是分不出「鎖對了
+        # 對象」與「鎖錯對象但被回退救回來」（2026-09-06 自查：外量版本對
+        # 「鎖改回鎖資料檔」這個突變不會紅）。
+        code = (
+            "import importlib.util, sys, time\n"
+            "spec = importlib.util.spec_from_file_location('g', sys.argv[1])\n"
+            "m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)\n"
+            "t = time.time(); m.note_quiet('victim', OSError())\n"
+            "print('%.4f' % (time.time() - t))\n")
+        out = subprocess.run([sys.executable, "-c", code, str(copy)],
+                             capture_output=True, encoding="utf-8",
+                             errors="replace", timeout=60)
+        assert out.returncode == 0, out.stderr
+        elapsed = float(out.stdout.strip().splitlines()[-1])
+    finally:
+        holder.wait(timeout=20)
+        holder.stderr.close()
+
+    body = marker.read_text(encoding="utf-8")
+    assert "victim: OSError" in body, (
+        "別人鎖住檔案時整筆消失了——契約寫的是「照寫」：\n%s" % body)
+    assert elapsed < 3.0, (
+        "等鎖等太久（%.2fs）——遙測不得把 hook 拖到逾時" % elapsed)
