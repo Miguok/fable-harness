@@ -257,11 +257,26 @@ The current version is also kept in [VERSION](VERSION).
 ⚠⚠ **而「10.1% 是量在修完之後」這句話本身也是錯的**，這是同一個毛病的第三層。
 逐 commit 實測（`wc -l`，三支合計）：
 
-| commit | verify_gate 佔比 |
-|---|---|
-| `b28ea35`（缺陷被發現時） | 15.0% |
-| `5426bbe` | **10.1%** ← 這個數字屬於這裡 |
-| `cfd2908`（我寫下那句話時） | 11.1% |
+實查指令（可直接貼上跑）：
+
+```sh
+for c in b28ea35 5426bbe cfd2908 HEAD; do
+  v=$(git show $c:.claude/hooks/verify_gate.py | wc -l)
+  g=$(git show $c:.claude/hooks/goal_gate.py | wc -l)
+  w=$(git show $c:.claude/hooks/wiring_gate.py | wc -l)
+  printf "%-9s verify=%-4s total=%-5s %.1f%%\n" $c $v $((v+g+w)) \
+    $(python -c "print(100*$v/($v+$g+$w))")
+done
+```
+
+2026-09-06 22:5x 實跑輸出：
+
+```
+b28ea35   verify=181  total=1204  15.0%     ← 缺陷被發現時
+5426bbe   verify=236  total=2340  10.1%     ← 「10.1%」這個數字屬於這裡
+cfd2908   verify=283  total=2557  11.1%     ← 我寫下那句話時指的那份樹
+HEAD      verify=359  total=2785  12.9%
+```
 
 我當時指的那份樹（`goal_gate` 1422 行、`wiring_gate` 852 行）是 11.1%，不是
 10.1%。**我用一個量錯時點的數字，去更正另一個量錯的數字，而更正本身又指錯了樹。**
