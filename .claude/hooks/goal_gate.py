@@ -47,7 +47,12 @@ import sys
 import time
 
 QUIET_PER_LABEL = 20      # 同一個標籤最多幾行
-QUIET_MAX_SCAN = 1 << 20  # 數行時最多讀多少（超過就當作已滿，不再寫）
+# 數行時最多讀多少。**它防的不是自家的成長**——標籤空間是封閉的（15 個字面
+# 標籤 × 20 行 ≈ 31 KB），自家寫入者永遠碰不到 1 MB。它防的是**別人污染這個
+# 檔**：`.gate_fail` 可以被 `git add -f` 提交進一個會收 PR 的 repo，而每一次
+# fail-open 都要把它讀一遍數行數（實測 90 MB 要 0.32 秒）。
+# 第一版的註解把它寫成防成長，那是錯的對象（2026-09-06 簡潔性鏡頭指出）。
+QUIET_MAX_SCAN = 1 << 20
 
 
 def _quiet_lock(fd, release=False):

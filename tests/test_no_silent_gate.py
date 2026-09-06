@@ -7,7 +7,9 @@
   Q2 `quiet-ok` 的理由不得留白——「標了但沒寫為什麼」等於沒標。
   Q3 三支各自的 `note_quiet` 行為一致（刻意保留三份副本，所以要綁在一起）。
   Q4 遙測自己壞掉不得破壞 fail-open（唯讀 `.gate_fail` 時 gate 仍正常）。
-  Q5 一個標籤狂寫不得讓別的失效寫不進去（三支共用同一個檔，全域預算＝共用預算）。
+  Q5 已刪：除了「最早那一筆不得被淘汰」之外，鑑別力被 Q11 完全涵蓋，那條斷言
+     已搬進 Q11（2026-09-06 簡潔性鏡頭逐條比對指出）。編號保留不重排，因為
+     Q1–Q11 在 commit 訊息與 CHANGELOG 裡被引用過。
   Q6 接線：屍檢必須被送進上下文——SessionStart 注入器要讀它。
   Q7 Q1 的配對：正常情況不得寫屍檢（吵到沒人看的屍檢＝沒有屍檢）。
 
@@ -156,7 +158,7 @@ def _always_raises(stmts):
     return True
 
 
-def _suppress_lines(tree, src):
+def _suppress_lines(tree):
     """`with contextlib.suppress(...)`——它**不產生** ExceptHandler 節點。
 
     語意上等同一個什麼都不做的 except。別名（`from contextlib import suppress
@@ -203,34 +205,46 @@ def _swallowing_finally(tree):
     return out
 
 
-def silent_points(rel):
-    """這個檔案裡「會安靜吞掉失敗」的位置：[(行號, 那一行)]。"""
+def swallow_points(rel):
+    """這個檔案裡**每一個會吞掉失敗的位置**：[(行號, 那一行)]。
+
+    Q1 與 Q2 都從這裡取位置，是刻意的：兩者原本各自算一份，而它們的定義不一樣
+    ——Q1 認 `except`／`suppress`／`finally` 三種，Q2 只收「那一行含 `except` 或
+    `suppress`」。於是 `finally:` 裡的第一句掛一個 `# quiet-ok: x`，Q1 因為看見
+    標記而放行，Q2 因為那一行沒有 `except` 而根本不檢查理由——**一個字就能關掉
+    整條規則**（2026-09-06 簡潔性鏡頭指出，我實測 16 passed 重現）。
+
+    這正是 Q1／Q2 分工本身的病：兩條規則講同一組位置，卻各自維護一份清單。
+    現在只有一份。
+    """
     src = _source(rel)
     lines = src.split("\n")
     tree = ast.parse(src)
-    out = []
+    seen = {}
     for h in ast.walk(tree):
         if not isinstance(h, ast.ExceptHandler):
             continue
         if _records_directly(h.body) or _always_raises(h.body):
             continue
-        if QUIET_OK_RE.search(lines[h.lineno - 1]):
-            continue
-        out.append((h.lineno, lines[h.lineno - 1].strip()))
-    for ln in _suppress_lines(tree, src) + _swallowing_finally(tree):
-        if not QUIET_OK_RE.search(lines[ln - 1]):
-            out.append((ln, lines[ln - 1].strip()))
-    return sorted(set(out))
+        seen[h.lineno] = lines[h.lineno - 1]
+    for ln in _suppress_lines(tree) + _swallowing_finally(tree):
+        seen[ln] = lines[ln - 1]
+    return sorted((ln, txt.strip()) for ln, txt in seen.items())
+
+
+def silent_points(rel):
+    """會吞掉失敗、而且**沒有**任何說明的位置——Q1 盯這個。"""
+    return [(ln, txt) for ln, txt in swallow_points(rel)
+            if not QUIET_OK_RE.search(txt)]
 
 
 def quiet_ok_reasons(rel):
-    """[(行號, 理由)]——含 suppress 那一行。"""
-    src = _source(rel)
+    """會吞掉失敗、而且**有**標記的位置與它的理由——Q2 盯這個。"""
     out = []
-    for i, line in enumerate(src.split("\n"), 1):
-        m = QUIET_OK_RE.search(line)
-        if m and ("except" in line or "suppress" in line):
-            out.append((i, m.group(1).strip()))
+    for ln, txt in swallow_points(rel):
+        m = QUIET_OK_RE.search(txt)
+        if m:
+            out.append((ln, m.group(1).strip()))
     return out
 
 
@@ -372,39 +386,6 @@ def test_q4_broken_telemetry_does_not_break_fail_open(tmp_path):
         "屍檢寫不進去就把 gate 弄掛了——fail-open 契約破了：%s" % out.stderr)
     assert out.stdout.strip() == "", "壞掉的遙測讓 gate 多吐了東西：%s" % out.stdout
 
-
-def test_q5_a_spamming_label_cannot_starve_the_others(tmp_path):
-    """Q5：一個標籤狂寫，不得讓別的失效寫不進去。
-
-    ⚠ **第一版的機制自己犯了它要治的病。** 當時是「全域 500 行、滿了停寫」，
-    而三支 hook 寫的是**同一個** `.gate_fail`（都用 `dirname(__file__)`）——
-    也就是三支共用一個預算。實測：`goal_gate` 壞掉、每回合寫一行，灌到 500 行
-    之後 `wiring_gate` 與 `verify_gate` 的失效**永遠寫不進去，而且沒有任何訊息**。
-    治療複製了它要治的病（2026-09-06 simplifier 鏡頭指出，我實測重現）。
-
-    改成逐標籤上限之後：同一個標籤最多 `QUIET_PER_LABEL` 行，沒有全域預算，
-    新的標籤永遠進得去，成長上界＝標籤數 × 上限。
-
-    這條測試斷言的就是那個性質，不是某個數字。
-    """
-    copy = tmp_path / "goal_gate.py"
-    copy.write_text(_source(".claude/hooks/goal_gate.py"), encoding="utf-8")
-    code = (
-        "import importlib.util;"
-        "spec=importlib.util.spec_from_file_location('g',r'%s');"
-        "m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m);"
-        "[m.note_quiet('spammer', OSError()) for _ in range(600)];"
-        "m.note_quiet('a quiet real failure', ValueError())" % copy)
-    out = subprocess.run([sys.executable, "-c", code], capture_output=True,
-                         encoding="utf-8", errors="replace", timeout=120)
-    assert out.returncode == 0, out.stderr
-    body = (tmp_path / ".gate_fail").read_text(encoding="utf-8")
-    lines = [ln for ln in body.splitlines() if ln.strip()]
-    assert "a quiet real failure: ValueError" in body, (
-        "狂寫的標籤把後來的真實失效擠掉了——那正是這個機制要治的病")
-    spam = [ln for ln in lines if ln.endswith("spammer: OSError")]
-    assert len(spam) <= 25, "逐標籤上限沒有生效：%d 行" % len(spam)
-    assert lines[0].endswith("spammer: OSError"), "最早那一行被擠掉了"
 
 def test_q6_the_postmortem_is_actually_surfaced(tmp_path):
     """Q6：接線——屍檢必須被送進上下文，而且要真的印出內容。
@@ -633,6 +614,12 @@ def test_q11_one_gate_cannot_starve_another(tmp_path):
         mods[name] = m
     marker = tmp_path / ".gate_fail"
 
+    # 先寫一筆別的，再讓 wiring_gate 狂寫——順序是刻意的：狂寫的標籤若排在第一，
+    # 「最早那一筆還在嗎」這個斷言就分辨不出「留最早」與「留最新」，兩種實作
+    # 都會讓 lines[0] 是它。⚠ 這條斷言從 Q5 搬過來時我一度就放在那個位置，
+    # 突變（把上限改成截檔重寫）照樣綠——搬家會讓斷言失去鑑別力，而那不會有
+    # 任何紅燈提醒（2026-09-06 自查）。
+    mods["goal_gate.py"].note_quiet("the first thing that ever failed", OSError())
     for _ in range(30):
         mods["wiring_gate.py"].note_quiet("main", OSError())
     mods["goal_gate.py"].note_quiet("main", OSError())
@@ -641,13 +628,20 @@ def test_q11_one_gate_cannot_starve_another(tmp_path):
     assert body.count("wiring_gate/main") <= 25, "逐標籤上限沒生效"
     assert "goal_gate/main" in body, "一支 gate 把另一支的頂層失效餓死了"
     assert "verify_gate/main" in body, "一支 gate 把另一支的頂層失效餓死了"
+    # 上限是「留最早的、滿了停寫」，不是「留最新的、淘汰最舊」。第一筆才是
+    # 告訴你「什麼時候開始壞的」那一筆，而那正是屍檢的用途。
+    # （這條原本在 Q5；Q5 其餘的鑑別力被本條完全涵蓋，已刪，見檔頭。）
+    lines = [l for l in body.splitlines() if l.strip()]
+    assert lines[0].endswith("the first thing that ever failed: OSError"), (
+        "最早那一筆被擠掉了——上限變成了淘汰最舊：%s" % lines[0])
 
-    for _ in range(25):
-        mods["goal_gate.py"].note_quiet("domain", OSError())
-    mods["goal_gate.py"].note_quiet("mainx", OSError())
-    body = marker.read_text(encoding="utf-8")
-    assert "goal_gate/mainx" in body, (
-        "前綴碰撞：`domain` 寫滿之後把別的標籤也擋掉了（endswith 而不是相等）")
+    # ⚠ 前綴碰撞（`domain` 吃掉 `main` 的預算）在標籤掛上 gate 檔名之後
+    # **構造不出真實案例**：比對的鍵含 `goal_gate/`，而每一行只有一個 `gate/`，
+    # 所以沒有任何合法標籤能讓另一個標籤的鍵成為它的後綴。比對從 `endswith`
+    # 改成前綴相等仍然做了（那才是精確的判準），但這裡不放假的斷言假裝驗過它
+    # ——我一度寫了 `domain` / `mainx` 那一對，突變把比對改回 `endswith` 時
+    # **照樣綠**，因為那兩個根本不碰撞（2026-09-06 自查）。
+    # 真正關掉這個風險的是上面那段（標籤掛 gate 檔名），它有突變覆蓋。
 
     for i in range(60):
         mods["goal_gate.py"].note_quiet("torn", ValueError(), detail="%d 行" % i)
