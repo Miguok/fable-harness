@@ -1573,3 +1573,71 @@ def test_g61_a_skill_load_does_not_erase_a_failing_turn(tmp_path):
         "會把閘自己關掉"
     )
     assert _blocked(out)
+
+
+def test_g62_the_declared_verifier_matches_a_run_that_carries_context(tmp_path):
+    """G62：權威驗證的比對不看 context，否則它對 93.4% 的執行失效。
+
+    宣告檔寫的是乾淨的 `python -m pytest tests/ -q`，而真實執行幾乎都帶著
+    `cd …`——本機實測 6,485 條真實測試執行，**93.4% 帶 context**，只有 6.6%
+    對得上宣告。也就是說 context 一進鍵，這個解除機制就等於被關掉了，而它
+    正是用來修最初那個誤判的東西（G35 的存在理由）。
+
+    context 存在的理由是「別讓 A 專案的綠清掉 B 專案的紅」（G56）。那個理由
+    在這裡不成立：宣告檔與狀態檔都在**同一個 repo** 內，跨專案的問題不會經由
+    這條路徑發生。所以比對只看指令本身。
+    """
+    repo = _repo(tmp_path, {"streak": 0, "shelved": [], "red": {}})
+    _declare_verifier(repo, "python -m pytest tests/ -q")
+    narrow = "python -m pytest tests/test_x.py -q -k g27"
+    broad = "cd %s && python -m pytest tests/ -q" % str(repo).replace("\\", "/")
+
+    out = _run(repo, _runs((narrow, FAIL_OUT), (broad, PASS_OUT)))
+    st = _state(repo)
+    assert st.get("red", {}) == {}, (
+        f"帶 cd 的權威驗證綠了，窄鍵的紅卻還在——比對被 context 擋掉了：{st['red']}"
+    )
+    assert st["streak"] == 0
+    assert not _blocked(out)
+
+
+def test_g63_context_still_separates_two_projects(tmp_path):
+    """G63：G62 的配對——放寬權威驗證的比對，不得把 G56 的保護一起放掉。
+
+    只有 G62 的話，一個「context 整個不進鍵」的實作也會通過，而那正是
+    2026-09-06 抗辯抓到的誤清：A 專案的紅被 B 專案的綠清掉。
+    """
+    repo = _repo(tmp_path, {"streak": 0, "shelved": [], "red": {}})
+    # 刻意不宣告 verifier：這一條測的是「沒有宣告時 context 仍然分得開」
+    _run(repo, _runs(("cd package_A && pytest -q", FAIL_OUT)))
+    _run(repo, _runs(("cd package_B && pytest -q", PASS_OUT)))
+    left = list(_state(repo)["red"])
+    assert left and "package_A" in left[0], (
+        f"另一個專案的綠把這個專案的真紅清掉了：red={left}"
+    )
+
+
+@pytest.mark.parametrize("cmd,expect", [
+    ("cd /tmp/pytest-of-user/x && python -m pytest tests/ -q",
+     "cd=/tmp/pytest-of-user/x :: pytest tests/ -q"),
+    ("cd /work/my-jest-plugin && npm test", "cd=/work/my-jest-plugin :: npm test"),
+    ("./venv/bin/pytest -q", "pytest -q"),          # 配對：路徑裡的呼叫仍要認得
+    ("pytest -q", "pytest -q"),
+])
+def test_g64_a_path_containing_a_runner_name_is_not_the_test_command(cmd, expect):
+    """G64：路徑裡出現 `pytest`／`jest` 不得被當成測試指令。
+
+    `TEST_CMD_RE` 匹配裸的 `pytest`，於是 `cd …/pytest-of-user/… && python -m
+    pytest tests/ -q` 的命中落在**路徑上**，鍵變成
+    `cd=…/Temp :: pytest-of-user/… && python -m pytest tests/ -q`——context 與
+    指令都歪掉，而歪掉的鍵誰也對不上：權威驗證解不了它，同一個目標的兩次執行
+    也算成兩個鍵。
+
+    這條是 G62 紅燈時挖出來的：那條測試在 pytest 的暫存目錄裡跑，路徑天生含
+    `pytest-of-user`——**測試自己的執行環境把缺陷觸發出來**，我原本以為是測試
+    寫錯了。任何名字含 runner 名稱的目錄都會踩到，不限於暫存目錄。
+
+    配對是後兩條：`./venv/bin/pytest` 這種真的用路徑呼叫的方式必須仍然認得，
+    否則修法會把一整類合法用法變成「沒有跑測試」。
+    """
+    assert gg.test_key(cmd) == expect

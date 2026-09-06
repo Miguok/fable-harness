@@ -58,6 +58,12 @@ TEST_CMD_RE = re.compile(
     r"|mvnw?(\.cmd)?\s+(\S+\s+)*test(\s|$)|gradlew?(\.bat)?\s+(\S+\s+)*test(\s|$)"
     r"|dotnet\s+test(\s|$)|\brspec\b|\bphpunit\b|\bctest\b|make\s+test\b"
     r"|rake\s+(\S+\s+)*test\b|mix\s+test\b|\s--test(\s|$))"
+    # 後面不得接 word 字元、`-` 或 `/`。少了這個尾界，**路徑裡的那個字**會被
+    # 當成測試指令：`cd C:/…/pytest-of-user/… && python -m pytest tests/ -q`
+    # 算出的鍵是 `cd=C:/…/Temp :: pytest-of-user/… && python -m pytest tests/ -q`
+    # ——命中落在路徑上，整個鍵歪掉。任何含 `pytest`／`jest` 的目錄名都會踩到。
+    # 前面刻意**不**限制：`./venv/bin/pytest -q` 是合法的呼叫方式。
+    r"(?![\w-]|/)"
 )
 
 # 測試摘要行：`12 passed in 1.2s`／`1 failed, 11 passed`／`3 errors in 0.5s`。
@@ -255,12 +261,20 @@ def test_key(command):
     stripped = command[m.start():] if m else command
     run = " ".join(strip_pipeline_tail(stripped).split())
     ctx = run_context(command[:m.start()] if m else "")
-    return ("%s :: %s" % (ctx, run)) if ctx else run
+    return ("%s%s%s" % (ctx, CONTEXT_SEP, run)) if ctx else run
 
 
 CD_RE = re.compile(r"(?:^|[;&|]|\bthen\b|\bdo\b)\s*cd\s+(\"[^\"]*\"|'[^']*'|\S+)")
 ENV_PREFIX_RE = re.compile(r"(?:^|[;&|]|\s)([A-Za-z_][A-Za-z0-9_]*)="
                            r"(\"[^\"]*\"|'[^']*'|\S*)")
+
+
+CONTEXT_SEP = " :: "
+
+
+def strip_context(key):
+    """鍵去掉 context，只留指令本身——權威驗證的比對用這個。"""
+    return key.split(CONTEXT_SEP, 1)[1] if CONTEXT_SEP in key else key
 
 
 def run_context(prefix):
@@ -794,7 +808,15 @@ def run_stop(data, root):
     # 而那是一道會被靜默關掉的閘——正是退回上一版修法的理由。
     latest_red = max((order.get(k, 0) for k, v in verdicts.items() if v == "fail"),
                      default=0)
-    if any(order.get(k, 0) > latest_red for k in greens & load_verifiers(root)):
+    # 權威驗證的比對**只看指令本身，不看 context**。宣告檔裡寫的是乾淨的
+    # `python -m pytest tests/ -q`，而真實執行幾乎都帶著 `cd=…`——實測本機
+    # 6,485 條真實測試執行，**93.4% 帶 context**，只有 6.6% 對得上宣告。
+    # 也就是說 context 一進鍵，這個解除機制就對 93.4% 的執行失效了，而它正是
+    # 用來修最初那個誤判的東西。context 存在的理由是「別讓 A 專案的綠清掉 B
+    # 專案的紅」，那個理由在這裡不成立：宣告檔與狀態檔都在**同一個 repo** 內。
+    declared = load_verifiers(root)
+    if any(order.get(k, 0) > latest_red
+           for k in greens if strip_context(k) in declared):
         red.clear()
         state["streak"] = 0
         if (dict(red), state["streak"]) != before:
