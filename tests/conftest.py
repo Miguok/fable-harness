@@ -47,6 +47,8 @@ def pytest_configure(config):
     （2026-09-06 自查）。`pytest_configure` 早於收集，才蓋得住 import 期。
     """
     _BEFORE.append(_snapshot())
+    config.addinivalue_line(
+        "markers", "sweep: 完整交叉展開的行為預言機（需 --sweep）")
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -61,3 +63,21 @@ def _production_postmortem_untouched():
         "「⚠ 閘曾經靜默失效（N 筆）」——假警報會訓練讀者忽略它，等於把整個\n"
         "機制廢掉。測試一律跑 gate 的副本（見 test_goal_gate.py 檔頭）。"
         % (MARKER, before, after))
+
+def pytest_addoption(parser):
+    parser.addoption("--sweep", action="store_true", default=False,
+                     help="跑完整交叉展開的行為預言機（約 40 秒）")
+
+
+def pytest_collection_modifyitems(config, items):
+    """`--sweep` 沒給就跳過標了 sweep 的測試。
+
+    分開跑不是為了省事：完整展開 120 條要 40 秒，會讓全套時間翻倍，而慢的測試
+    下一步就是被跳過——被跳過的測試等於沒有。預設語料仍然覆蓋每個維度的每個值。
+    """
+    if config.getoption("--sweep"):
+        return
+    skip = pytest.mark.skip(reason="需要 --sweep（完整交叉展開約 40 秒）")
+    for item in items:
+        if "sweep" in item.keywords:
+            item.add_marker(skip)
