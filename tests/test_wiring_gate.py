@@ -846,3 +846,65 @@ def test_w25b_an_unrelated_config_env_is_not_blocked(tmp_path):
     out = _run_gate(_bash(
         "MYNAME=alice git --config-env=user.name=MYNAME commit -m x"), repo)
     assert not _is_deny(out), "無關的 --config-env 被誤擋了"
+
+
+@pytest.mark.parametrize("how,label", [
+    ("local", "git config --local core.hooksPath"),
+    ("global", "GIT_CONFIG_GLOBAL 指到自製設定檔"),
+    ("inherited", "環境變數由外面繼承進來"),
+])
+def test_w26_hookspath_set_where_the_command_line_cannot_show_it(tmp_path, how, label):
+    """W26：從指令列看不到的地方設 hooksPath，一樣要擋。
+
+    W23／W25 擋的是寫在指令列上的三種通道，靠字串解析。但 hooksPath 也可以
+    寫在 `.git/config`、`GIT_CONFIG_GLOBAL` 指到的檔案、或先前已經 export 的
+    環境變數裡——那些**指令列上一個字都看不到**，字串解析永遠碰不到。
+
+    這些之所以擋得住，是因為這道閘**問 git** 拿 pre-commit 的位置
+    （`rev-parse --git-path`），而 git 自己會把那些設定算進去。也就是說它問的
+    是**實際狀態**而不是「我列得出來的語法」——那正是這一批修法真正的價值，
+    而在這條測試之前，它一行守衛都沒有。
+
+    每一條都先驗「繞道真的成立」（哨兵沒跑）再驗「gate 擋下來」；少了前半，
+    測試會退化成「gate 對某個情境回 deny」，而那不是被保護的東西。
+    """
+    empty = tmp_path / "no-hooks"
+    empty.mkdir()
+    e = str(empty).replace("\\", "/")
+    repo = _wired_repo_with_sentinel(tmp_path / "r")
+
+    env = {}
+    if how == "local":
+        subprocess.run(["git", "-C", str(repo), "config", "--local",
+                        "core.hooksPath", e], check=True)
+    elif how == "global":
+        cfg = tmp_path / "fake-global"
+        cfg.write_text("[core]\n\thooksPath = %s\n" % e,
+                       encoding="utf-8", newline="")
+        env["GIT_CONFIG_GLOBAL"] = str(cfg)
+    else:
+        env["GIT_CONFIG_PARAMETERS"] = "'core.hooksPath'='%s'" % e
+
+    assert not _commit_with(repo, (), env), (
+        f"{label}：前置不成立，這條沒有真的跳過 hook，測試量不到東西"
+    )
+
+    out = subprocess.run(
+        [sys.executable, GATE], input=json.dumps(_bash("git commit -m x")),
+        capture_output=True, text=True, cwd=str(repo), timeout=30,
+        env=dict(os.environ, **env))
+    assert out.returncode == 0, f"gate 不得非零退出：{out.stderr[:300]}"
+    assert _is_deny(out.stdout.strip()), f"{label}：沒被擋"
+
+
+def test_w26b_the_control_repo_is_allowed(tmp_path):
+    """W26b：W26 的配對——沒有任何 override 時，正確接線的 repo 必須放行。
+
+    這條看起來多餘，實際上不是：W26 三條的第一版全部「通過」，而那是因為
+    測試 repo 的 pre-commit 沒提到宣告檔、**因為別的理由**被擋。沒有這條對照，
+    一個永遠 deny 的實作會讓 W26 全綠（2026-09-06 實際踩到，這是第二次）。
+    """
+    repo = _wired_repo_with_sentinel(tmp_path / "r")
+    assert _commit_with(repo), "前置不成立：對照組的 hook 根本沒跑"
+    assert not _is_deny(_run_gate(_bash("git commit -m x"), repo)), \
+        "沒有任何 override，正確接線的 repo 卻被擋"
