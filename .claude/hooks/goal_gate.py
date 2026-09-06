@@ -46,6 +46,36 @@ import subprocess
 import sys
 import time
 
+def note_quiet(reason):
+    """把一次「閘判不出來／自己壞掉」寫成一行，落在同目錄的 `.gate_fail`。
+
+    這是本套件收斂的關鍵：**fail-open 沒問題，安靜的 fail-open 才是問題。**
+    三道閘的每一條 fail-open 在外部看起來都和「一切正常」一模一樣，於是它們
+    可以壞掉好幾天、跨好幾個版本而沒有人發現——2026-09-06 一輪抗辯找出 26 條
+    缺陷，其中 24 條出在**沒有屍檢的那兩支**，2 條出在有屍檢的那一支。
+    每一輪抗辯找到的都只是「安靜」的一個實例，而那個決定寫在二十幾個地方；
+    修實例永遠追不完，讓安靜留下痕跡才會收斂。
+
+    契約（三支 hook 各有一份，由 tests/test_no_silent_gate.py 綁在一起）：
+      - 絕不拋例外——遙測自己壞掉不得破壞 fail-open
+      - 一次一行，含 UTC 時間戳與呼叫點標籤
+      - 上限 500 行，保留**最早**那幾行（第一次靜默死亡最有價值），滿了就停寫
+      - 只寫短標籤與例外類別，不寫整包 payload
+    """
+    try:
+        from datetime import datetime, timezone
+        marker = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".gate_fail")
+        if os.path.exists(marker):
+            with open(marker, encoding="utf-8", errors="replace") as fh:
+                if sum(1 for _ in fh) >= 500:
+                    return
+        text = str(reason)[:200].replace("\n", " ").replace("\r", " ")
+        with open(marker, "a", encoding="utf-8") as fh:
+            fh.write("%s %s\n" % (datetime.now(timezone.utc).isoformat(), text))
+    except Exception:  # quiet-ok: 遙測自身故障不得破壞 fail-open，這裡沒有第二個出口
+        pass
+
+
 SHELL_TOOLS = {"Bash", "PowerShell"}
 
 # 與 verify_gate 相同的測試指令辨識範圍（那裡是唯一正本；此處只需知道
@@ -142,7 +172,9 @@ def _env_int(name, default):
     """
     try:
         value = int(os.environ.get(name, default))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError) as _q:
+        note_quiet("_env_int %s=%r: %s"
+                   % (name, os.environ.get(name), type(_q).__name__))
         return int(default)
     return value if value > 0 else int(default)
 
@@ -178,7 +210,14 @@ def load_verifiers(root):
         # 只有這一處沒掃到：同一類沒掃完。
         with open(p, encoding="utf-8", errors="replace") as fh:
             lines = fh.read().splitlines()
-    except OSError:
+    except FileNotFoundError:  # quiet-ok: 沒宣告驗證指令是常態，不是失效
+        return frozenset()
+    except OSError as _q:
+        # 檔案在、卻讀不到（權限、佔用、是個目錄）才是靜默失效：repo 明明宣告了
+        # 權威驗證指令，而這道閘從此當它不存在。實測第一版對「檔案不存在」也記，
+        # 一次全套測試就寫了 120 行——**吵到沒人看的屍檢與沒有屍檢一樣沒用**，
+        # 而且會把 500 行上限灌爆，真正的失效反而寫不進去。
+        note_quiet("load_verifiers: %s" % type(_q).__name__)
         return frozenset()
     keys = set()
     for line in lines:
@@ -264,7 +303,7 @@ def load_entries(path):
                 continue
             try:
                 entries.append(json.loads(line))
-            except json.JSONDecodeError:
+            except json.JSONDecodeError:  # quiet-ok: transcript 逐行容錯，壞一行不影響判定；逐行記會把屍檢灌爆
                 continue
     return entries
 
@@ -581,7 +620,8 @@ def repo_root():
     try:
         r = subprocess.run(["git", "rev-parse", "--show-toplevel"],
                            capture_output=True, encoding="utf-8", errors="replace", timeout=5)
-    except Exception:
+    except Exception as _q:
+        note_quiet("repo_root: %s" % type(_q).__name__)
         return None
     root = r.stdout.strip()
     return root if r.returncode == 0 and root else None
@@ -633,7 +673,8 @@ def load_state(root):
     try:
         with open(p, encoding="utf-8") as fh:
             s = json.load(fh)
-    except Exception:
+    except Exception as _q:
+        note_quiet("load_state: %s" % type(_q).__name__)
         return None
     if not isinstance(s, dict):
         return None
@@ -797,7 +838,8 @@ def inside(root, path):
     try:
         rp = os.path.realpath(root)
         pp = os.path.realpath(path)
-    except OSError:
+    except OSError as _q:
+        note_quiet("inside: %s" % type(_q).__name__)
         return False
     return pp == rp or pp.startswith(rp + os.sep)
 
@@ -899,7 +941,7 @@ class state_lock(object):
                 ensure_state_dir(self.root, os.path.dirname(self.path))
                 self.fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
                 return self
-            except FileExistsError:
+            except FileExistsError:  # quiet-ok: 鎖被佔用是正常控制流，不是失效
                 # 前一個持有者當掉時鎖檔會留下來。因為 `__enter__` 是
                 # fail-open，後果不是「閘關掉」而是**每次都多等 1.5 秒、
                 # 並退化成不序列化**——仍然要清，但別把代價說得比實際嚴重。
@@ -907,9 +949,11 @@ class state_lock(object):
                     if time.time() - os.path.getmtime(self.path) > LOCK_STALE_SECONDS:
                         os.remove(self.path)
                         continue
-                except OSError:
+                except OSError as _q:
+                    note_quiet("state_lock stale-clear: %s" % type(_q).__name__)
                     pass
-            except OSError:
+            except OSError as _q:
+                note_quiet("state_lock — 這一次不序列化: %s" % type(_q).__name__)
                 return self  # 目錄不可寫等等：不鎖，但也不擋人
             if time.time() >= deadline:
                 return self
@@ -920,7 +964,7 @@ class state_lock(object):
             try:
                 os.close(self.fd)
                 os.remove(self.path)
-            except OSError:
+            except OSError:  # quiet-ok: 解鎖時檔案已不在，等價於已解鎖
                 pass
         return False
 
@@ -945,13 +989,14 @@ def save_state(root, state):
             json.dump(state, fh, ensure_ascii=False, indent=2)
             fh.write("\n")
         os.replace(tmp, p)
-    except OSError:
+    except OSError as _q:
+        note_quiet("save_state: %s" % type(_q).__name__)
         # Read-only file, a scanner holding it open, a full disk. Leaving the
         # temp file behind would accumulate one per process id, invisible
         # because this directory ignores itself.
         try:
             os.remove(tmp)
-        except OSError:
+        except OSError:  # quiet-ok: 暫存檔清理失敗，狀態已經寫成功
             pass
         return False
     return True
@@ -1299,6 +1344,7 @@ def run_prompt(root):
     return 0
 
 
+
 def main():
     try:
         data = json.loads(sys.stdin.read() or "{}")
@@ -1317,7 +1363,8 @@ def main():
             return 0
         with state_lock(root):
             return run_stop(data, root)
-    except Exception:
+    except Exception as _q:
+        note_quiet("main: %s" % type(_q).__name__)
         return 0  # fail-open
     return 0
 

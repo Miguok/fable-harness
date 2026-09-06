@@ -13,6 +13,7 @@ stop_hook_active=true（模型第二次結束）時放行，避免純討論 sess
 T11 --test 自測入口、T12 fail-open 屍檢遙測且 sanitize 不倒 payload）。
 """
 import json
+import os
 import re
 import sys
 from pathlib import Path, PurePath
@@ -174,26 +175,46 @@ def analyze(entries):
     return edited, test_seen
 
 
+def note_quiet(reason):
+    """把一次「閘判不出來／自己壞掉」寫成一行，落在同目錄的 `.gate_fail`。
+
+    這是本套件收斂的關鍵：**fail-open 沒問題，安靜的 fail-open 才是問題。**
+    三道閘的每一條 fail-open 在外部看起來都和「一切正常」一模一樣，於是它們
+    可以壞掉好幾天、跨好幾個版本而沒有人發現——2026-09-06 一輪抗辯找出 26 條
+    缺陷，其中 24 條出在**沒有屍檢的那兩支**，2 條出在有屍檢的那一支。
+    每一輪抗辯找到的都只是「安靜」的一個實例，而那個決定寫在二十幾個地方；
+    修實例永遠追不完，讓安靜留下痕跡才會收斂。
+
+    契約（三支 hook 各有一份，由 tests/test_no_silent_gate.py 綁在一起）：
+      - 絕不拋例外——遙測自己壞掉不得破壞 fail-open
+      - 一次一行，含 UTC 時間戳與呼叫點標籤
+      - 上限 500 行，保留**最早**那幾行（第一次靜默死亡最有價值），滿了就停寫
+      - 只寫短標籤與例外類別，不寫整包 payload
+    """
+    try:
+        from datetime import datetime, timezone
+        marker = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".gate_fail")
+        if os.path.exists(marker):
+            with open(marker, encoding="utf-8", errors="replace") as fh:
+                if sum(1 for _ in fh) >= 500:
+                    return
+        text = str(reason)[:200].replace("\n", " ").replace("\r", " ")
+        with open(marker, "a", encoding="utf-8") as fh:
+            fh.write("%s %s\n" % (datetime.now(timezone.utc).isoformat(), text))
+    except Exception:  # quiet-ok: 遙測自身故障不得破壞 fail-open，這裡沒有第二個出口
+        pass
+
 def _record_failure(exc):
     """fail-open 前 best-effort 留一行屍檢到同目錄 .gate_fail：沒有遙測的靜默 fail-open
     會數日無人察覺（cp950 事故即此模式——print 拋錯被 except 吞掉、gate 靜默不 block）。
     只記「例外類別 + 截斷訊息」（非 exc!r/整包 payload，降低未來例外把路徑/內容寫入的風險）；
     容量上限保留最早的事故行（首次靜默死亡最有價值），滿了即停寫、不淘汰不覆寫；
     整段包在自己的 try 內——遙測本身故障絕不可破壞 fail-open。"""
-    try:
-        from datetime import datetime, timezone
-        marker = Path(__file__).resolve().parent / ".gate_fail"
-        max_lines = 500
-        if marker.exists():
-            with open(marker, encoding="utf-8", errors="replace") as f:
-                if sum(1 for _ in f) >= max_lines:
-                    return  # 上限：保留最早事故行，不 truncate、不 evict-oldest
-        ts = datetime.now(timezone.utc).isoformat()
-        msg = str(exc)[:200].replace("\n", " ").replace("\r", " ")
-        with open(marker, "a", encoding="utf-8") as f:
-            f.write(f"{ts} {type(exc).__name__}: {msg}\n")
-    except Exception:
-        pass  # 遙測自身故障照樣 fail-open
+    # 委派給 `note_quiet`：三支 hook 各留一份副本（每一支都要能獨立執行），
+    # 而三份的行為由 tests/test_no_silent_gate.py 的 Q3 綁在一起。原本這裡
+    # 自己寫了一份，於是三份的輸出格式不一致——「同一段邏輯多份副本、守衛只
+    # 跟著其中一份」正是本專案反覆再犯的類別。
+    note_quiet("%s: %s" % (type(exc).__name__, exc))
 
 
 def main():
@@ -213,7 +234,7 @@ def main():
                     continue
                 try:
                     entries.append(json.loads(line))
-                except json.JSONDecodeError:
+                except json.JSONDecodeError:  # quiet-ok: transcript 逐行容錯，同 goal_gate
                     continue
         edited, test_seen = analyze(entries)
         if edited and not test_seen:

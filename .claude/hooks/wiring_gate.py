@@ -66,6 +66,36 @@ import re
 import subprocess
 import sys
 
+def note_quiet(reason):
+    """把一次「閘判不出來／自己壞掉」寫成一行，落在同目錄的 `.gate_fail`。
+
+    這是本套件收斂的關鍵：**fail-open 沒問題，安靜的 fail-open 才是問題。**
+    三道閘的每一條 fail-open 在外部看起來都和「一切正常」一模一樣，於是它們
+    可以壞掉好幾天、跨好幾個版本而沒有人發現——2026-09-06 一輪抗辯找出 26 條
+    缺陷，其中 24 條出在**沒有屍檢的那兩支**，2 條出在有屍檢的那一支。
+    每一輪抗辯找到的都只是「安靜」的一個實例，而那個決定寫在二十幾個地方；
+    修實例永遠追不完，讓安靜留下痕跡才會收斂。
+
+    契約（三支 hook 各有一份，由 tests/test_no_silent_gate.py 綁在一起）：
+      - 絕不拋例外——遙測自己壞掉不得破壞 fail-open
+      - 一次一行，含 UTC 時間戳與呼叫點標籤
+      - 上限 500 行，保留**最早**那幾行（第一次靜默死亡最有價值），滿了就停寫
+      - 只寫短標籤與例外類別，不寫整包 payload
+    """
+    try:
+        from datetime import datetime, timezone
+        marker = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".gate_fail")
+        if os.path.exists(marker):
+            with open(marker, encoding="utf-8", errors="replace") as fh:
+                if sum(1 for _ in fh) >= 500:
+                    return
+        text = str(reason)[:200].replace("\n", " ").replace("\r", " ")
+        with open(marker, "a", encoding="utf-8") as fh:
+            fh.write("%s %s\n" % (datetime.now(timezone.utc).isoformat(), text))
+    except Exception:  # quiet-ok: 遙測自身故障不得破壞 fail-open，這裡沒有第二個出口
+        pass
+
+
 DECL_REL = os.path.join(".claude", "wiring-guards")
 
 # `git commit` 本體。允許 env 前綴（`FOO=1 git commit`）、`command`/`time` 包裝、
@@ -299,7 +329,8 @@ def inline_config(options, line=""):
     for src in (inline_env, os.environ):
         try:
             count = int(src.get("GIT_CONFIG_COUNT", "0"))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError) as _q:
+            note_quiet("inline_config: %s" % type(_q).__name__)
             count = 0
         for i in range(min(count, 64)):   # 上限：別讓一個大數字把我們卡住
             key = src.get("GIT_CONFIG_KEY_%d" % i)
@@ -514,7 +545,8 @@ def repo_root(cwd=None):
             ["git", "rev-parse", "--show-toplevel"],
             capture_output=True, encoding="utf-8", errors="replace", timeout=5, cwd=cwd,
         )
-    except Exception:
+    except Exception as _q:
+        note_quiet("repo_root: %s" % type(_q).__name__)
         return None
     root = out.stdout.strip()
     return root if out.returncode == 0 and root else None
@@ -548,7 +580,8 @@ def precommit_path(root, config_args=(), env_prefix=None):
             capture_output=True, encoding="utf-8", errors="replace", timeout=5,
             cwd=root, env=env,
         )
-    except Exception:
+    except Exception as _q:
+        note_quiet("precommit_path: %s" % type(_q).__name__)
         return None
     path = out.stdout.strip()
     if out.returncode != 0 or not path:
@@ -590,7 +623,7 @@ def note_path(root):
         out = subprocess.run(["git", "rev-parse", "--git-path", NOTE_REL],
                              capture_output=True, encoding="utf-8",
                              errors="replace", timeout=5, cwd=root)
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError):  # quiet-ok: 提示檔路徑問不到，只影響提示，不影響判定
         return None
     if out.returncode != 0:
         return None
@@ -622,7 +655,7 @@ def note_unregistered(root, declared):
         # 路徑由 git 給，一個 repo 一份，刪的一定是自己的那一份。
         try:
             os.remove(note)
-        except OSError:
+        except OSError:  # quiet-ok: 提示寫入失敗絕不影響 commit，且它不參與任何判定
             pass
         return
     try:
@@ -640,7 +673,7 @@ def note_unregistered(root, declared):
         with open(note, "w", encoding="utf-8", newline="") as fh:
             fh.write("repo: %s\n" % root)
             fh.write("\n".join(found) + "\n")
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError):  # quiet-ok: 同上，提示路徑的失敗不影響 commit 判定
         return  # 提示失敗絕不影響 commit
 
 
@@ -670,7 +703,8 @@ def check_wiring(root, config_args=(), env_prefix=None):
     try:
         with open(installed, "r", encoding="utf-8", errors="replace") as fh:
             body = fh.read()
-    except OSError:
+    except OSError as _q:
+        note_quiet("check_wiring unreadable hook: %s" % type(_q).__name__)
         return None  # unreadable → fail open, never break the session
 
     # 註解不算執行。`# TODO: run .claude/wiring-guards later` 這樣一行就足以讓
@@ -704,10 +738,12 @@ def deny(reason):
     }}))
 
 
+
 def main(argv=None):
     try:
         payload = json.load(sys.stdin)
-    except Exception:
+    except Exception as _q:
+        note_quiet("main: %s" % type(_q).__name__)
         return 0  # fail-open: a gate must never break the session
 
     try:
@@ -769,7 +805,8 @@ def main(argv=None):
             if reason:
                 deny(reason)
                 return 0
-    except Exception:
+    except Exception as _q:
+        note_quiet("main: %s" % type(_q).__name__)
         return 0
     return 0
 
