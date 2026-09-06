@@ -78,9 +78,15 @@ def attestation_path(commit):
 def read_attestation(commit):
     try:
         with open(attestation_path(commit), encoding="utf-8") as fh:
-            return json.load(fh)
+            doc = json.load(fh)
     except (OSError, ValueError):
         return None
+    # 合法 JSON 但不是物件（`[]`、`"x"`、`null`）會讓下游的 `doc.get` 拋
+    # AttributeError——實測 `printf '[]' > .fable/attestations/<HEAD>.json`
+    # 之後 `--check` 直接 traceback。方向是 fail-closed（發佈中止），但
+    # goal_gate 的 load_state 早就對同一件事驗了 `isinstance(s, dict)`，
+    # 而這道閘的文案同樣叫人手動編 `.fable/`：同一類沒掃到第二個寫入者。
+    return doc if isinstance(doc, dict) else None
 
 
 def write_attestation(commit, lenses, judge, tests, override_reason=""):
@@ -96,8 +102,15 @@ def write_attestation(commit, lenses, judge, tests, override_reason=""):
     # 於是採用本 kit 的 repo 會把 attestation 與 goal_state.json（含跑過的測試
     # 指令）暴露給 `git add -A`。本 repo 因為根目錄 .gitignore 有 `.fable/` 而
     # 看不出來——那正是「只在自己身上驗過」的典型盲點。
+    # 判準是「**這個目錄裡有沒有 `.gitignore`**」，與 goal_gate 的
+    # `ensure_state_dir` 逐字相同。上面那段註解說對了風險，實作卻抄了
+    # goal_gate 自己已經記載為錯誤的舊判準（「目錄是不是我建的」）——於是
+    # repo 自己帶了 `.fable/`（committed .gitkeep、手動 mkdir）時，`fresh`
+    # 恆為 False，`.gitignore` 永遠不會寫。實測在一個沒有任何 .gitignore 的
+    # 拋棄式 repo 裡跑 --attest：`git status` 出現 `?? .fable/`，
+    # attestation 與 goal_state.json 都進得了 `git add -A`（2026-09-06 抗辯）。
     fable_dir = os.path.dirname(ATTEST_DIR)
-    fresh = not os.path.exists(fable_dir)
+    fresh = not os.path.exists(os.path.join(fable_dir, ".gitignore"))
     os.makedirs(ATTEST_DIR, exist_ok=True)
     if fresh:
         with open(os.path.join(fable_dir, ".gitignore"), "w",
@@ -343,6 +356,11 @@ def main(argv=None):
         print(json.dumps(doc, ensure_ascii=False, indent=2))
         return 0
 
+    # `.strip()`：`--reason " "` 通得過「沒有理由的跳過等於沒有紀錄」，實測
+    # 完整發佈後落地的憑證是 `"bypass_reason": " "`。goal_gate 的
+    # `block_unexplained_shelf` 早就修過一模一樣的事（註解逐字寫「原本讓一個
+    # 空白字元就解除封鎖」），沒掃到這裡（2026-09-06 抗辯）。
+    args.reason = args.reason.strip()
     if args.override_review and not args.reason:
         print("⛔ --override-review 必須同時給 --reason：沒有理由的跳過等於沒有紀錄")
         return 1

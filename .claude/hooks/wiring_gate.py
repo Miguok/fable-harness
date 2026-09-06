@@ -134,8 +134,15 @@ SEGMENT_END_RE = re.compile(r"&&|\|\||[;|\n]")
 # 會連 `-n` 一起剝掉，變成用訊息旗標就能繞過整道閘。
 STRIP_PATTERNS = [
     (re.compile(r"<<-?\s*(['\"]?)(\w+)\1.*?^\s*\2\s*$", re.S | re.M), " "),
-    (re.compile(r'(-[A-Za-z]*)[mF]\s+"(?:[^"\\]|\\.)*"'), r"\1 "),
-    (re.compile(r"(-[A-Za-z]*)[mF]\s+'[^']*'"), r"\1 "),
+    # 引號那兩條用 `\s*` 而不是 `\s+`：`git commit -m"訊息"`（`-m` 後不接空白）
+    # 是 git 接受的合法寫法，而三條原本都要求空白，於是訊息內文剝不掉——實測
+    # `git commit -m"fix: stop suggesting --no-verify"` 被判成 NOVERIFY 而**誤擋**，
+    # 同義的 `-m "…"` 正常放行。本檔檔頭記載過同型事故（訊息含 `--amend`），
+    # 也逐字寫著誤擋比漏擋更糟（2026-09-06 抗辯實測）。
+    # 裸值那條仍要求空白：放寬的話 `-m` 會把後面整個 token 吃掉，`-nm` 這類
+    # 叢集寫法的判定會跟著壞掉。
+    (re.compile(r'(-[A-Za-z]*)[mF]\s*"(?:[^"\\]|\\.)*"'), r"\1 "),
+    (re.compile(r"(-[A-Za-z]*)[mF]\s*'[^']*'"), r"\1 "),
     (re.compile(r"(-[A-Za-z]*)[mF]\s+\S+"), r"\1 "),
     (re.compile(r'--(?:message|file)(?:=|\s+)"(?:[^"\\]|\\.)*"'), " "),
     (re.compile(r"--(?:message|file)(?:=|\s+)'[^']*'"), " "),
@@ -666,7 +673,13 @@ def check_wiring(root, config_args=(), env_prefix=None):
     except OSError:
         return None  # unreadable → fail open, never break the session
 
-    if "wiring-guards" not in body:
+    # 註解不算執行。`# TODO: run .claude/wiring-guards later` 這樣一行就足以讓
+    # 這道檢查通過，而守衛一次都不會跑——實測把 runner 換成
+    # `#!/bin/sh` + 一行註解 + `exit 0`，gate 回 ALLOW、commit 成立、守衛的
+    # 計數檔一行都沒增加（2026-09-06 抗辯）。最可能的實際形態不是攻擊，是
+    # 有人把 runner 那一段註解掉、卻留下說明它的那一行。
+    executable_body = re.sub(r"#[^\n]*", "", body)
+    if "wiring-guards" not in executable_body:
         return (
             "The installed pre-commit hook never runs the wiring guards "
             "(fable wiring_gate).\n\n"

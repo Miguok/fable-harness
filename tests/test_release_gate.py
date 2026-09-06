@@ -30,6 +30,18 @@
 審查真的找出缺陷。文字規則這一層已被證明不夠。
 
 執行命令：python -m pytest tests/test_release_gate.py -q
+最後執行：2026-09-06 14:47 → 30 passed ✅（全套 409 passed in 38.89s）
+第七輪新增 RG22-RG24，逐條突變驗過：
+  `.fable/.gitignore` 又用舊判準 → RG22 紅。本檔的 write_attestation 是第三個
+    會建出 `.fable/` 的寫入者，它的註解說對了風險、實作卻抄了 goal_gate 自己
+    已記載為錯誤的舊判準；本 repo 看不出來，因為根 .gitignore 已列 `.fable/`。
+  憑證不驗是不是物件 → RG23 紅（`printf '[]'` 之後 `--check` 直接 traceback）。
+  純空白理由又算理由 → RG24 紅。⚠ **RG24 的第一版是假綠**：它只斷言 rc==1，
+    而那個 1 來自版號對不上，不是空白理由；而且沒 monkeypatch check_tests，
+    在 pytest 裡又跑一次整套 pytest，突變那輪實測 300.73 秒（RG7／RG16 同坑）。
+    現已改成先把其餘前置條件全部放行，並斷言訊息內容。
+
+（以下為 09-06 13:40 那批的紀錄）
 最後執行：2026-09-06 13:40 → 27 passed ✅（全套 352 passed in 33.62s）
 本輪新增 RG21：`--check --attest` 也不得留痕。突變（把乾跑的早退拿掉）→ RG21 紅，
 tmp 目錄裡真的出現一份 `adversarial_review_bypassed: false` 的正式審查記錄。
@@ -234,6 +246,14 @@ def test_rg7_a_red_suite_blocks_release(monkeypatch):
     monkeypatch.setattr(rel, "check_clean_tree", lambda: "")
     monkeypatch.setattr(rel, "check_version_matches", lambda v: "")
     monkeypatch.setattr(rel, "check_review", lambda c, o: "")
+    # `head_commit` 與 `gh auth status` 也換掉：preflight 的**前段**原本是真的在
+    # 跑，於是這條的斷言取決於「當下的 cwd 是不是一個 git repo」「gh 有沒有登入」。
+    # 實測把工作樹複製到別的路徑（不含 .git）後 RG7／RG7b 雙雙失敗——preflight
+    # 第一行就 return，`check_tests` 從來沒被呼叫。斷言掛在程式沒走到的那一格，
+    # 是本專案反覆出現的假綠形態（2026-09-06 抗辯，RG24 同批修過一次）。
+    monkeypatch.setattr(rel, "head_commit", lambda: "a" * 40)
+    monkeypatch.setattr(rel, "run", lambda *a, **k: SimpleNamespace(
+        returncode=0, stdout="", stderr=""))
     problems, _, summary = rel.preflight("9.9.9", "")
     assert any("測試沒有全綠" in p for p in problems), "紅燈沒有擋下發佈"
     assert "1 failed" in summary, "擋下的理由沒有帶著摘要行"
@@ -248,6 +268,9 @@ def test_rg7b_a_green_suite_does_not_block(monkeypatch):
     monkeypatch.setattr(rel, "check_clean_tree", lambda: "")
     monkeypatch.setattr(rel, "check_version_matches", lambda v: "")
     monkeypatch.setattr(rel, "check_review", lambda c, o: "")
+    monkeypatch.setattr(rel, "head_commit", lambda: "a" * 40)   # 見 RG7 的說明
+    monkeypatch.setattr(rel, "run", lambda *a, **k: SimpleNamespace(
+        returncode=0, stdout="", stderr=""))
     problems, commit, summary = rel.preflight("9.9.9", "")
     assert problems == [], f"全綠卻被擋：{problems}"
     assert commit and "passed" in summary
@@ -499,3 +522,89 @@ def test_rg21_a_dry_run_attest_writes_nothing(tmp_path, monkeypatch):
     bad = rel.main(["--check", "--attest", "--lenses", "skeptic:ok", "--judge", "x"])
     assert bad == 1, "乾跑不檢查鏡頭是否齊全，那它什麼都沒驗到"
     assert not list(tmp_path.iterdir()), "失敗的乾跑也不得留痕"
+
+
+def test_rg22_the_state_dir_gets_a_gitignore_even_when_it_already_exists(tmp_path):
+    """RG22：`.fable/` 早就存在時，`.gitignore` 仍然要寫。
+
+    `write_attestation` 是**第三個**會建出 `.fable/` 的寫入者，它自己的註解
+    逐字說明了風險，實作卻抄了 `goal_gate` 已經記載為錯誤的舊判準（「目錄是不是
+    我建的」）。於是 repo 自己帶了 `.fable/`（committed `.gitkeep`、手動 mkdir）
+    時 `.gitignore` 永遠不會寫，attestation 與 `goal_state.json`（裡面有跑過的
+    測試指令）就進得了 `git add -A`。
+
+    本 repo 看不出來，因為根目錄的 `.gitignore` 已經列了 `.fable/`——那正是
+    「只在自己身上驗過」的盲點，兩個獨立鏡頭都指出這一條。
+    """
+    attest = tmp_path / ".fable" / "attestations"
+    (tmp_path / ".fable").mkdir()          # 目錄先存在，但沒有 .gitignore
+    monkey = str(attest)
+    old = rel.ATTEST_DIR
+    rel.ATTEST_DIR = monkey
+    try:
+        rel.write_attestation("a" * 40, {"skeptic": "ok"}, "judged", "9 passed")
+    finally:
+        rel.ATTEST_DIR = old
+    gi = tmp_path / ".fable" / ".gitignore"
+    assert gi.exists(), "`.fable/` 早就存在時 .gitignore 沒有補上"
+    assert gi.read_text(encoding="utf-8").strip() == "*"
+
+
+def test_rg23_a_valid_json_non_object_attestation_does_not_crash(tmp_path, monkeypatch):
+    """RG23：合法 JSON 但不是物件的憑證不得讓發佈閘 traceback。
+
+    實測 `printf '[]' > .fable/attestations/<HEAD>.json` 之後 `--check` 直接
+    `AttributeError: 'list' object has no attribute 'get'`。方向是 fail-closed
+    （發佈中止），但 `goal_gate.load_state` 早就對同一件事驗了
+    `isinstance(s, dict)`，而這道閘的文案同樣叫人手動編 `.fable/`
+    ——同一類沒掃到第二個寫入者。
+
+    配對是最後一行：合法的物件仍要讀得回來，否則一個「一律回 None」的版本
+    也會通過。
+    """
+    monkeypatch.setattr(rel, "ATTEST_DIR", str(tmp_path))
+    commit = "b" * 40
+    for junk in ("[]", '"x"', "null", "3"):
+        (tmp_path / ("%s.json" % commit)).write_text(junk, encoding="utf-8")
+        assert rel.read_attestation(commit) is None, junk
+        assert "沒有抗辯審查紀錄" in rel.check_review(commit, ""), junk
+
+    rel.write_attestation(commit, {"skeptic": "a", "red-team": "b",
+                                   "simplifier": "c"}, "judged", "9 passed")
+    assert isinstance(rel.read_attestation(commit), dict)
+    assert rel.check_review(commit, "") == ""
+
+
+def test_rg24_a_whitespace_only_reason_is_not_a_reason(tmp_path, monkeypatch, capsys):
+    """RG24：`--reason " "` 不算理由。
+
+    實測完整發佈流程（gh／push／pytest 以假物件替換）：`--reason " "` 一路
+    通過，落地的憑證是 `"bypass_reason": " "`。`goal_gate` 的
+    `block_unexplained_shelf` 早就修過一模一樣的事，註解逐字寫著「原本讓一個
+    空白字元就解除封鎖」——沒掃到這裡（2026-09-06 抗辯）。
+
+    ⚠ **這條測試的第一版是假綠**，兩個毛病一起犯：
+      ① 它只斷言 `rc == 1`，而那個 1 來自**版號對不上**（VERSION 是 1.5.0，
+         測試傳 9.9.9），不是來自空白理由。把 `.strip()` 拿掉，它照樣綠。
+      ② 沒有 monkeypatch 掉 `check_tests`，於是它在 pytest 裡再跑一次整套
+         pytest——突變測試那一輪實測 300.73 秒（RG7／RG16 踩過的同一個坑）。
+    現在其餘前置條件全部先 monkeypatch 成通過，唯一能讓它失敗的就是理由本身，
+    並且斷言訊息內容，而不是只看回傳碼。
+    """
+    monkeypatch.setattr(rel, "ATTEST_DIR", str(tmp_path))
+    monkeypatch.setattr(rel, "check_tests", lambda: ("", "9 passed"))
+    monkeypatch.setattr(rel, "check_clean_tree", lambda: "")
+    monkeypatch.setattr(rel, "check_version_matches", lambda v: "")
+    monkeypatch.setattr(rel, "run", lambda *a, **k: SimpleNamespace(
+        returncode=0, stdout="gh version 2.90.0\n", stderr=""))
+
+    rc = rel.main(["9.9.9", "--check", "--override-review", "--reason", "   "])
+    out = capsys.readouterr().out
+    assert rc == 1, "純空白的理由被當成理由"
+    assert "必須同時給 --reason" in out, (
+        "擋是擋了，但不是因為理由空白——那代表這條測試斷言在別的原因上：" + out)
+    assert not list(tmp_path.iterdir()), "失敗的乾跑留下了紀錄"
+
+    # 配對：真的有理由時仍要放行，否則一個「永遠擋」的版本也會讓上面全綠。
+    assert rel.main(["9.9.9", "--check", "--override-review",
+                     "--reason", "hotfix for a live outage"]) == 0

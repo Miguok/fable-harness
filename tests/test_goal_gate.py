@@ -79,6 +79,21 @@ G9 的期望隨之反轉（提 id 仍要擋）。文件與程式不一致時，�
   ② 讀取端當時根本沒有測試。
   另外 G27 的第一版把「repo 外」的目錄建在 repo 內（repo 根就是 tmp_path），
   情境根本不成立。三者都是「突變沒翻紅」才抓到的。
+最後執行：2026-09-06 14:47 → 149 passed ✅（全套 409 passed in 38.89s）
+第六／七輪抗辯新增 G72-G81，逐條突變驗過（每條「還原修法 → 對應守衛翻紅」）：
+  判不出成敗的輸出又判回 pass → G78 的 5 個參數紅。真實語料回放 689 份 transcript：
+    45 次階梯被清掉裡有 8 次是這條預設綠，其中一次在第 2 格；1,033 筆預設綠裡
+    172 筆含「moved to the background」——執行根本還沒結束。
+  紅鍵不再過期 → G79 紅。停在第 2 格的鍵舊版永遠不消失，幾天後同一條指令因為
+    完全不同的原因失敗就直接是第 3 格：硬擋 + 擱置 + 此後每個乾淨回合都被擋。
+  heredoc 內文又進 context → G80 紅。真實語料 6,516 條測試執行裡 1,946 條（29.9%）
+    的 context 超過 120 字元、內容是原始碼片段；同一個目標因此裂成兩條階梯，
+    第 3 格永遠到不了。
+  上限退回只砍次數 ≤1 的 → G81 紅（實測上限 16 之下 len(red)=25）。
+  舊版 streak 又被接續 → G72 紅。
+  遮蔽順序／PowerShell $env:／curl -u／mysql -p → G71、G73 紅（G74 是配對）。
+
+（以下為 09-06 13:40 那批的紀錄）
 最後執行：2026-09-06 13:40 → 116 passed ✅（全套 352 passed in 33.62s）
 本輪（第五、六輪抗辯）新增 G65-G71，逐條突變驗過：
   尾界回到「會吃掉分支自帶空白」的版本 → G65/G66 紅（四個生態的測試指令被丟掉）
@@ -132,6 +147,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -1967,3 +1983,127 @@ def test_g77_a_bad_env_threshold_does_not_break_the_fail_open_contract(tmp_path)
     assert not _blocked(out), "門檻壞值讓第一次失敗就擋了：" + (out[:200] if out else "")
     out = _run(repo, _turn("python -m pytest tests/ -q", "1 failed"), env=env)
     assert _blocked(out), "門檻壞值之後階梯不動了（第二次仍不擋）"
+
+
+@pytest.mark.parametrize("text,expect,label", [
+    ("Command running in background with ID bash_1", "vacuous",
+     "執行根本還沒結束（真實語料 1,033 筆預設綠裡佔 172 筆）"),
+    ("Exit code 143 | Command timed out after 2m 0s", "vacuous", "逾時被砍"),
+    ("[Request interrupted by user for tool use]", "vacuous", "被使用者中斷"),
+    ("pytest: error: unrecognized arguments: --timeout=250", "vacuous", "工具沒跑起來"),
+    ("collected 12 items\ntests/test_a.py .....", "vacuous", "輸出被截斷"),
+    # 配對：真正的證據仍要判得出來，否則一個「什麼都不知道」的版本也會全綠。
+    ("12 passed in 1.2s", "pass", "pytest 綠"),
+    ("1 failed, 11 passed in 1.2s", "fail", "pytest 紅"),
+    ("ok  \tgithub.com/x/y\t0.01s", "pass", "go test 綠"),
+    ("--- FAIL: TestAlpha\nFAIL\tgithub.com/x/y\t0.02s", "fail", "go test 紅"),
+    ("test result: ok. 5 passed; 0 failed", "pass", "cargo 綠"),
+    ("test result: FAILED. 1 passed; 1 failed", "fail", "cargo 紅"),
+])
+def test_g78_output_with_no_evidence_is_vacuous_not_a_pass(text, expect, label):
+    """G78：判不出成敗的輸出是「不知道」，不是「綠」。
+
+    這一條原本回 `pass`，而 `pass` 會把那個鍵整個 `pop` 掉——「我看不懂這段
+    輸出」被當成「目標達成」，而且它**銷毀既有證據**，不只是不新增。
+
+    真實語料回放（689 份 transcript）：45 次階梯被清掉裡有 8 次是這條預設綠，
+    其中一次發生在第 2 格；1,033 筆預設綠裡有 172 筆含「moved to the
+    background」（2026-09-06 抗辯量測）。閘會在它最該出聲的情境安靜下來。
+
+    這個模組本來就有第三個答案（`vacuous`：既不累加也不解除），只是這條路
+    沒有用它。後六條是配對：改成 vacuous 之後，真正有證據的輸出仍要判得出來
+    ——包括 `go`／`cargo` 那兩對，它們的失敗行不含 `N failed`，舊版一律判成
+    **通過**，紅燈被讀成綠燈。
+    """
+    assert gg._verdict(text) == expect, label
+
+
+def test_g79_a_red_key_expires_instead_of_waiting_forever(tmp_path):
+    """G79：停在第 2 格的紅鍵會過期，不會變成幾天後的地雷。
+
+    `red[k] >= 2` 的鍵在舊版**永遠不會消失**——淘汰只砍次數 ≤1 的，而唯一能降
+    它的只有同鍵的綠。一個停在第 2 格的鍵撐過任意多個綠燈回合之後，那條指令
+    下一次因為**完全不同的原因**失敗就直接是第 3 格：硬擋、擱置，而
+    `block_unexplained_shelf` 從此擋掉每個乾淨回合，直到有人手動編 JSON。
+    訊息還會宣稱「連續失敗 3 次」，那是假的（2026-09-06 抗辯實測）。
+
+    配對是後半段：保鮮期內的鍵**必須**照樣累加，否則一個「永遠過期」的版本
+    會把整條階梯關掉。
+    """
+    cmd = "pytest tests/test_a.py -q"
+    stale = _ladder(cmd, 2)
+    stale[gg.RED_SEEN] = {gg.test_key(cmd): time.time() - gg.RED_TTL_SECONDS - 60}
+    repo = _repo(tmp_path, stale)
+
+    out = _run(repo, _runs((cmd, FAIL_OUT)))
+    assert not _blocked(out), (
+        "隔了一天以上的舊鍵仍被當成連敗，第一次失敗就擋：" + (out[:200] if out else ""))
+    assert _state(repo)["red"][gg.test_key(cmd)] == 1, _state(repo)["red"]
+
+    fresh = _ladder(cmd, 2)
+    fresh[gg.RED_SEEN] = {gg.test_key(cmd): time.time()}
+    repo2 = _repo(tmp_path / "b", fresh)
+    out2 = _run(repo2, _runs((cmd, FAIL_OUT)))
+    assert _blocked(out2), "保鮮期內的鍵沒有繼續累加——階梯被關掉了"
+
+
+def test_g80_a_heredoc_body_does_not_become_part_of_the_goal(tmp_path):
+    """G80：heredoc 的內文不是執行 context。
+
+    `test_key` 已經改成先找到測試指令再切，但交給 `run_context` 的前綴仍是整個
+    左半邊，包含 `cat > tests/x.py <<'EOF' … EOF` 中間那段程式碼——裡面任何一個
+    `name=value` 都會變成目標身分的一部分。
+
+    實測：同一個目標連續四次失敗，只因為第三次在測試檔裡多寫了一個
+    `backoff=2)`，就裂成兩條各自停在第 2 格的階梯，**第 3 格永遠到不了**——
+    而 `run_context` 的 docstring 說這個節奏正是它要服務的那一個。真實語料
+    6,516 條測試執行裡 1,946 條（29.9%）的 context 超過 120 字元，內容是
+    原始碼片段（2026-09-06 抗辯量測）。
+
+    配對是第二半：`cd` 與環境變數前綴**仍然**要進 context，否則這個修法會把
+    G62／G67 修好的東西弄壞。
+    """
+    heredoc = ("cat > tests/test_a.py <<'EOF'\n"
+               "def retry(n, backoff=2):\n    return n\nEOF\n"
+               "python -m pytest tests/test_a.py -q")
+    assert gg.test_key(heredoc) == "pytest tests/test_a.py -q", gg.test_key(heredoc)
+
+    assert gg.test_key("cd /proj && cat > f.py <<'EOF'\nx=1\nEOF\npytest -q") == \
+        "cd=/proj :: pytest -q"
+    assert gg.test_key("MODE=new pytest -q") == "MODE=new :: pytest -q"
+
+    repo = _repo(tmp_path)
+    for i in range(3):
+        body = "def retry(n, backoff=%d):\n    return n" % i
+        out = _run(repo, _runs((
+            "cat > tests/test_a.py <<'EOF'\n%s\nEOF\npython -m pytest tests/test_a.py -q"
+            % body, FAIL_OUT)))
+    assert _blocked(out), "同一個目標連敗三次卻沒有擱置——鍵被 heredoc 內文切開了"
+    assert len(_state(repo)["red"]) <= 1, (
+        "同一個目標產生了多個鍵：%r" % (_state(repo)["red"],))
+
+
+def test_g81_the_tracking_cap_actually_caps(tmp_path):
+    """G81：`MAX_TRACKED_GOALS` 要真的是上限。
+
+    舊版的淘汰用 `red[k] <= 1` **過濾**，於是次數 ≥2 的鍵完全不可淘汰——實測
+    上限 16 之下 `len(red) = 25`，而行內註解逐字寫著「舊鍵不無限累積」。
+    註解錯了，而且錯在危險的那一邊：不可淘汰的正好是會觸發硬擋的那種鍵。
+
+    配對是 G46（爬得最高的目標不得被這一回合湧入的新鍵擠掉），兩條一起看才
+    完整：上限拘束的是**沒動過的鍵**，不是整張表。
+    """
+    seeded = {"streak": 0, "shelved": [], "red": {}, gg.RED_SEEN: {}}
+    now = time.time()
+    for i in range(25):
+        k = gg.test_key("pytest tests/test_old%d.py -q" % i)
+        seeded["red"][k] = 2
+        seeded[gg.RED_SEEN][k] = now
+    repo = _repo(tmp_path, seeded)
+
+    _run(repo, _runs(("pytest tests/test_new.py -q", FAIL_OUT)))
+    red = _state(repo)["red"]
+    assert len(red) <= gg.MAX_TRACKED_GOALS + 1, (
+        "上限沒有生效：%d 個鍵（上限 %d）" % (len(red), gg.MAX_TRACKED_GOALS))
+    assert gg.test_key("pytest tests/test_new.py -q") in red, (
+        "這一回合剛計數的鍵被淘汰了——計數會永遠停在 1")

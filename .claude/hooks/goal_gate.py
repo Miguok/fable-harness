@@ -104,6 +104,31 @@ SOFT_FAIL_MARKERS = (
     re.compile(r"^FAILED\s", re.M),
     re.compile(r"\bAssertionError\b"),
     re.compile(r"^E\s+\w+Error", re.M),
+    # 這幾個生態的失敗行不含 `N failed`，於是 SUMMARY_LINE 讀不到，舊版把它們
+    # 判成**通過**——紅燈被讀成綠燈，比讀不懂還糟。字串取自各工具的標準輸出
+    # 格式；本機沒有安裝 go／dotnet／maven，所以**沒有實跑驗證過**，標
+    # UNVERIFIED。誤判的方向已由 `_verdict` 的預設收束成 vacuous：這張表沒命中
+    # 就是「不知道」，不是「綠」。
+    re.compile(r"^--- FAIL:", re.M),                    # go test（UNVERIFIED）
+    re.compile(r"^FAIL\b", re.M),                       # go test 摘要（UNVERIFIED）
+    re.compile(r"\btest result: FAILED\b"),             # cargo test（UNVERIFIED）
+    re.compile(r"\bFailures: [1-9]|\bErrors: [1-9]"),   # maven surefire（UNVERIFIED）
+    re.compile(r"^BUILD FAILED|^BUILD FAILURE", re.M),  # gradle／maven（UNVERIFIED）
+    re.compile(r"^FAILURES!", re.M),                    # phpunit（UNVERIFIED）
+    re.compile(r"^Failed!", re.M),                      # dotnet test（UNVERIFIED）
+    re.compile(r"\b[1-9][0-9]* failures?\b"),           # rspec / minitest
+)
+# 明確的**通過**證據。沒有摘要行、也沒有這裡任何一條時，答案是「不知道」
+# （vacuous），不是「綠」——見 `_verdict` 結尾那段。同樣是列舉，同樣標
+# UNVERIFIED（本機只跑得到 pytest 系）；差別在漏列的代價只是那個生態的綠
+# 解不掉紅，而紅本身會因為 RED_TTL_SECONDS 過期，不會永久卡住。
+HARD_PASS_MARKERS = (
+    re.compile(r"\btest result: ok\b"),                 # cargo test（UNVERIFIED）
+    re.compile(r"^ok\s+\S", re.M),                      # go test（UNVERIFIED）
+    re.compile(r"^BUILD SUCCESS", re.M),                # maven／gradle（UNVERIFIED）
+    re.compile(r"^OK \([0-9]+ tests?", re.M),           # phpunit（UNVERIFIED）
+    re.compile(r"^Passed!", re.M),                      # dotnet test（UNVERIFIED）
+    re.compile(r"\b0 failures\b"),                      # rspec / minitest
 )
 
 def _env_int(name, default):
@@ -356,6 +381,17 @@ def run_context(prefix):
     `AUTH_TOKEN=*** eyJhbGciOiJIUzI1NiJ9.PAYLOAD.SIGZZZ`：遮罩看起來生效了，
     酬載卻整段寫進狀態檔，再由 hook 注入回下一回合的對話（2026-09-06 抗辯實測）。
     """
+    # heredoc 的**內文**不是執行 context。`test_key` 已經改成先找到測試指令再
+    # 切，但交給這裡的前綴仍然是整個左半邊，包含 `cat > tests/x.py <<'EOF' … EOF`
+    # 中間那段程式碼——裡面任何一個 `name=value` 都會變成目標身分的一部分。
+    # 實測：同一個目標連續四次失敗，只因為第三次在測試檔裡多寫了一個
+    # `backoff=2)`，就裂成兩條各自停在第 2 格的階梯，**第 3 格永遠到不了**；
+    # 而檔頭的 docstring 說這個節奏正是它要服務的那一個。真實語料 6,516 條
+    # 測試執行裡有 1,946 條（29.9%）的 context 超過 120 字元，內容是原始碼
+    # 片段（2026-09-06 抗辯量測）。
+    # 從第一個 heredoc 記號切掉：`cd x && cat > f <<'EOF'` 的 `cd` 仍然保留，
+    # 被丟掉的只有內文。
+    prefix = prefix.split("<<", 1)[0]
     parts = []
     cds = CD_RE.findall(prefix)
     if cds:
@@ -432,7 +468,27 @@ def _verdict(text):
         return "vacuous" if NOTHING_RAN.search(last) else "pass"
     if NOTHING_RAN.search(text) or not text.strip():
         return "vacuous"
-    return "fail" if any(p.search(text) for p in SOFT_FAIL_MARKERS) else "pass"
+    if any(p.search(text) for p in SOFT_FAIL_MARKERS):
+        return "fail"
+    if any(p.search(text) for p in HARD_PASS_MARKERS):
+        return "pass"
+    # ⚠ **沒有證據不是綠。** 這一行原本回 "pass"，而 "pass" 會把那個鍵整個
+    # `pop` 掉——也就是說「我看不懂這段輸出」被當成「目標達成」，而且它銷毀
+    # 既有證據，不只是不新增。實測這些真實輸出全部被判成 pass：
+    #   Command running in background with ID bash_1   （執行根本還沒結束）
+    #   Exit code 143 | Command timed out after 2m 0s
+    #   [Request interrupted by user for tool use]
+    #   pytest: error: unrecognized arguments: --timeout=250
+    # 真實語料回放（689 份 transcript）：45 次階梯被清掉裡有 8 次是這條預設綠，
+    # 其中一次發生在第 2 格；1,033 筆預設綠裡有 172 筆含「moved to the
+    # background」——執行還沒結束（2026-09-06 抗辯量測）。
+    # 這個模組本來就有第三個答案（`vacuous`：既不累加也不解除），只是這條路
+    # 沒有用它。閘會在它最該出聲的情境（測試卡住、被中斷）安靜下來。
+    #
+    # 這樣改的代價：識別不到摘要行的生態（`go test`／`dotnet test`／`mvn`）
+    # 連**綠**也不再解除紅——所以下面補了一張明確的通過標記表，而表沒涵蓋的
+    # 就是 vacuous。列舉用來提供證據，沒證據時退回「不知道」，不是退回「綠」。
+    return "vacuous"
 
 
 def analyze_turn(turn):
@@ -537,6 +593,20 @@ def state_path(root):
 
 # 手改壞掉、無法處理但**也不刪除**的擱置資料放這裡（見 load_state）。
 UNREADABLE_SHELF = "_unreadable_shelved"
+# 紅鍵的保鮮期。超過就丟掉，連同它累積的次數。
+#
+# 為什麼一定要有：`red[k] >= 2` 的鍵在舊版**永遠不會消失**——淘汰只砍次數 ≤1
+# 的，而唯一能降它的只有同鍵的綠。於是一個停在第 2 格的鍵可以撐過任意多個
+# 綠燈回合，幾天後那條指令第一次因為**完全不同的原因**失敗，就直接是第 3 格：
+# 硬擋、擱置、而且 `block_unexplained_shelf` 從此擋掉每一個乾淨回合，直到有人
+# 手動編 JSON。訊息還會宣稱「連續失敗 3 次」，那是假的（2026-09-06 抗辯實測）。
+#
+# 24 小時是判斷，不是量出來的門檻：階梯的前提是「**連續**嘗試同一個目標」，
+# 而隔了一天以上再碰同一條指令，幾乎一定是另一個問題。取這個值也讓「一個
+# 工作天之內反覆重試」完整落在窗口內。太短會讓真的連敗被切斷（假陰性，代價
+# 是晚一個回合），太長就是上面那個假陽性——而假陽性掛在硬擋上，貴得多。
+RED_TTL_SECONDS = 24 * 3600
+RED_SEEN = "red_seen"
 
 
 def load_state(root):
@@ -612,6 +682,17 @@ def load_state(root):
         s["red"] = {}
     s["red"] = {k: v for k, v in s["red"].items()
                 if isinstance(v, int) and not isinstance(v, bool) and v > 0}
+    seen = s.get(RED_SEEN)
+    if not isinstance(seen, dict):
+        seen = {}
+    seen = {k: v for k, v in seen.items()
+            if isinstance(v, (int, float)) and not isinstance(v, bool)}
+    now = time.time()
+    # 沒有時間戳的鍵（1.5.0 開發途中寫的舊檔）當成「現在剛看到」，不是立刻過期
+    # ——升級不該把別人爬到一半的階梯抹掉。
+    s["red"] = {k: v for k, v in s["red"].items()
+                if now - seen.get(k, now) < RED_TTL_SECONDS}
+    s[RED_SEEN] = {k: seen.get(k, now) for k in s["red"]}
     return s
 
 
@@ -1008,6 +1089,7 @@ def run_stop(data, root):
         # ——也就是正在被反覆重試、爬得最高的那一個（2026-09-06 抗辯實測）。
         n = red.pop(k, 0)
         red[k] = (n if isinstance(n, int) else 0) + 1
+        state.setdefault(RED_SEEN, {})[k] = time.time()
 
     # ⚠ 這裡**沒有**「舊版狀態檔的全域 streak 接續」。寫過一版，判準是
     # 「red 剛好是空的而且 streak 非零」，而狀態檔沒有版本標記——那個組合
@@ -1048,9 +1130,22 @@ def run_stop(data, root):
         #      （否則計數永遠停在 1，不擋、不擱置、無訊息）
         #   ② 一個回合湧入 20 個新鍵時，爬到第 2 格的舊目標不得被擠掉
         fresh = set(fresh_red)
-        doomed = [k for k in red if k not in fresh and red[k] <= 1]
-        for k in doomed[:max(0, len(red) - MAX_TRACKED_GOALS)]:
+        # 排序而不是過濾：次數低的先砍，同分時砍最久沒動過的（dict 順序由上面
+        # 的 pop-再-放回維持）。舊版用 `red[k] <= 1` **過濾**，於是次數 ≥2 的鍵
+        # 完全不可淘汰——實測 `MAX_TRACKED_GOALS = 16` 之下 `len(red) = 25`，
+        # 而註解逐字寫著「舊鍵不無限累積」。註解錯了，而且錯在危險的那一邊：
+        # 不可淘汰的正好是會觸發硬擋的那種鍵（2026-09-06 抗辯實測）。
+        # 兩個原本要保護的情境仍然成立：這一回合動過的鍵不參與淘汰，而爬得
+        # 最高的鍵排在最後才被砍。
+        # 上限拘束的是**沒動過的鍵**，不是整張表。拿整張表比的話，這一回合湧入
+        # 的新鍵會把正在爬的舊目標擠掉（G46 的情境②：20 個新鍵 + 1 個第 2 格的
+        # 舊目標，唯一的淘汰候選就是那個舊目標）。新鍵本來就不淘汰，把它們算進
+        # 分母只會造成連帶傷害；而它們下一回合就變成舊鍵、受同一條上限拘束，
+        # 所以成長仍然有界（上界＝上限 + 這一回合的新鍵數）。
+        doomed = sorted((k for k in red if k not in fresh), key=lambda k: red[k])
+        for k in doomed[:max(0, len(doomed) - MAX_TRACKED_GOALS)]:
             red.pop(k, None)
+            state.get(RED_SEEN, {}).pop(k, None)
 
     if streak == ADVERSARIAL_AT:
         if not save_or_complain(root, state):

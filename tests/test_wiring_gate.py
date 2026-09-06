@@ -96,6 +96,18 @@ R1/R2/R3 同理：拿掉 `</dev/null`、拿掉 `|| [ -n "$line" ]`、拿掉假�
 A 補上宣告檔會刪掉碰撞 repo B 的提示，B 永遠不會知道（被刪與從未產生同形）。
 
 執行命令：python -m pytest tests/test_wiring_gate.py -q -k "w14 or w22"
+最後執行：2026-09-06 14:47 → 128 passed ✅（全套 409 passed in 38.89s）
+第六／七輪再新增 W39-W41，逐條突變驗過：
+  兜底移回 SKIP 早退的下游 → W39 紅。`timeout 60 git commit -m x --no-verify`
+    與 `git -c core.hooksPath=$'/tmp/a b' commit` 實測都會產出 commit、守衛
+    一次都沒跑、gate 一聲不吭。W39 的 11 個參數裡有 6 個是「必須仍然放行」。
+  註解又算接線 → W40 紅。⚠ 補這條時發現**本檔 13 個 fixture 全部是註解形式**
+    （`#!/bin/sh\n# runs .claude/wiring-guards\n`）——這一整組測試模擬的一直是
+    「看起來接線了、實際什麼都不跑」的 hook。修法讓 16 條同時翻紅，那不是修法
+    錯，是 fixture 從來不真實；已一併改成 `test -f .claude/wiring-guards || exit 0`。
+  `-m"訊息"` 又剝不掉 → W41 紅（實測那是**誤擋**：合法寫法被判成 NOVERIFY）。
+
+（以下為 09-06 14:1x 那批的紀錄）
 最後執行：2026-09-06 14:1x → 109 passed ✅（全套 360 passed in 37.77s）
 第六輪抗辯新增 W37／W38，兩條都以突變驗過：
   main 退回只判第一個 commit → W37 紅。⚠ 這是一個**已兌現的 P0**：
@@ -301,7 +313,7 @@ def test_w9_hook_path_comes_from_git_not_from_string_concat(tmp_path):
     而 deny 訊息教的 `cp ... .git/hooks/pre-commit` 在該情境也做不到——無法自救。
     """
     main = tmp_path / "main"
-    repo = _git_repo(main, precommit="#!/bin/sh\n# runs .claude/wiring-guards\n")
+    repo = _git_repo(main, precommit="#!/bin/sh\ntest -f .claude/wiring-guards || exit 0\n")
     subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@t"], check=True)
     subprocess.run(["git", "-C", str(repo), "config", "user.name", "t"], check=True)
     subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
@@ -322,7 +334,7 @@ def test_w10_inline_hookspath_config_is_honoured(tmp_path):
     gate 看到已裝好的 .git/hooks/pre-commit 而放行，實際執行的 commit 卻去讀
     那個空目錄，守衛一條都不會跑。設定不會留在 repo 裡，因此也查不到痕跡。
     """
-    repo = _git_repo(tmp_path, precommit="#!/bin/sh\n# runs .claude/wiring-guards\n")
+    repo = _git_repo(tmp_path, precommit="#!/bin/sh\ntest -f .claude/wiring-guards || exit 0\n")
     empty = tmp_path / "nohooks"
     empty.mkdir()
     cmd = 'git -c core.hooksPath=%s commit -m "x"' % empty.as_posix()
@@ -419,7 +431,7 @@ def test_w14_note_is_cleared_once_the_repo_opts_in(tmp_path):
     ——手造的 fixture 用反斜線路徑，生產端用 git 的正斜線，兩者對不上。
     """
     repo = _git_repo(tmp_path / "r", declare=False,
-                     precommit="#!/bin/sh\n# .claude/wiring-guards\n")
+                     precommit="#!/bin/sh\ntest -f .claude/wiring-guards || exit 0\n")
     (repo / "tests").mkdir()
     (repo / "tests" / "test_gate_entrypoints.py").write_text("x\n", encoding="utf-8")
     subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
@@ -598,7 +610,7 @@ def test_w20_gate_still_blocks_in_a_cjk_path_under_platform_default(tmp_path):
     第二個實例。這條測試盯的是解碼那一層，所以它抓得到還沒發生的第三個。
     """
     repo = _git_repo(tmp_path / "測試專案",
-                     precommit="#!/bin/sh\n# runs .claude/wiring-guards\n")
+                     precommit="#!/bin/sh\ntest -f .claude/wiring-guards || exit 0\n")
     state = tmp_path / "state"
     out = _commit(repo, utf8_mode="0",
                              cmd='git commit --no-verify -m "x"')
@@ -674,7 +686,7 @@ def test_w1_repo_without_declaration_is_untouched(tmp_path):
 
 
 def test_w2_no_verify_denied_when_opted_in(tmp_path):
-    repo = _git_repo(tmp_path, precommit="#!/bin/sh\n# runs .claude/wiring-guards\n")
+    repo = _git_repo(tmp_path, precommit="#!/bin/sh\ntest -f .claude/wiring-guards || exit 0\n")
     assert _is_deny(_run_gate(_bash('git commit --no-verify -m "x"'), repo))
 
 
@@ -778,7 +790,7 @@ def test_w23_git_config_env_is_not_a_way_around_the_gate(tmp_path, cmd, label):
     # repo **正確接線**：不加旗標時是放行的。這樣唯一的變因就是這條繞道。
     # 第一版用「pre-commit 不提宣告檔」的 repo，於是它因為**別的理由**就被擋，
     # 把修法整個拿掉照樣綠——測試擋對了，但擋的不是它宣稱在擋的那件事。
-    repo = _git_repo(tmp_path, precommit="#!/bin/sh\n# runs .claude/wiring-guards\n")
+    repo = _git_repo(tmp_path, precommit="#!/bin/sh\ntest -f .claude/wiring-guards || exit 0\n")
     assert not _is_deny(_run_gate(_bash("git commit -m x"), repo)), \
         "前置不成立：這個 repo 本來就被擋，測不出繞道有沒有生效"
     out = _run_gate(_bash(cmd), repo)
@@ -791,7 +803,7 @@ def test_w23b_a_harmless_git_config_env_is_not_blocked(tmp_path):
     沒有這條，一個「看到 GIT_CONFIG_ 就擋」的實作也會讓 W23 全綠，而那會
     讓每個設定 user.name 的人都被擋下來。
     """
-    repo = _git_repo(tmp_path, precommit="#!/bin/sh\n# runs .claude/wiring-guards\n")
+    repo = _git_repo(tmp_path, precommit="#!/bin/sh\ntest -f .claude/wiring-guards || exit 0\n")
     out = _run_gate(_bash(
         "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=user.name GIT_CONFIG_VALUE_0=x "
         "git commit -m x"), repo)
@@ -805,7 +817,7 @@ def _wired_repo_with_sentinel(tmp_path):
     只測 gate 的解析器會回到它出事的那個模式：測我想到的寫法，不是測不變量。
     """
     repo = _git_repo(tmp_path, precommit=(
-        "#!/bin/sh\n# runs .claude/wiring-guards\necho SENTINEL_RAN\nexit 99\n"))
+        "#!/bin/sh\ntest -f .claude/wiring-guards\necho SENTINEL_RAN\nexit 99\n"))
     os.chmod(str(repo / ".git" / "hooks" / "pre-commit"), 0o755)
     (repo / "f.txt").write_text("x\n", encoding="utf-8", newline="")
     subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
@@ -872,7 +884,7 @@ def test_w25b_an_unrelated_config_env_is_not_blocked(tmp_path):
     沒有這條，「看到 --config-env 就擋」也會讓 W25 全綠，而那會擋掉一個
     git 官方支援的正常用法。
     """
-    repo = _git_repo(tmp_path, precommit="#!/bin/sh\n# runs .claude/wiring-guards\n")
+    repo = _git_repo(tmp_path, precommit="#!/bin/sh\ntest -f .claude/wiring-guards || exit 0\n")
     out = _run_gate(_bash(
         "MYNAME=alice git --config-env=user.name=MYNAME commit -m x"), repo)
     assert not _is_deny(out), "無關的 --config-env 被誤擋了"
@@ -1003,7 +1015,7 @@ def test_w29_mentioning_the_word_elsewhere_is_not_a_bypass(tmp_path, cmd):
     現在兜底只看**git 自己的設定賦值片段**：`-c` 只在 git 的選項段裡算，
     其餘只認 `--config-env=`／`GIT_CONFIG_KEY_n=`／`GIT_CONFIG_PARAMETERS=`。
     """
-    repo = _git_repo(tmp_path, precommit="#!/bin/sh\n# runs .claude/wiring-guards\n")
+    repo = _git_repo(tmp_path, precommit="#!/bin/sh\ntest -f .claude/wiring-guards || exit 0\n")
     line = cmd % _HP if "%s" in cmd else cmd
     assert not _is_deny(_run_gate(_bash(line), repo)), f"誤擋：{line}"
 
@@ -1240,7 +1252,7 @@ def test_w37_a_second_commit_on_the_line_is_judged_on_its_own_repo(tmp_path):
     第三個案例是對照組，用來分辨「修好了」與「什麼都擋」。
     """
     repo = _git_repo(tmp_path / "r", declare=True, precommit=(
-        "#!/bin/sh\n# runs .claude/wiring-guards\nexit 0\n"))
+        "#!/bin/sh\ntest -f .claude/wiring-guards || exit 0\n"))
     _git_repo(tmp_path / "r" / "vendor", declare=False)   # 沒有 opt-in
 
     nv = "--no-" + "verify"
@@ -1277,7 +1289,7 @@ def test_w38_an_amend_in_an_unwired_repo_is_still_caught(tmp_path):
         "沒接線的 repo 用 --amend 就免罰了"
 
     wired = _git_repo(tmp_path / "w", declare=True, precommit=(
-        "#!/bin/sh\n# runs .claude/wiring-guards\nexit 0\n"))
+        "#!/bin/sh\ntest -f .claude/wiring-guards || exit 0\n"))
     assert not _is_deny(_run_gate(_bash('git commit --amend --no-edit'), wired)), \
         "接線正確的 repo 用 --amend 被誤擋——誤擋比漏擋更糟"
 
@@ -1318,7 +1330,7 @@ def test_w39_a_commit_the_gate_cannot_parse_fails_closed(tmp_path, cmd, want_den
     就是這個收窄的驗收：全擋的兜底過不了它們。
     """
     repo = _git_repo(tmp_path, declare=True, precommit=(
-        "#!/bin/sh\n# runs .claude/wiring-guards\nexit 0\n"))
+        "#!/bin/sh\ntest -f .claude/wiring-guards || exit 0\n"))
     out = _run_gate(_bash(cmd), repo)
     assert _is_deny(out) is want_deny, (
         "%s：預期 %s，實際 %s" % (label, "DENY" if want_deny else "ALLOW",
@@ -1334,3 +1346,48 @@ def test_w39b_the_fallback_only_applies_to_repos_that_opted_in(tmp_path):
     plain = _git_repo(tmp_path, declare=False)
     out = _run_gate(_bash("timeout 60 git commit -m x %s" % _NV), plain)
     assert not _is_deny(out), "沒有 opt-in 的 repo 被兜底擋了"
+
+
+def test_w40_a_commented_out_runner_is_not_wiring(tmp_path):
+    """W40：pre-commit 只在**註解**裡提到宣告檔，不算接線。
+
+    `# TODO: run .claude/wiring-guards later` 這樣一行就足以讓 W2 通過，而守衛
+    一次都不會跑——實測把 runner 換成 `#!/bin/sh` + 一行註解 + `exit 0`，
+    gate 回 ALLOW、commit 成立、守衛的計數檔一行都沒增加（2026-09-06 抗辯）。
+    最可能的實際形態不是攻擊，是有人把 runner 那一段註解掉、卻留下說明它的
+    那一行。
+
+    ⚠ 這條測試補上去的時候，**本檔 13 個 fixture 全部是註解形式**——也就是說
+    這一整組測試模擬的一直是「看起來接線了、實際什麼都不跑」的 hook。修法讓
+    16 條測試同時翻紅，那不是修法錯，是 fixture 從來不真實。fixture 已一併
+    改成 `test -f .claude/wiring-guards || exit 0`。
+
+    配對是第二半：可執行位置提到宣告檔就必須放行。
+    """
+    commented = _git_repo(tmp_path / "c", declare=True, precommit=(
+        "#!/bin/sh\n# TODO: run .claude/wiring-guards later\nexit 0\n"))
+    out = _run_gate(_bash('git commit -m "x"'), commented)
+    assert _is_deny(out), "runner 被註解掉了，gate 仍說接線正確"
+
+    real = _git_repo(tmp_path / "r", declare=True, precommit=(
+        "#!/bin/sh\n# runs the declared guards\n"
+        "sh .claude/hooks/wiring_runner.sh .claude/wiring-guards\n"))
+    assert not _is_deny(_run_gate(_bash('git commit -m "x"'), real)), \
+        "可執行位置提到宣告檔卻被誤擋"
+
+
+@pytest.mark.parametrize("cmd,expect", [
+    # `-m` 後不接空白是 git 接受的合法寫法，而剝訊息的三條原本都要求空白，
+    # 於是內文剝不掉、旗標判定被內文汙染——實測**誤擋**，而同義的 `-m "…"`
+    # 正常放行。誤擋比漏擋更糟。
+    ('git commit -m"fix: stop suggesting --no-verify"', "COMMIT"),
+    ("git commit -m'about --amend and -n'", "COMMIT"),
+    ('git commit -Sjohn -m"x"', "COMMIT"),
+    ('git commit -am"msg"', "COMMIT"),
+    # 配對：真正的叢集繞道仍要擋，否則放寬會把 `-nm` 一起放掉。
+    ('git commit -nm"real bypass"', "NOVERIFY"),
+    ('git commit -anm"real bypass"', "NOVERIFY"),
+])
+def test_w41_a_message_glued_to_the_flag_is_still_stripped(cmd, expect):
+    """W41：`git commit -m"訊息"` 的內文同樣要剝掉。"""
+    assert wiring_gate.classify(_bash(cmd)) == expect
