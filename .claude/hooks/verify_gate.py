@@ -175,46 +175,48 @@ def analyze(entries):
     return edited, test_seen
 
 
-def note_quiet(reason):
+QUIET_PER_LABEL = 20   # 同一個標籤最多幾行
+
+
+def note_quiet(label, exc=None):
     """把一次「閘判不出來／自己壞掉」寫成一行，落在同目錄的 `.gate_fail`。
 
     這是本套件收斂的關鍵：**fail-open 沒問題，安靜的 fail-open 才是問題。**
     三道閘的每一條 fail-open 在外部看起來都和「一切正常」一模一樣，於是它們
     可以壞掉好幾天、跨好幾個版本而沒有人發現——2026-09-06 一輪抗辯找出 26 條
-    缺陷，其中 24 條出在**沒有屍檢的那兩支**，2 條出在有屍檢的那一支。
-    每一輪抗辯找到的都只是「安靜」的一個實例，而那個決定寫在二十幾個地方；
-    修實例永遠追不完，讓安靜留下痕跡才會收斂。
+    缺陷，其中約一半是這個形態，而且它是唯一一個「不修就會一直被重新發現」的
+    類別：其他類別修完就結案，安靜的分支可以無限新增。
 
     契約（三支 hook 各有一份，由 tests/test_no_silent_gate.py 綁在一起）：
       - 絕不拋例外——遙測自己壞掉不得破壞 fail-open
-      - 一次一行，含 UTC 時間戳與呼叫點標籤
-      - 上限 500 行，保留**最早**那幾行（第一次靜默死亡最有價值），滿了就停寫
-      - 只寫短標籤與例外類別，不寫整包 payload
+      - 一次一行：UTC 時間戳、呼叫點標籤、例外類別
+      - **只寫標籤與例外類別，不寫 payload**。格式化在這裡做而不是交給呼叫端：
+        第一版簽名是 `note_quiet(reason)`，於是這條不變式散在 16 個呼叫點各自
+        遵守，而當場就有 2 個沒遵守（一個用 %r 印環境變數的值、一個寫
+        `str(exc)`，而 OSError 會帶路徑）。這個檔案的內容會被注入回對話。
+      - 同一個標籤最多 `QUIET_PER_LABEL` 行。**刻意沒有全域上限**：三支寫的是
+        同一個檔，全域預算等於共用，實測一支壞掉灌滿 500 行之後，另外兩支的
+        失效永遠寫不進去且無人知道——那正是這個機制要治的病，被治療複製了
+        一份（2026-09-06 抗辯，simplifier 鏡頭指出，我實測重現）。
+        逐標籤之後成長仍有界（標籤數 × 20），而新的標籤永遠進得去。
     """
     try:
         from datetime import datetime, timezone
         marker = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".gate_fail")
+        text = "%s: %s" % (" ".join(str(label).split())[:120],
+                           type(exc).__name__ if exc is not None else "-")
+        seen = 0
         if os.path.exists(marker):
             with open(marker, encoding="utf-8", errors="replace") as fh:
-                if sum(1 for _ in fh) >= 500:
-                    return
-        text = str(reason)[:200].replace("\n", " ").replace("\r", " ")
+                for line in fh:
+                    if line.rstrip("\r\n").endswith(text):
+                        seen += 1
+        if seen >= QUIET_PER_LABEL:
+            return
         with open(marker, "a", encoding="utf-8") as fh:
             fh.write("%s %s\n" % (datetime.now(timezone.utc).isoformat(), text))
     except Exception:  # quiet-ok: 遙測自身故障不得破壞 fail-open，這裡沒有第二個出口
         pass
-
-def _record_failure(exc):
-    """fail-open 前 best-effort 留一行屍檢到同目錄 .gate_fail：沒有遙測的靜默 fail-open
-    會數日無人察覺（cp950 事故即此模式——print 拋錯被 except 吞掉、gate 靜默不 block）。
-    只記「例外類別 + 截斷訊息」（非 exc!r/整包 payload，降低未來例外把路徑/內容寫入的風險）；
-    容量上限保留最早的事故行（首次靜默死亡最有價值），滿了即停寫、不淘汰不覆寫；
-    整段包在自己的 try 內——遙測本身故障絕不可破壞 fail-open。"""
-    # 委派給 `note_quiet`：三支 hook 各留一份副本（每一支都要能獨立執行），
-    # 而三份的行為由 tests/test_no_silent_gate.py 的 Q3 綁在一起。原本這裡
-    # 自己寫了一份，於是三份的輸出格式不一致——「同一段邏輯多份副本、守衛只
-    # 跟著其中一份」正是本專案反覆再犯的類別。
-    note_quiet("%s: %s" % (type(exc).__name__, exc))
 
 
 def main():
@@ -249,7 +251,7 @@ def main():
                 ),
             }, ensure_ascii=False))
     except Exception as exc:
-        _record_failure(exc)  # fail-open：gate 自身故障不得阻斷 session，但留屍檢可見
+        note_quiet("main", exc)  # fail-open：不阻斷 session，但留下屍檢
     return 0
 
 

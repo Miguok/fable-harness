@@ -46,30 +46,44 @@ import subprocess
 import sys
 import time
 
-def note_quiet(reason):
+QUIET_PER_LABEL = 20   # 同一個標籤最多幾行
+
+
+def note_quiet(label, exc=None):
     """把一次「閘判不出來／自己壞掉」寫成一行，落在同目錄的 `.gate_fail`。
 
     這是本套件收斂的關鍵：**fail-open 沒問題，安靜的 fail-open 才是問題。**
     三道閘的每一條 fail-open 在外部看起來都和「一切正常」一模一樣，於是它們
     可以壞掉好幾天、跨好幾個版本而沒有人發現——2026-09-06 一輪抗辯找出 26 條
-    缺陷，其中 24 條出在**沒有屍檢的那兩支**，2 條出在有屍檢的那一支。
-    每一輪抗辯找到的都只是「安靜」的一個實例，而那個決定寫在二十幾個地方；
-    修實例永遠追不完，讓安靜留下痕跡才會收斂。
+    缺陷，其中約一半是這個形態，而且它是唯一一個「不修就會一直被重新發現」的
+    類別：其他類別修完就結案，安靜的分支可以無限新增。
 
     契約（三支 hook 各有一份，由 tests/test_no_silent_gate.py 綁在一起）：
       - 絕不拋例外——遙測自己壞掉不得破壞 fail-open
-      - 一次一行，含 UTC 時間戳與呼叫點標籤
-      - 上限 500 行，保留**最早**那幾行（第一次靜默死亡最有價值），滿了就停寫
-      - 只寫短標籤與例外類別，不寫整包 payload
+      - 一次一行：UTC 時間戳、呼叫點標籤、例外類別
+      - **只寫標籤與例外類別，不寫 payload**。格式化在這裡做而不是交給呼叫端：
+        第一版簽名是 `note_quiet(reason)`，於是這條不變式散在 16 個呼叫點各自
+        遵守，而當場就有 2 個沒遵守（一個用 %r 印環境變數的值、一個寫
+        `str(exc)`，而 OSError 會帶路徑）。這個檔案的內容會被注入回對話。
+      - 同一個標籤最多 `QUIET_PER_LABEL` 行。**刻意沒有全域上限**：三支寫的是
+        同一個檔，全域預算等於共用，實測一支壞掉灌滿 500 行之後，另外兩支的
+        失效永遠寫不進去且無人知道——那正是這個機制要治的病，被治療複製了
+        一份（2026-09-06 抗辯，simplifier 鏡頭指出，我實測重現）。
+        逐標籤之後成長仍有界（標籤數 × 20），而新的標籤永遠進得去。
     """
     try:
         from datetime import datetime, timezone
         marker = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".gate_fail")
+        text = "%s: %s" % (" ".join(str(label).split())[:120],
+                           type(exc).__name__ if exc is not None else "-")
+        seen = 0
         if os.path.exists(marker):
             with open(marker, encoding="utf-8", errors="replace") as fh:
-                if sum(1 for _ in fh) >= 500:
-                    return
-        text = str(reason)[:200].replace("\n", " ").replace("\r", " ")
+                for line in fh:
+                    if line.rstrip("\r\n").endswith(text):
+                        seen += 1
+        if seen >= QUIET_PER_LABEL:
+            return
         with open(marker, "a", encoding="utf-8") as fh:
             fh.write("%s %s\n" % (datetime.now(timezone.utc).isoformat(), text))
     except Exception:  # quiet-ok: 遙測自身故障不得破壞 fail-open，這裡沒有第二個出口
@@ -173,8 +187,7 @@ def _env_int(name, default):
     try:
         value = int(os.environ.get(name, default))
     except (TypeError, ValueError) as _q:
-        note_quiet("_env_int %s=%r: %s"
-                   % (name, os.environ.get(name), type(_q).__name__))
+        note_quiet("_env_int %s" % name, _q)
         return int(default)
     return value if value > 0 else int(default)
 
@@ -217,7 +230,7 @@ def load_verifiers(root):
         # 權威驗證指令，而這道閘從此當它不存在。實測第一版對「檔案不存在」也記，
         # 一次全套測試就寫了 120 行——**吵到沒人看的屍檢與沒有屍檢一樣沒用**，
         # 而且會把 500 行上限灌爆，真正的失效反而寫不進去。
-        note_quiet("load_verifiers: %s" % type(_q).__name__)
+        note_quiet("load_verifiers", _q)
         return frozenset()
     keys = set()
     for line in lines:
@@ -621,7 +634,7 @@ def repo_root():
         r = subprocess.run(["git", "rev-parse", "--show-toplevel"],
                            capture_output=True, encoding="utf-8", errors="replace", timeout=5)
     except Exception as _q:
-        note_quiet("repo_root: %s" % type(_q).__name__)
+        note_quiet("repo_root", _q)
         return None
     root = r.stdout.strip()
     return root if r.returncode == 0 and root else None
@@ -674,7 +687,7 @@ def load_state(root):
         with open(p, encoding="utf-8") as fh:
             s = json.load(fh)
     except Exception as _q:
-        note_quiet("load_state: %s" % type(_q).__name__)
+        note_quiet("load_state", _q)
         return None
     if not isinstance(s, dict):
         return None
@@ -839,7 +852,7 @@ def inside(root, path):
         rp = os.path.realpath(root)
         pp = os.path.realpath(path)
     except OSError as _q:
-        note_quiet("inside: %s" % type(_q).__name__)
+        note_quiet("inside", _q)
         return False
     return pp == rp or pp.startswith(rp + os.sep)
 
@@ -949,11 +962,10 @@ class state_lock(object):
                     if time.time() - os.path.getmtime(self.path) > LOCK_STALE_SECONDS:
                         os.remove(self.path)
                         continue
-                except OSError as _q:
-                    note_quiet("state_lock stale-clear: %s" % type(_q).__name__)
+                except OSError:  # quiet-ok: 鎖在我們看它的空檔被正常釋放，與上一格的 FileExistsError 是同一件事的兩半
                     pass
             except OSError as _q:
-                note_quiet("state_lock — 這一次不序列化: %s" % type(_q).__name__)
+                note_quiet("state_lock — 這一次不序列化", _q)
                 return self  # 目錄不可寫等等：不鎖，但也不擋人
             if time.time() >= deadline:
                 return self
@@ -990,7 +1002,7 @@ def save_state(root, state):
             fh.write("\n")
         os.replace(tmp, p)
     except OSError as _q:
-        note_quiet("save_state: %s" % type(_q).__name__)
+        note_quiet("save_state", _q)
         # Read-only file, a scanner holding it open, a full disk. Leaving the
         # temp file behind would accumulate one per process id, invisible
         # because this directory ignores itself.
@@ -1364,7 +1376,7 @@ def main():
         with state_lock(root):
             return run_stop(data, root)
     except Exception as _q:
-        note_quiet("main: %s" % type(_q).__name__)
+        note_quiet("main", _q)
         return 0  # fail-open
     return 0
 
