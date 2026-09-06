@@ -1661,9 +1661,16 @@ def test_g64_a_path_containing_a_runner_name_is_not_the_test_command(cmd, expect
     "npm test",
     "go test ./...",
     "pytest -q",
+    # 這五條 2026-09-06 之前**只有 verify_gate 認得**，goal_gate 全不認：
+    # 那些生態的第三道閘完全關閉，而兩道閘對同一條指令給相反的答案。
+    "tox",
+    "nox -s tests",
+    "deno test",
+    "rails test",
+    "PYTEST -q",
 ])
 def test_g65_every_ecosystem_is_still_recognised_after_the_tail_boundary(cmd):
-    """G65：G64 缺掉的那一半——尾界不得把整批生態變成「沒有跑測試」。
+    r"""G65：G64 缺掉的那一半——尾界不得把整批生態變成「沒有跑測試」。
 
     G64 加尾界是為了擋路徑誤命中，配對案例卻只寫了 `pytest`。而 `pytest` 與
     `go test` 的分支**不吃結尾空白**，`dotnet test(\s|$)` 這一類**會吃**，於是
@@ -1690,19 +1697,27 @@ def test_g66_both_gates_agree_on_what_a_test_run_is():
     這是「同一段文字有多份副本」那個已知反模式的實例。刻意保留兩份副本
     （兩支 hook 必須各自獨立可執行），所以改用一條測試把它們綁在一起：
     改一份而不改另一份，這裡會叫。
+
+    ⚠ **這條測試的第一版是假綠。** 它取樣 12 條我手寫的指令，而當時兩份
+    pattern **已經是歪的**：`verify_gate` 有 `tox`／`nox`／`deno test`／
+    `rails test` 與 `re.IGNORECASE`，`goal_gate` 五樣全無。那五種指令一條都
+    不在我的名單裡，所以取樣測不到——實測 goal 全 False、verify 全 True，
+    也就是那些生態的第三道閘完全關閉，而這條「兩閘一致」的守衛照樣是綠的。
+    這正是全域規則說的：斷言對象是我貼在測試裡的字串，不是被保護的那個東西。
+
+    改成比對**兩個真正的 pattern 物件**（文字與旗標）。它抓得到我還沒想到的
+    第二個實例，而取樣永遠只抓得到我想得到的那些。代價是兩份必須逐字相同，
+    這正是要的：想讓它們不同，就得先說明為什麼。
     """
     import verify_gate as vg
-    cases = [
-        "dotnet test --logger trx", "mvn test -Dtest=FooTest",
-        "./gradlew test --info", "python p.py --test 2>&1 | tail -3",
-        "make test", "npm test", "go test ./...", "pytest -q",
-        "cd /tmp/pytest-of-user/x && python -m pytest tests/ -q",
-        "rm -rf .pytest-tmp-c2", "ls .pytest_cache/",
-        "grep pytest-of-user .gitignore",
-    ]
-    drift = [c for c in cases
-             if bool(gg.TEST_CMD_RE.search(c)) != bool(vg.TEST_CMD_RE.search(c))]
-    assert not drift, f"兩支 hook 對這些指令的判定不一致：{drift}"
+    assert gg.TEST_CMD_RE.pattern == vg.TEST_CMD_RE.pattern, (
+        "兩支 hook 的 TEST_CMD_RE 文字已漂移：\n"
+        "goal  : %r\nverify: %r" % (gg.TEST_CMD_RE.pattern, vg.TEST_CMD_RE.pattern))
+    assert gg.TEST_CMD_RE.flags == vg.TEST_CMD_RE.flags, (
+        "pattern 相同但旗標不同（IGNORECASE 只加在一邊就是這個形狀）："
+        "goal=%d verify=%d" % (gg.TEST_CMD_RE.flags, vg.TEST_CMD_RE.flags))
+    assert tuple(gg.HARNESS_PREFIXES) == tuple(vg.LOCAL_COMMAND_PREFIXES), (
+        "harness 前綴清單漂移了——回合視窗會在兩支 hook 落在不同的位置")
 
 
 def test_g67_a_verifier_green_only_clears_its_own_context(tmp_path):
@@ -1763,7 +1778,7 @@ def test_g68_a_verifier_green_still_clears_its_own_context(tmp_path):
     ("npm run testify", False),
 ])
 def test_g69_script_names_with_a_suffix_are_still_test_runs(cmd, expect):
-    """G69：`npm run test-ci` 這類帶後綴的腳本名仍是測試執行。
+    r"""G69：`npm run test-ci` 這類帶後綴的腳本名仍是測試執行。
 
     尾界的第一版丟掉它們（實測 75/4,997 ≈ 1.5% 的真實執行），因為
     `test\b` 之後接 `-` 就被尾界擋下。整個 JS 專案的階梯會靜默關閉。
@@ -1776,7 +1791,7 @@ def test_g69_script_names_with_a_suffix_are_still_test_runs(cmd, expect):
 
 
 def test_g70_a_windows_path_containing_a_runner_name_is_not_the_test_command():
-    """G70：G64 的反斜線版——尾界排除了 `/` 卻沒排除 `\`。
+    r"""G70：G64 的反斜線版——尾界排除了 `/` 卻沒排除 `\`。
 
     `cd C:\Temp\pytest\tmp && python -m pytest tests/ -q` 的命中一度落在
     路徑上，算出 `cd=C:/Temp :: pytest\tmp && python -m pytest tests/ -q`。
@@ -1811,3 +1826,29 @@ def test_g71_a_quoted_secret_with_a_space_does_not_reach_the_key():
     assert gg.test_key("FILE=tests/test_auth.py pytest -q") == \
         "FILE=tests/test_auth.py :: pytest -q"
     assert gg.test_key('MODE="new" pytest -q') == gg.test_key("MODE=new pytest -q")
+
+
+def test_g72_a_1_4_x_state_file_starts_the_new_ladder_from_one(tmp_path):
+    """G72：1.4.x 的狀態檔升上來，下一次紅燈從第 1 格起算，不是接著舊數字。
+
+    每一個現有使用者升級時都會走這條路：舊檔有全域 `streak`、沒有 `red`，
+    還帶著已退場的 `episode` 欄位。三種可能的行為差很多——接續（升級後第一次
+    失敗就直接擱置）、歸零（把一次真的連敗抹掉）、或本測試釘住的這一種：
+    舊的全域數字無法歸屬到任何一個鍵，所以不搬，新鍵自己從 1 開始爬。
+
+    這條測試的來由是**兩段註解互相矛盾**：`load_state` 說舊 streak「會被接到
+    下一個失敗的鍵上」，`run_stop` 說「這裡沒有全域 streak 接續」。實測站在
+    後者那一邊，前者已更正。註解錯了沒有測試會紅，所以行為改由這條釘住。
+    """
+    legacy = {"streak": 2, "shelved": [], "episode": "ep-1788625552"}
+    repo = _repo(tmp_path, legacy)
+    out = _run(repo, _turn("python -m pytest tests/ -q", "1 failed, 3 passed"))
+
+    assert not _blocked(out), (
+        "舊的全域 streak 被接到新鍵上，升級後第一次失敗就被擋："
+        + (out[:200] if out else ""))
+    state = json.loads((repo / ".fable" / "goal_state.json").read_text(encoding="utf-8"))
+    assert state["red"] == {"pytest tests/ -q": 1}, state
+    assert state["streak"] == 1, state
+    assert state.get("episode") == "ep-1788625552", (
+        "舊版留下的未知欄位被清掉了——不搬移不等於清掉別人的東西：" + str(state))

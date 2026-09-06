@@ -221,8 +221,10 @@ HOOKSPATH_MENTION_RE = re.compile(r"hooks?path", re.I)
 # 「這一段是在設定一個 git 設定值嗎」——`-c k=v`、`--config-env=k=v`、
 # `GIT_CONFIG_KEY_n=k`、`GIT_CONFIG_PARAMETERS='k'='v'`。兜底只看這些片段，
 # 不看整條指令列，否則 `grep -rn hooksPath .` 這種正常指令會被誤擋。
-CONFIG_ASSIGN_RE = re.compile(
-    r"-c\s+(" + VALUE + r")")
+# `-c k=v` 這一條與上面的 `GIT_CONFIG_RE` 是**同一個東西**，別再開第二份：
+# 兩份逐字相同、名字不同、相距十幾行，哪天有人收緊其中一邊，另一邊會靜默
+# 保留舊行為，而**沒有任何測試分得出來**（2026-09-06 簡潔性鏡頭指出）。
+CONFIG_ASSIGN_RE = GIT_CONFIG_RE
 # 這幾種寫在 git **之前**，所以要掃整條指令列。
 ENV_CONFIG_ASSIGN_RE = re.compile(
     r"(?:--config-env[= ]|GIT_CONFIG_KEY_\d+=|GIT_CONFIG_PARAMETERS=)"

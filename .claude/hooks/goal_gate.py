@@ -57,7 +57,17 @@ TEST_CMD_RE = re.compile(
     r"|go\s+test|cargo\s+test|\bvitest\b|\bjest\b"
     r"|mvnw?(\.cmd)?\s+(\S+\s+)*test(\s|$)|gradlew?(\.bat)?\s+(\S+\s+)*test(\s|$)"
     r"|dotnet\s+test(\s|$)|\brspec\b|\bphpunit\b|\bctest\b|make\s+test\b"
-    r"|rake\s+(\S+\s+)*test\b|mix\s+test\b|\s--test(\s|$))"
+    r"|rake\s+(\S+\s+)*test\b|mix\s+test\b"
+    # tox／nox／deno／rails 這四條與 IGNORECASE 一度**只有 verify_gate 有**。
+    # 後果不是判得不準，是第三道閘對整批生態**完全關閉**：那些指令在這裡連
+    # 「跑過測試」都不算，於是既不累加也不解除，階梯永遠是空的。而 verify_gate
+    # 認得它們，所以第一道閘照常放行——兩道閘對同一條指令給相反的答案。
+    # 2026-09-06 實測 `tox` / `nox -s tests` / `deno test` / `rails test` /
+    # `PYTEST -q` 五種：goal 全 False、verify 全 True。
+    # ⚠ 抓到它的不是我寫的 G66（那條只取樣 12 條手寫字串，五種都不在名單裡，
+    # 是**假綠**），是簡潔性鏡頭讀出來的。G66 已改成比對兩個真正的 pattern 物件。
+    r"|(^|[;&|]\s*)(tox|nox)\b|deno\s+test|rails\s+test"
+    r"|\s--test(\s|$))"
     # 後面不得接 word 字元、`-` 或 `/`。少了這個尾界，**路徑裡的那個字**會被
     # 當成測試指令：`cd C:/…/pytest-of-user/… && python -m pytest tests/ -q`
     # 算出的鍵是 `cd=C:/…/Temp :: pytest-of-user/… && python -m pytest tests/ -q`
@@ -72,7 +82,8 @@ TEST_CMD_RE = re.compile(
     # 空白毫髮無傷，所以我自己的配對測試（只寫了 pytest）也沒發現。
     # 實測 684 份真實 transcript：6,607 → 6,517，少掉的 90 條裡有 12 條是真的
     # 測試執行。
-    r"(?:(?<=\s)|(?![\w-]|[/" + "\\\\" + r"]))"
+    r"(?:(?<=\s)|(?![\w-]|[/" + "\\\\" + r"]))",
+    re.IGNORECASE,
 )
 
 # 測試摘要行：`12 passed in 1.2s`／`1 failed, 11 passed`／`3 errors in 0.5s`。
@@ -142,7 +153,6 @@ HARNESS_PREFIXES = (
     "Stop hook feedback:", "<task-notification>",
     "[Request interrupted", "[SYSTEM NOTIFICATION",
 )
-LOCAL_COMMAND_PREFIXES = HARNESS_PREFIXES   # 舊名，保留給既有引用
 
 
 def prompt_text(entry):
@@ -403,7 +413,11 @@ def _verdict(text):
 
 
 def analyze_turn(turn):
-    """Return ({test_key: "pass"|"fail"}, {test_key: raw command}).
+    """Return ({test_key: "pass"|"fail"}, {test_key: raw command}, {test_key: 序位}).
+
+    第三個是**順序**，不是可有可無的附錄：協議 §4b-1 第 5 條要求權威驗證的綠
+    必須出現在最後一次紅**之後**才算數，而唯一的證據就是這個序位。docstring
+    原本只寫兩個回傳值，漏掉的正是最需要被寫下來的那一個（2026-09-06 指出）。
 
     A turn counts as failed only when a test actually ran AND its output
     carries an unambiguous failure marker. Silence is not failure.
@@ -541,9 +555,16 @@ def load_state(root):
     s["shelved"] = [i for i in s["shelved"] if isinstance(i, dict)]
     s.setdefault("streak", 0)
     s.setdefault("shelved", [])
-    # v1.5.0 新增 `red`（逐鍵的次數）。舊檔沒有它，補上即可——**不清掉既有的
-    # `streak`**：那個數字代表一次還沒收束的連敗，歸零等於把它抹掉。舊版升級
-    # 時它會被接到下一個失敗的鍵上（見 run_stop 的逐鍵計數段）。
+    # v1.5.0 新增 `red`（逐鍵的次數）。舊檔沒有它，補上即可。
+    # ⚠ **這裡不做任何升級搬移**：1.4.x 的全域 `streak` 不會被接到任何一個鍵上。
+    # 下一次紅燈時 `run_stop` 直接 `state["streak"] = red[key]`，於是舊值被覆寫，
+    # 新鍵從第 1 格重新起算（2026-09-06 實測：`{"streak": 2}` 的舊檔 + 一次紅
+    # → `red` 為 `{"pytest tests/ -q": 1}`、不擋）。這是刻意的：那個舊數字**無法
+    # 歸屬到任何一個鍵**，硬接會讓升級後的第一次失敗直接跳到擱置。
+    # 本註解 2026-09-06 更正——原文寫「它會被接到下一個失敗的鍵上」，而 run_stop
+    # 的註解逐字寫著「這裡**沒有**舊版狀態檔的全域 streak 接續」：同一份程式的兩段
+    # 註解互相矛盾，而錯的那一段會被下一個人當成既有決議引用。行為由 G72 釘住。
+    # 舊版留下的未知欄位（例如已退場的 `episode`）原樣保留，不主動刪。
     s.setdefault("red", {})
     if not isinstance(s["red"], dict):
         s["red"] = {}
@@ -592,10 +613,15 @@ def redact(command):
 
     The command is written to a file inside the user's repository and read back
     into the conversation on the next turn, and `TOKEN=… pytest` matches the
-    test-command pattern like anything else. Three shapes are covered: an
-    assignment whose key looks like a credential (in any position, not only the
-    leading env prefix), the same key given as a spaced flag (`--token abc`),
-    and credentials embedded in a URL.
+    test-command pattern like anything else. Five shapes are covered, in this
+    order: a quoted value (`TOKEN="Bearer eyJ…"` — it must run *first*, because
+    the unquoted rule below stops at the first space and would leave the rest of
+    the payload in the clear), an assignment whose key looks like a credential
+    (in any position, not only the leading env prefix), an HTTP header
+    (`-H "Authorization: …"`), the same key given as a spaced flag
+    (`--token abc`), and credentials embedded in a URL.
+    ⚠ 這段原本寫「Three shapes」而下面套了五條——註解與程式碼不一致，而這個
+    repo 的註解會被當成既有決議引用（2026-09-06 簡潔性鏡頭指出）。
 
     Keys that do not look like credentials keep their values: a shelf entry
     exists to show what you were stuck on, and `FILE=tests/test_auth.py`
