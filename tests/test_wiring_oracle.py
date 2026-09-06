@@ -8,7 +8,7 @@
 
 執行命令：
   cd <repo> && python -m pytest tests/test_wiring_oracle.py -v
-  完整交叉展開（120 條、約 40 秒）：加 --sweep
+  完整交叉展開（120 條、實測 56~62 秒）：加 --sweep
 
 ══════════════════════════════════════
 驗收邊界說明 + 執行紀錄（2026-09-06 22:1x GMT+8）
@@ -142,16 +142,30 @@ def _corpus(tmp_root, full):
         combos = itertools.product(wrappers, flags, channels)
     else:
         # 預設語料：每個維度的每一個值至少出現一次，但不做完整交叉展開
-        # ——完整展開 120 條要 40 秒，會讓全套時間翻倍，而慢的測試會被跳過。
+        # ——完整展開 120 條實測 56~62 秒，會讓全套時間翻倍，而慢的測試會被跳過。
         base_w, base_c = wrappers[0], channels[0]
+        # ⚠ 這一組展開實際是 `len(flags) + len(channels) + len(wrappers)` 列，
+        # 而且會重複兩列（`bare|none|none` 與 `bare|--no-verify|none` 各出現兩次）。
+        # 本機 15 列、相異 13 列——我在 commit 訊息與檔頭寫成「30 條」，錯了。
+        # 更要緊的是 wrappers 由 `shutil.which` 決定，**一台少裝幾個工具的機器上
+        # 語料會靜默縮水**，所以下面 O3 除了「有幾條有效繞道」之外，還要斷言
+        # 維度本身沒有塌掉。
         # ⚠ 設定通道那一列必須配**沒有旗標**的 commit，不能配 `--no-verify`。
         # 第一版配了 `--no-verify`，於是每一條都先被旗標判定接住，通道的邏輯
         # 一次都沒有被單獨考驗——實測把 fail-closed 兜底整個拿掉、把
         # `--config-env` 的鏡射打斷，這三條測試**照樣全綠**（2026-09-06 自查）。
         # 語料的維度要能各自獨立地觸發，否則交叉展開只是把同一件事測很多次。
+        # 每個包裝器**兩種身分各出現一次**：配 `--no-verify`（會繞道，考驗漏擋）
+        # 與配裸 commit（守衛會跑，考驗誤擋）。
+        # ⚠ 第一版只有前者。於是「守衛真的跑了」的列只剩 2 條、而且是同一條
+        # 指令，O2（誤擋那一半）等於只由一種形狀在守——把「有包裝器就擋」這種
+        # 過度收緊注入閘裡，預設語料**全綠**，只有 `--sweep` 抓得到
+        # （2026-09-06 正確性鏡頭實測）。這與同一個 commit 宣稱已修好的通道維度
+        # 是**同一類**，我只掃了一處。
         combos = ([(base_w, f, base_c) for f in flags]
                   + [(base_w, flags[0], c) for c in channels]
-                  + [(w, flags[1], base_c) for w in wrappers])
+                  + [(w, flags[1], base_c) for w in wrappers]
+                  + [(w, flags[0], base_c) for w in wrappers])
     out = []
     for (wn, wf), (fn, ff), (cn, cf, cenv) in combos:
         prefix = "".join("%s=%s " % (k, v) for k, v in sorted(cenv.items()))
@@ -195,61 +209,64 @@ def _run_corpus(tmp_path, full):
     return rows
 
 
-def test_o3_the_corpus_actually_contains_working_bypasses(tmp_path):
+@pytest.fixture(scope="module")
+def rows(tmp_path_factory, pytestconfig):
+    """整組語料只跑一次。
+
+    ⚠ 三條測試原本各自呼叫 `_run_corpus`，於是同一批語料**建三次拋棄式 repo、
+    跑三次 git、跑三次 gate**——O1／O2／O3 只是同一組觀測的三種投影
+    （2026-09-06 簡潔性鏡頭指出）。改成 module fixture 之後鑑別力一分不減，
+    預設路徑省掉三分之二的執行時間。
+
+    `--sweep` 從「多跑一條測試」變成「把語料放寬」：加了旗標，O1 與 O2 檢驗的
+    就是完整的 120 條，而不是另外跑一條只檢查一半的測試。
+    """
+    return _run_corpus(tmp_path_factory.mktemp("oracle"),
+                       full=pytestconfig.getoption("--sweep"))
+
+
+def test_o3_the_corpus_actually_contains_working_bypasses(rows, tmp_path):
     """O3：語料必須真的含有一批**有效的**繞道，否則 O1 是空的。
 
     這是本檔的前置條件：如果生成的指令一條都繞不過守衛，「全部都被擋下」這句話
     什麼都不證明。斷言的是 git 的實際行為，與閘無關。
     """
-    rows = _run_corpus(tmp_path, full=False)
     bypasses = [r for r in rows if r[2] and not r[3]]
     ran = [r for r in rows if r[3]]
     assert len(bypasses) >= 5, (
         "語料裡只有 %d 條真的繞過守衛，鑑別力不足：%s"
         % (len(bypasses), [r[0] for r in rows[:5]]))
     assert ran, "語料裡沒有任何一條讓守衛真的跑起來——O2 會變成空的"
+    # 維度不得靜默塌掉：包裝器由 `shutil.which` 偵測，一台少裝工具的機器上
+    # wrappers 會掉到 1，語料只剩 11 列，而上面那個 `>= 5` **照樣過**——光靠
+    # 設定通道那幾列就滿足了。那時「全部擋下」保護的是一個縮水的語料，而沒有
+    # 任何紅燈。這是本 repo 自己在別處補過的「守衛正在保護空氣」那一類。
+    wrappers, flags, channels = _dimensions(str(tmp_path))
+    assert len(wrappers) >= 3 and len(channels) >= 5, (
+        "語料的維度塌了：包裝器 %d 種、設定通道 %d 種——這台機器缺工具，"
+        "量出來的『全部擋下』不代表什麼" % (len(wrappers), len(channels)))
 
 
-def test_o1_every_working_bypass_is_denied(tmp_path):
+def test_o1_every_working_bypass_is_denied(rows):
     """O1：commit 成立而守衛沒跑的，一律要被擋。
 
     判準完全由 git 的實際行為導出，閘不參與定義。同一套語料在已發佈的 1.4.3
     上實測**漏擋 72/92**，在 HEAD 上 0/92。
     """
-    rows = _run_corpus(tmp_path, full=False)
     missed = [(r[0], r[1]) for r in rows if (r[2] and not r[3]) and not r[4]]
     assert not missed, (
         "以下指令真的產生了 commit 而守衛一次都沒跑，閘卻放行：\n%s"
         % "\n".join("  %-28s %s" % m for m in missed))
 
 
-def test_o2_a_commit_whose_guards_ran_is_not_denied(tmp_path):
+def test_o2_a_commit_whose_guards_ran_is_not_denied(rows):
     """O2：O1 的配對——守衛真的跑了的，不得被擋。
 
     只有 O1 的話，一個「什麼都擋」的閘會全綠，而那會讓人把整道閘關掉。
     ⚠ 「指令根本沒跑起來」的第三類必須排除：`winpty` 在本機需要 tty，既沒
     commit 也沒哨兵，拿它去判「不該擋」會憑空製造 23 條假的誤擋。
     """
-    rows = _run_corpus(tmp_path, full=False)
     wrong = [(r[0], r[1]) for r in rows if r[3] and r[4]]
     assert not wrong, (
         "以下指令的守衛真的跑了，閘卻擋下來（誤擋比漏擋更糟）：\n%s"
         % "\n".join("  %-28s %s" % w for w in wrong))
-
-
-@pytest.mark.sweep
-def test_o4_full_cross_product(tmp_path):
-    """O4：完整交叉展開（120 條、約 40 秒）。預設不跑，加 `--sweep` 才跑。
-
-    預設語料只保證每個維度的每個值各出現一次；真正會出事的往往是**組合**
-    （例如 `env` 包裝 ＋ `$'…'` 引號 ＋ `--amend`）。這一條把它們全部走一遍。
-    分開跑是因為慢的測試會被跳過，而被跳過的測試等於沒有。
-    """
-    rows = _run_corpus(tmp_path, full=True)
-    missed = [(r[0], r[1]) for r in rows if (r[2] and not r[3]) and not r[4]]
-    wrong = [(r[0], r[1]) for r in rows if r[3] and r[4]]
-    assert not missed and not wrong, (
-        "漏擋 %d 條、誤擋 %d 條\n%s"
-        % (len(missed), len(wrong),
-           "\n".join("  漏擋 %-28s %s" % m for m in missed)
-           + "\n".join("  誤擋 %-28s %s" % w for w in wrong)))
