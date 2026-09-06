@@ -100,9 +100,17 @@ fail-then-pass guard：
 import json
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
-GATE = Path(__file__).resolve().parent.parent / ".claude" / "hooks" / "verify_gate.py"
+# ⚠ 跑副本不跑生產檔——理由與 test_goal_gate 檔頭那段相同：刻意注入的失敗
+# 會寫進產品自己的 `.gate_fail`，把真實失效淹沒在雜訊裡（Q8 盯這件事）。
+# 本檔原本已經有 `_gate_copy`，但只有少數測試用它；改成整個模組都用副本，
+# 才不必靠每個人記得。
+_PROD_GATE = Path(__file__).resolve().parent.parent / ".claude" / "hooks" / "verify_gate.py"
+_GATE_DIR = Path(tempfile.mkdtemp(prefix="fable-gate-"))
+GATE = _GATE_DIR / "verify_gate.py"
+GATE.write_text(_PROD_GATE.read_text(encoding="utf-8"), encoding="utf-8")
 
 
 def _user(text):

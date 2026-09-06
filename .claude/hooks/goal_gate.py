@@ -84,8 +84,24 @@ def note_quiet(label, exc=None):
                         seen += 1
         if seen >= QUIET_PER_LABEL:
             return
-        with open(marker, "a", encoding="utf-8") as fh:
-            fh.write("%s %s\n" % (datetime.now(timezone.utc).isoformat(), text))
+        # 用 `os.open` + 單次 `os.write`，不是 `open(..., "a")`。三支 hook 可能同時
+        # 被叫（`verify_gate` 與 `goal_gate` 都掛 Stop），而 Python 的文字模式
+        # append 在 Windows 上實測會**掉筆**：三個行程各寫一行，30 次試驗有 20 次
+        # 少行，還會產生空白行——而空白行會被注入器原樣送進上下文。掉的那一筆
+        # 不會拋例外，所以連 `note_quiet` 自己都不知道：屍檢自己會安靜地失效
+        # （2026-09-06 抗辯量測）。O_APPEND 下的單次小量 write 是原子的。
+        # `newline` 不經文字層，順帶修掉 Windows 上寫出 CRLF 的問題——裸 CR 會
+        # 被 `tail`／`sed` 帶進上下文。
+        line = ("%s %s\n" % (datetime.now(timezone.utc).isoformat(), text))
+        # `O_BINARY`（Windows 才有）不可省：少了它 os.open 走文字模式，換行字元被
+        # 展開成 CRLF，單次 write 因此被拆開、原子性沒了——實測三行程各寫一行，
+        # 20 次試驗有 19 次只剩兩行。裸 CR 也會被注入器帶進上下文。
+        flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_BINARY", 0)
+        fd = os.open(marker, flags, 0o600)
+        try:
+            os.write(fd, line.encode("utf-8"))
+        finally:
+            os.close(fd)
     except Exception:  # quiet-ok: 遙測自身故障不得破壞 fail-open，這裡沒有第二個出口
         pass
 
@@ -308,7 +324,19 @@ def is_real_user_prompt(entry):
 
 
 def load_entries(path):
+    """逐行讀 transcript，壞掉的行跳過——但**整趟記一次**。
+
+    ⚠ 這裡原本標著「壞一行不影響判定」，那句話是假的。實測：把帶著測試指令的
+    那一行截斷（session 被砍、磁碟滿、寫到一半），`verify_gate` 就從**放行翻成
+    擋人**——它看到「改了碼、沒跑測試」。goal_gate 同理：那一輪的紅或綠會整個
+    消失。壞掉的行正是「這道閘讀不完整」，也就是它最該出聲的情形。
+    （2026-09-06 抗辯指出，我實測重現。）
+
+    記一次而不是逐行記：一個壞掉的大檔會逐行灌爆屍檢，而灌爆之後真正的失效
+    寫不進去——那是同一個機制上個小時才犯過的錯。
+    """
     entries = []
+    torn = 0
     with open(path, encoding="utf-8", errors="replace") as fh:
         for line in fh:
             line = line.strip()
@@ -316,8 +344,10 @@ def load_entries(path):
                 continue
             try:
                 entries.append(json.loads(line))
-            except json.JSONDecodeError:  # quiet-ok: transcript 逐行容錯，壞一行不影響判定；逐行記會把屍檢灌爆
-                continue
+            except json.JSONDecodeError:  # quiet-ok: 整趟結束後記一次，見下方
+                torn += 1
+    if torn:
+        note_quiet("load_entries: %d 行讀不動，這一輪的判定可能不完整" % torn)
     return entries
 
 
@@ -976,7 +1006,14 @@ class state_lock(object):
             try:
                 os.close(self.fd)
                 os.remove(self.path)
-            except OSError:  # quiet-ok: 解鎖時檔案已不在，等價於已解鎖
+            except OSError as _q:
+                # ⚠ 原本標著「解鎖時檔案已不在，等價於已解鎖」。那只涵蓋一半：
+                # 這裡同時包住 `os.close` 與 `os.remove`，也會吞掉 Windows 上
+                # 另一個 handle 還開著造成的 PermissionError——那不是「已解鎖」，
+                # 是**鎖檔留了下來**，下一個持有者要等滿 1.5 秒、且退化成不序列化，
+                # 直到它滿 30 秒被判為過期。這個 repo 為了同一件事付過代價
+                # （每次 hook 停 1.5 秒）。(2026-09-06 抗辯指出理由寫得比實際窄。)
+                note_quiet("state_lock 解鎖失敗，鎖檔可能留著", _q)
                 pass
         return False
 
@@ -1008,7 +1045,7 @@ def save_state(root, state):
         # because this directory ignores itself.
         try:
             os.remove(tmp)
-        except OSError:  # quiet-ok: 暫存檔清理失敗，狀態已經寫成功
+        except OSError:  # quiet-ok: 外層那次寫入失敗已經記過了，這裡只是清殘檔，再失敗也無事可做
             pass
         return False
     return True

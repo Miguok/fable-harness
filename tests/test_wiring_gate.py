@@ -170,11 +170,26 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 
 import pytest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-GATE = os.path.join(ROOT, ".claude", "hooks", "wiring_gate.py")
+
+# ⚠ 測試一律跑 gate 的**副本**，不跑生產檔。
+#
+# `note_quiet` 把屍檢寫在 `dirname(__file__)/.gate_fail`，所以測試若驅動生產檔，
+# 那些**刻意注入的失敗**就會累積到產品自己的遙測裡。實測：一次全套測試往
+# `.claude/hooks/.gate_fail` 寫 27 行，全部是測試雜訊、零筆真實失效——而
+# SessionStart 會照實說「⚠ 閘曾經靜默失效（27 筆）」。假警報會訓練讀者忽略它，
+# 那等於把整個機制廢掉（2026-09-06 抗辯指出）。
+# 副本放在暫存目錄，屍檢跟著去那裡。gate 判定 repo 位置靠的是 cwd 不是 __file__，
+# 所以搬位置不影響任何行為。
+_GATE_DIR = tempfile.mkdtemp(prefix="fable-gate-")
+_PROD_GATE = os.path.join(ROOT, ".claude", "hooks", "wiring_gate.py")
+_GATE_COPY = os.path.join(_GATE_DIR, "wiring_gate.py")
+shutil.copy(_PROD_GATE, _GATE_COPY)
+GATE = _GATE_COPY
 RUNNER = os.path.join(ROOT, ".claude", "hooks", "wiring_runner.sh")
 
 sys.path.insert(0, os.path.join(ROOT, ".claude", "hooks"))

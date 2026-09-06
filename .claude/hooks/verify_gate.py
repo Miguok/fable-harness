@@ -213,8 +213,24 @@ def note_quiet(label, exc=None):
                         seen += 1
         if seen >= QUIET_PER_LABEL:
             return
-        with open(marker, "a", encoding="utf-8") as fh:
-            fh.write("%s %s\n" % (datetime.now(timezone.utc).isoformat(), text))
+        # 用 `os.open` + 單次 `os.write`，不是 `open(..., "a")`。三支 hook 可能同時
+        # 被叫（`verify_gate` 與 `goal_gate` 都掛 Stop），而 Python 的文字模式
+        # append 在 Windows 上實測會**掉筆**：三個行程各寫一行，30 次試驗有 20 次
+        # 少行，還會產生空白行——而空白行會被注入器原樣送進上下文。掉的那一筆
+        # 不會拋例外，所以連 `note_quiet` 自己都不知道：屍檢自己會安靜地失效
+        # （2026-09-06 抗辯量測）。O_APPEND 下的單次小量 write 是原子的。
+        # `newline` 不經文字層，順帶修掉 Windows 上寫出 CRLF 的問題——裸 CR 會
+        # 被 `tail`／`sed` 帶進上下文。
+        line = ("%s %s\n" % (datetime.now(timezone.utc).isoformat(), text))
+        # `O_BINARY`（Windows 才有）不可省：少了它 os.open 走文字模式，換行字元被
+        # 展開成 CRLF，單次 write 因此被拆開、原子性沒了——實測三行程各寫一行，
+        # 20 次試驗有 19 次只剩兩行。裸 CR 也會被注入器帶進上下文。
+        flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_BINARY", 0)
+        fd = os.open(marker, flags, 0o600)
+        try:
+            os.write(fd, line.encode("utf-8"))
+        finally:
+            os.close(fd)
     except Exception:  # quiet-ok: 遙測自身故障不得破壞 fail-open，這裡沒有第二個出口
         pass
 
@@ -229,6 +245,7 @@ def main():
         if data.get("stop_hook_active"):
             return 0
         entries = []
+        torn = 0
         with open(data["transcript_path"], encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
@@ -236,8 +253,15 @@ def main():
                     continue
                 try:
                     entries.append(json.loads(line))
-                except json.JSONDecodeError:  # quiet-ok: transcript 逐行容錯，同 goal_gate
-                    continue
+                except json.JSONDecodeError:  # quiet-ok: 整趟結束後記一次，見下方
+                    torn += 1
+        if torn:
+            # ⚠ 原本標著「壞一行不影響判定」，那句話是假的：把帶著測試指令的
+            # 那一行截斷，這道閘就從**放行翻成擋人**——它看到「改了碼、沒跑測試」。
+            # 實測（2026-09-06 抗辯指出，我重現）：完整 blocked=False、
+            # 同一份只截斷那一行 blocked=True。方向是誤擋，而誤擋掛在一道硬閘上。
+            # 記一次而不是逐行記：逐行會把屍檢灌爆，真正的失效反而寫不進去。
+            note_quiet("main: %d 行讀不動，這一輪的判定可能不完整" % torn)
         edited, test_seen = analyze(entries)
         if edited and not test_seen:
             files = "、".join(one_line(n, 80) for n in

@@ -60,7 +60,7 @@ def run(args, **kw):
     kw.setdefault("timeout", 300)
     try:
         return subprocess.run(args, **kw)
-    except (OSError, subprocess.SubprocessError) as e:
+    except (OSError, subprocess.SubprocessError) as e:  # quiet-ok: 轉成 rc=127 交給呼叫端，前置條件會把它印出來
         # 執行檔不存在時 subprocess 拋的是例外而不是非零退出。讓呼叫端一律
         # 只需要看 returncode，否則「gh 沒裝」會變成一個沒人接的 traceback。
         return subprocess.CompletedProcess(args, 127, "", str(e))
@@ -79,7 +79,7 @@ def read_attestation(commit):
     try:
         with open(attestation_path(commit), encoding="utf-8") as fh:
             doc = json.load(fh)
-    except (OSError, ValueError):
+    except (OSError, ValueError):  # quiet-ok: 回 None 讓 check_review 大聲說「沒有審查紀錄」並擋下發佈
         return None
     # 合法 JSON 但不是物件（`[]`、`"x"`、`null`）會讓下游的 `doc.get` 拋
     # AttributeError——實測 `printf '[]' > .fable/attestations/<HEAD>.json`
@@ -182,14 +182,14 @@ def check_version_matches(version):
     try:
         with open(VERSION_FILE, encoding="utf-8") as fh:
             on_disk = fh.read().strip()
-    except OSError:
+    except OSError:  # quiet-ok: 回傳的字串就是印給使用者看的前置條件失敗理由
         return "讀不到 VERSION"
     if on_disk != version:
         return "VERSION 是 %s，要發的是 %s" % (on_disk, version)
     try:
         with open(CHANGELOG, encoding="utf-8") as fh:
             body = fh.read()
-    except OSError:
+    except OSError:  # quiet-ok: 同上，回傳的字串會被印出來並中止發佈
         return "讀不到 CHANGELOG.md"
     if not re.search(r"^## \[%s\]" % re.escape(version), body, re.M):
         return "CHANGELOG.md 沒有 [%s] 這一節" % version
@@ -333,7 +333,7 @@ def main(argv=None):
             return 1
         try:
             lenses = parse_lenses(args.lenses)
-        except ValueError as e:
+        except ValueError as e:  # quiet-ok: 下一行就把理由印出來並回 1
             print("⛔ %s" % e)
             return 1
         if not args.judge:

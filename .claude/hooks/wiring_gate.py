@@ -104,8 +104,24 @@ def note_quiet(label, exc=None):
                         seen += 1
         if seen >= QUIET_PER_LABEL:
             return
-        with open(marker, "a", encoding="utf-8") as fh:
-            fh.write("%s %s\n" % (datetime.now(timezone.utc).isoformat(), text))
+        # 用 `os.open` + 單次 `os.write`，不是 `open(..., "a")`。三支 hook 可能同時
+        # 被叫（`verify_gate` 與 `goal_gate` 都掛 Stop），而 Python 的文字模式
+        # append 在 Windows 上實測會**掉筆**：三個行程各寫一行，30 次試驗有 20 次
+        # 少行，還會產生空白行——而空白行會被注入器原樣送進上下文。掉的那一筆
+        # 不會拋例外，所以連 `note_quiet` 自己都不知道：屍檢自己會安靜地失效
+        # （2026-09-06 抗辯量測）。O_APPEND 下的單次小量 write 是原子的。
+        # `newline` 不經文字層，順帶修掉 Windows 上寫出 CRLF 的問題——裸 CR 會
+        # 被 `tail`／`sed` 帶進上下文。
+        line = ("%s %s\n" % (datetime.now(timezone.utc).isoformat(), text))
+        # `O_BINARY`（Windows 才有）不可省：少了它 os.open 走文字模式，換行字元被
+        # 展開成 CRLF，單次 write 因此被拆開、原子性沒了——實測三行程各寫一行，
+        # 20 次試驗有 19 次只剩兩行。裸 CR 也會被注入器帶進上下文。
+        flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_BINARY", 0)
+        fd = os.open(marker, flags, 0o600)
+        try:
+            os.write(fd, line.encode("utf-8"))
+        finally:
+            os.close(fd)
     except Exception:  # quiet-ok: 遙測自身故障不得破壞 fail-open，這裡沒有第二個出口
         pass
 
@@ -669,7 +685,14 @@ def note_unregistered(root, declared):
         # 路徑由 git 給，一個 repo 一份，刪的一定是自己的那一份。
         try:
             os.remove(note)
-        except OSError:  # quiet-ok: 提示寫入失敗絕不影響 commit，且它不參與任何判定
+        except FileNotFoundError:  # quiet-ok: 本來就沒有舊提示可刪，是最常見的情況
+            pass
+        except OSError as _q:
+            # ⚠ 原本標著「提示寫入失敗絕不影響 commit」。被包住的是 `os.remove`，
+            # 不是寫入；而它失敗的後果不是「少一個提示」，是**多一個永遠錯的提示**：
+            # 這個 repo 已經 opt-in 了，那句「尚未 opt-in」卻會在每一次 SessionStart
+            # 繼續被注入，直到有人手動刪掉那個檔（2026-09-06 抗辯指出）。
+            note_quiet("note_unregistered 舊提示刪不掉，會一直被注入", _q)
             pass
         return
     try:

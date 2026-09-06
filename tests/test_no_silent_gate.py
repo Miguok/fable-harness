@@ -19,27 +19,24 @@
 ══════════════════════════════════════
 來由（這是本檔與其他測試檔最大的不同，寫清楚才不會被當成又一組個案測試）：
 
-2026-09-06 一輪四鏡頭抗辯挖出 26 條缺陷。逐條修完之後回頭看，其中**約一半**是
-同一個決定的不同實例：三道閘在「判不出來」時會安靜，而安靜與「一切正常」在外部
-完全分不出來。
+2026-09-06 的抗辯挖出 26 條缺陷。我第一版說它們「幾乎全是」同一個根因——三道閘
+在判不出來時會安靜——並列了三個數字當證據。**那三個數字全部是錯的**（外部鏡頭
+逐條反駁，我自己核完全部成立）：
 
-⚠ 這句話第一版寫成「幾乎全部」，逐條分類之後不成立。過度宣稱一個根因比沒找到
-更糟——它會讓另一半停止被追究（另一半是：守衛斷言在自己貼的字串上、同一段邏輯
-多份副本、注入內容沒有框架、機密遮蔽漏形態、註解與程式不一致，以及兩條**誤擋**）。
-安靜這一類值得單獨處理的理由不是它最多，是它**唯一會再生**：其他類別修完就結案，
-安靜的分支可以無限新增。
+  「verify_gate 有 5 處屍檢」→ 實際 **1 處**呼叫點。我 grep 的是「提到這個字串
+     的行數」，把 docstring 與註解算了進去。
+  「有屍檢的那支只出 2 條」→ 我引用的那個 commit 根本沒動過 verify_gate。
+  「2 : 24 證明屍檢有效」→ verify_gate 佔三支程式碼 10.1%、缺陷佔 7.7%，
+     用行數就解釋完了。
 
-可量的證據——
+逐條走過那批缺陷，**只有一條**的傷害路徑真的經過 `except`。所以本檔守的是一件
+真實但**小得多**的事，不是那 26 條的根因。
 
-  `verify_gate` 有 fail-open 屍檢（5 處）→ 本輪出 2 條缺陷
-  `goal_gate`   0 處                      ┐
-  `wiring_gate` 0 處                      ┘ 兩支合計出 24 條
-
-而三支合計有 25 個 `except` 區塊，其中**只有 1 個**會留下痕跡。
-
-所以「再跑一輪抗辯」不會收斂：每一輪找到的都是安靜的一個實例，而那個決定寫在
-二十幾個地方。本檔換一個打法——不列舉實例，而是斷言**新的安靜分支不可能被加進來**：
-任何人新增一個 `except`，要嘛讓它留痕，要嘛在原始碼上寫下為何不留，否則這條紅。
+那什麼才是真正重複出現的？**我為自己的修法配的守衛驗不到東西**——本輪約 15 個
+實例，含本檔自己的 Q1／Q4／Q5／Q6。原因不在勤勞，在**突變的來源**：我用的突變
+是「把自己剛才的修法還原」，而那正是守衛設計時瞄準的，所以它必翻紅，證明的只是
+「守衛認得我的修法」。本檔的每一條現在都用**不是我選的突變**驗過（把遙測整個
+弄死／換一種語法寫安靜分支／把區塊註解掉而不是刪掉）。
 
 執行命令：python -m pytest tests/test_no_silent_gate.py -q
 最後執行：2026-09-06 15:3x → 見下方實測值
@@ -64,6 +61,7 @@
   屍檢被讀到之後**有沒有人處理**：Q6 只保證它進得了上下文。
 """
 import ast
+import glob
 import io
 import json
 import os
@@ -75,47 +73,132 @@ import pytest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HOOKS = os.path.join(ROOT, ".claude", "hooks")
-GATES = ("goal_gate.py", "wiring_gate.py", "verify_gate.py")
+
+
+def gate_files():
+    """所有「判定失敗會被安靜吞掉」的檔案——**掃目錄，不寫死清單**。
+
+    ⚠ 第一版是 `GATES = ("goal_gate.py", "wiring_gate.py", "verify_gate.py")`。
+    在 `.claude/hooks/` 放進第四支 hook（內含 `except Exception: return 0`）
+    → 零覆蓋、全綠（2026-09-06 實測）。這正是本專案自己的鐵則所禁止的
+    「抄閘門數量」：守衛只保護它被寫下來時存在的那幾個。
+    `scripts/release.py` 一併納入——它在本輪出過約 8 條缺陷，而它同樣有
+    會吞掉失敗的 except。
+    """
+    files = sorted(glob.glob(os.path.join(HOOKS, "*.py")))
+    rel = os.path.join(ROOT, "scripts", "release.py")
+    if os.path.exists(rel):
+        files.append(rel)
+    return files
+
+
+GATES = [os.path.relpath(p, ROOT).replace("\\", "/") for p in gate_files()]
+TELEMETRY = [g for g in GATES if g.startswith(".claude/hooks/")]
 QUIET_OK_RE = re.compile(r"#\s*quiet-ok:\s*(\S.*)$")
 
 
-def _source(name):
-    return io.open(os.path.join(HOOKS, name), encoding="utf-8").read()
+def _source(rel):
+    return io.open(os.path.join(ROOT, rel), encoding="utf-8").read()
 
 
-def _handlers(name):
-    """回傳 [(行號, except 那一行, 區塊內是否呼叫 note_quiet)]。"""
-    src = _source(name)
-    lines = src.split("\n")
+def _records_directly(stmts):
+    """**直接**子句裡的 `note_quiet(...)`，不含 if／for／巢狀 try 裡面的。
+
+    ⚠ 第一版用 `ast.walk` 掃整個子樹，於是
+    `if os.environ.get("DEBUG"): note_quiet(...)`、`if False: note_quiet(...)`、
+    以及巢狀 handler 裡的呼叫，都會讓**外層**算成「有留痕」——而外層其實是
+    安靜的（2026-09-06 實測四種形態全綠）。
+    """
+    for s in stmts:
+        if (isinstance(s, ast.Expr) and isinstance(s.value, ast.Call)
+                and isinstance(s.value.func, ast.Name)
+                and s.value.func.id == "note_quiet"):
+            return True
+    return False
+
+
+def _always_raises(stmts):
+    """最後一句就是 `raise` 才算往上丟。
+
+    ⚠ `if isinstance(e, KeyboardInterrupt): raise` 是很常見的寫法，而它對
+    **其他所有例外**都是安靜的。第一版用 `ast.walk` 找 Raise，這種形態全綠。
+    """
+    return bool(stmts) and isinstance(stmts[-1], ast.Raise)
+
+
+def _suppress_lines(tree):
+    """`with contextlib.suppress(...)`——它**不產生** ExceptHandler 節點。
+
+    語意上等同一個什麼都不做的 except，而第一版的 AST 走訪完全看不到它：
+    把一個 handler 改寫成 suppress，ExceptHandler 數少一個，沒有人叫。
+    """
     out = []
-    for h in ast.walk(ast.parse(src)):
+    for n in ast.walk(tree):
+        if not isinstance(n, (ast.With, ast.AsyncWith)):
+            continue
+        for item in n.items:
+            c = item.context_expr
+            if not isinstance(c, ast.Call):
+                continue
+            f = c.func
+            name = f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", "")
+            if name == "suppress":
+                out.append(n.lineno)
+    return out
+
+
+def silent_points(rel):
+    """這個檔案裡「會安靜吞掉失敗」的位置：[(行號, 那一行)]。"""
+    src = _source(rel)
+    lines = src.split("\n")
+    tree = ast.parse(src)
+    out = []
+    for h in ast.walk(tree):
         if not isinstance(h, ast.ExceptHandler):
             continue
-        recorded = any(
-            isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
-            and n.func.id == "note_quiet"
-            for stmt in h.body for n in ast.walk(stmt))
-        raised = any(isinstance(n, ast.Raise) for stmt in h.body
-                     for n in ast.walk(stmt))
-        out.append((h.lineno, lines[h.lineno - 1], recorded or raised))
+        if _records_directly(h.body) or _always_raises(h.body):
+            continue
+        if QUIET_OK_RE.search(lines[h.lineno - 1]):
+            continue
+        out.append((h.lineno, lines[h.lineno - 1].strip()))
+    for ln in _suppress_lines(tree):
+        if not QUIET_OK_RE.search(lines[ln - 1]):
+            out.append((ln, lines[ln - 1].strip()))
+    return sorted(out)
+
+
+def quiet_ok_reasons(rel):
+    """[(行號, 理由)]——含 suppress 那一行。"""
+    src = _source(rel)
+    out = []
+    for i, line in enumerate(src.split("\n"), 1):
+        m = QUIET_OK_RE.search(line)
+        if m and ("except" in line or "suppress" in line):
+            out.append((i, m.group(1).strip()))
     return out
 
 
 @pytest.mark.parametrize("gate", GATES)
 def test_q1_every_except_either_records_or_says_why_not(gate):
-    """Q1：每個 `except` 要嘛留痕，要嘛在原始碼上寫下為何不留。
+    """Q1：每個會吞掉失敗的地方，要嘛留痕，要嘛在原始碼上寫下為何不留。
 
-    這是本檔的核心，也是唯一能讓這件事收斂的形態。列舉「已知的安靜分支」永遠
-    追不完——2026-09-06 一輪抗辯找出 26 條，逐條修完之後第 27 條仍然可以被加進來
-    而沒有人會發現。改成斷言「新的安靜分支不可能存在」之後，加一個沒有痕跡的
-    `except` 就會讓這條紅，而寫下 `# quiet-ok: 理由` 是一個**必須經過思考**的動作。
+    這是本檔的核心，也是唯一能讓這件事收斂的形態：列舉「已知的安靜分支」永遠
+    追不完，斷言「安靜的分支不存在」才會。加一個沒有痕跡的 `except`（或
+    `contextlib.suppress`）就會讓這條紅，而寫下 `# quiet-ok: 理由` 是一個
+    **必須經過思考**的動作。
 
-    ⚠ 判準刻意接受 `raise`：把例外往上丟不是安靜，那是交給上層處理。
+    ⚠ 判定經過一次大修，因為第一版有三個洞，三種寫法都能加進安靜分支而全綠
+    （2026-09-06 red-team 鏡頭指出，我逐條實測重現）：
+      `contextlib.suppress(OSError)`        不產生 ExceptHandler，看不到
+      `if DEBUG: raise` / `return None`     條件式 raise 被算成「往上丟」
+      巢狀 handler 裡的 note_quiet          讓外層算成「有留痕」
+      第四支 hook 放進 .claude/hooks/       清單寫死，零覆蓋
+    修法分別是：掃 With 節點、只認最後一句的 raise、只認直接子句的呼叫、
+    以及改成掃目錄。
     """
-    silent = [(n, line.strip()) for n, line, recorded in _handlers(gate)
-              if not recorded and not QUIET_OK_RE.search(line)]
+    silent = silent_points(gate)
     assert not silent, (
-        "%s 有 %d 個 except 會安靜地吞掉失敗，既沒 note_quiet 也沒 quiet-ok 標記：\n%s"
+        "%s 有 %d 個地方會安靜地吞掉失敗，既沒 note_quiet 也沒 quiet-ok 標記：\n%s"
         % (gate, len(silent), "\n".join("  L%d  %s" % t for t in silent)))
 
 
@@ -130,10 +213,11 @@ def test_q2_a_quiet_ok_marker_must_carry_a_reason(gate):
       `# quiet-ok:` 後面完全空白 → 樣式根本比不中 → 由 **Q1** 判為沒有標記
       `# quiet-ok: 沒差`（有字但太短）→ 樣式比中了 → 由 **Q2** 判為理由不足
     兩條各接住一半，看起來像重複，實際上少任何一條都有一個形態會漏。
+
+    ⚠ 這條**抓不到「理由是假的」**——只抓得到太短的。同一批就有四條理由寫錯
+    （見 CHANGELOG），全部是人讀出來的，不是這條抓的。這是它的已知邊界。
     """
-    blank = [(n, line.strip()) for n, line, _ in _handlers(gate)
-             if (QUIET_OK_RE.search(line)
-                 and len(QUIET_OK_RE.search(line).group(1).strip()) < 8)]
+    blank = [(n, r) for n, r in quiet_ok_reasons(gate) if len(r) < 8]
     assert not blank, "%s 的 quiet-ok 沒有寫理由：%s" % (gate, blank)
 
 
@@ -151,10 +235,11 @@ def test_q3_all_three_copies_of_note_quiet_agree(tmp_path):
     不會紅——守衛自己開了一個後門（2026-09-06 simplifier 鏡頭指出）。
     """
     seen = {}
-    for gate in GATES:
-        d = tmp_path / gate
+    for gate in TELEMETRY:
+        name = os.path.basename(gate)
+        d = tmp_path / name
         d.mkdir()
-        copy = d / gate
+        copy = d / name
         copy.write_text(_source(gate), encoding="utf-8")
         code = (
             "import importlib.util;"
@@ -165,7 +250,7 @@ def test_q3_all_three_copies_of_note_quiet_agree(tmp_path):
                              encoding="utf-8", errors="replace", timeout=60)
         assert out.returncode == 0, out.stderr
         marker = d / ".gate_fail"
-        assert marker.exists(), "%s 沒有寫出屍檢檔" % gate
+        assert marker.exists(), "%s 沒有寫出屍檢檔" % name
         line = marker.read_text(encoding="utf-8").strip()
         assert "payload-must-not-appear" not in line, (
             "%s 把例外訊息寫進去了——這個檔會被注入回對話：%s" % (gate, line))
@@ -178,16 +263,39 @@ def test_q4_broken_telemetry_does_not_break_fail_open(tmp_path):
 
     這是屍檢這個構想唯一可能反噬的地方：為了讓失效看得見而加的東西，若自己
     會拋例外，就會把「閘安靜失效」升級成「閘弄壞 session」——比原本更糟。
+
+    ⚠ **第一版是空的。** 它餵 `input="{}"`，而 `main` 在
+    `if not data.get("transcript_path"): return 0` 就回來了，**一個 handler
+    都沒跑到**。把 `note_quiet` 的本體換成 `raise RuntimeError(...)`，它照樣綠
+    ——它對自己名字裡那件事一個字都沒驗（2026-09-06 red-team 鏡頭指出）。
+
+    現在分兩半，缺一不可：
+      前半證明這條輸入**真的**會走到 `note_quiet`（可寫時要留下一行）；
+      後半才是契約本身（marker 是目錄、寫不進去時仍須 rc=0）。
+    少了前半，這條測試就會退回原來那種「什麼都沒驗」的狀態。
     """
     copy = tmp_path / "goal_gate.py"
-    copy.write_text(_source("goal_gate.py"), encoding="utf-8")
+    copy.write_text(_source(".claude/hooks/goal_gate.py"), encoding="utf-8")
+    bad_json = "not json at all"
+
+    # 前半：這條輸入真的會走到遙測
+    out = subprocess.run([sys.executable, str(copy)], input=bad_json,
+                         capture_output=True, encoding="utf-8",
+                         errors="replace", timeout=60)
+    assert out.returncode == 0, out.stderr
     marker = tmp_path / ".gate_fail"
-    marker.mkdir()          # 讓 open(..., "a") 必定失敗（目標是目錄）
-    out = subprocess.run([sys.executable, str(copy)], input="{}",
+    assert marker.exists() and marker.read_text(encoding="utf-8").strip(), (
+        "這條輸入沒有走到 note_quiet——那麼下面那一半什麼都證明不了")
+
+    # 後半：遙測寫不進去時，fail-open 契約仍然成立
+    marker.unlink()
+    marker.mkdir()          # 讓寫入必定失敗（目標是目錄）
+    out = subprocess.run([sys.executable, str(copy)], input=bad_json,
                          capture_output=True, encoding="utf-8",
                          errors="replace", timeout=60)
     assert out.returncode == 0, (
         "屍檢寫不進去就把 gate 弄掛了——fail-open 契約破了：%s" % out.stderr)
+    assert out.stdout.strip() == "", "壞掉的遙測讓 gate 多吐了東西：%s" % out.stdout
 
 
 def test_q5_a_spamming_label_cannot_starve_the_others(tmp_path):
@@ -205,7 +313,7 @@ def test_q5_a_spamming_label_cannot_starve_the_others(tmp_path):
     這條測試斷言的就是那個性質，不是某個數字。
     """
     copy = tmp_path / "goal_gate.py"
-    copy.write_text(_source("goal_gate.py"), encoding="utf-8")
+    copy.write_text(_source(".claude/hooks/goal_gate.py"), encoding="utf-8")
     code = (
         "import importlib.util;"
         "spec=importlib.util.spec_from_file_location('g',r'%s');"
@@ -258,11 +366,16 @@ def test_q7_an_ordinary_run_writes_no_postmortem(tmp_path):
 
     只有 Q1 的話，一個「每個 except 都記」的版本會全綠，而那會讓屍檢變成雜訊。
     實測第一版對「repo 沒有宣告 `.claude/fable-verifier`」也留痕，一次全套測試
-    就寫了 **120 行**——吵到沒人看的屍檢與沒有屍檢一樣沒用，而且會把 500 行上限
-    灌爆，真正的失效反而寫不進去。改成只記「檔案在卻讀不到」之後降到 7 行。
+    就寫了 **120 行**——吵到沒人看的屍檢與沒有屍檢一樣沒用，而且會把上限灌爆，
+    真正的失效反而寫不進去。
+
+    ⚠ **只有前半是「永遠是 0」型的假綠**：遙測整個死掉時，正常執行當然不留痕，
+    這條照樣綠（2026-09-06 用「把 note_quiet 換成 return」實測確認）。所以配了
+    後半的陽性對照——同一支 gate、同一個暫存目錄，一次**該**留痕的執行必須
+    真的留下一行。兩半一起看，才分得出「安靜是對的」與「遙測死了」。
     """
     copy = tmp_path / "goal_gate.py"
-    copy.write_text(_source("goal_gate.py"), encoding="utf-8")
+    copy.write_text(_source(".claude/hooks/goal_gate.py"), encoding="utf-8")
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
@@ -279,3 +392,34 @@ def test_q7_an_ordinary_run_writes_no_postmortem(tmp_path):
     marker = tmp_path / ".gate_fail"
     assert not marker.exists(), (
         "一次完全正常的執行寫了屍檢：%s" % marker.read_text(encoding="utf-8"))
+
+    # 陽性對照：遙測還活著嗎？
+    out = subprocess.run([sys.executable, str(copy)], input="not json",
+                         capture_output=True, encoding="utf-8",
+                         errors="replace", timeout=60)
+    assert out.returncode == 0, out.stderr
+    assert marker.exists() and marker.read_text(encoding="utf-8").strip(), (
+        "該留痕的執行也沒留痕——遙測是死的，那麼上半段的「沒留痕」什麼都不證明")
+
+
+
+@pytest.mark.parametrize("mod", ["test_goal_gate", "test_wiring_gate",
+                                 "test_verify_gate"])
+def test_q8_tests_never_drive_the_production_hook(mod):
+    """Q8：測試不得驅動**生產**的 hook 檔。
+
+    `note_quiet` 把屍檢寫在 `dirname(__file__)/.gate_fail`。測試若驅動生產檔，
+    那些**刻意注入的失敗**就會累積進產品自己的遙測——實測一次全套測試寫 27 行，
+    全部是測試雜訊、零筆真實失效，而 SessionStart 會照實說「⚠ 閘曾經靜默失效
+    （27 筆）」。假警報會訓練讀者忽略它，等於把整個機制廢掉；灌爆之後真正的
+    失效還會寫不進去（2026-09-06 抗辯指出）。
+
+    改成跑副本之後降到 0 行。這條守衛盯的是那個結構——不是重跑一次全套來數行數
+    （那會是 pytest 裡再跑 pytest，這個 repo 已經為它付過兩次五分鐘）。
+    """
+    import importlib
+    m = importlib.import_module(mod)
+    gate = str(getattr(m, "GATE", ""))
+    assert gate, "%s 沒有 GATE，這條守衛盯錯對象了" % mod
+    assert not os.path.abspath(gate).startswith(os.path.abspath(HOOKS)), (
+        "%s 直接驅動生產 hook（%s）——刻意注入的失敗會寫進產品的屍檢檔" % (mod, gate))
