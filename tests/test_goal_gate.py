@@ -1529,3 +1529,47 @@ def test_g59_the_golden_fixture_still_matches_what_the_product_emits():
         f"真實 transcript 裡只看到 {sorted(seen)}——產品的格式可能變了，"
         f"{GOLDEN} 需要重新擷取"
     )
+
+
+@pytest.mark.parametrize("kind", ["harness_meta_skill", "harness_compact_summary"])
+def test_g60_product_flagged_harness_entries_are_not_turn_boundaries(kind):
+    """G60：產品自己標記為 harness 注入的條目，不得算成新回合。
+
+    `isMeta: true` 是 Claude Code 給的**機器可讀旗標**。載入一個 skill 會產生
+    `Base directory for this skill: …` 的 isMeta 條目，而原本的判定只比對文字
+    開頭，於是那些被當成使用者回來了：一次紅測試之後載入 skill，那次失敗就
+    整個消失（實測本機真實資料 88 筆被誤判）。
+
+    最難堪的是**閘自己的指示會觸發它**：第 2 格的訊息叫人去跑抗辯，而抗辯是
+    一個 skill；CLAUDE.md 叫人改功能時載入 tdd skill。閘的指示把閘關掉，這個
+    形態這個檔案裡已經記過一次（G9 的「解鎖碼寫在協議裡」），這是第二次。
+
+    有旗標就用旗標：文字會變，旗標是契約。
+    """
+    entry = _golden()["shapes"][kind]
+    assert not gg.is_real_user_prompt(entry), (
+        f"{kind}：產品標記為 harness 注入，卻被當成使用者輸入"
+    )
+
+
+def test_g61_a_skill_load_does_not_erase_a_failing_turn(tmp_path):
+    """G61：G60 的端到端配對——紅測試之後載入 skill，那次失敗不得消失。
+
+    只驗判定函式不夠：後果是**跨回合**的，只有驅動真實 transcript 才看得到。
+    """
+    repo = _repo(tmp_path, {"streak": 0, "shelved": [], "red": {}})
+    entries = _runs(("pytest -q", FAIL_OUT))
+    _run(repo, entries)
+    assert _state(repo)["streak"] == 1, "前置不成立：第一次失敗沒被算到"
+
+    entries = entries + [
+        {"type": "user", "isMeta": True, "message": {"content": [
+            {"type": "text",
+             "text": "Base directory for this skill: /x/skills/tdd\n\n# TDD"}]}},
+    ] + _runs(("pytest -q", FAIL_OUT))[1:]
+    out = _run(repo, entries)
+    assert _state(repo)["streak"] == 2, (
+        "載入 skill 把上一次的失敗抹掉了——閘的指示（去跑抗辯／載入 tdd）"
+        "會把閘自己關掉"
+    )
+    assert _blocked(out)

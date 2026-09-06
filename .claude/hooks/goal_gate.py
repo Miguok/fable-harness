@@ -147,6 +147,19 @@ def prompt_text(entry):
     """
     if entry.get("type") != "user":
         return None
+    # `isMeta` 是**產品自己給的機器可讀旗標**，標記這一則是 harness 塞進來的，
+    # 不是使用者打的。載入一個 skill 會產生 `isMeta: true` 的 `Base directory
+    # for this skill: …`，而我原本只比對文字開頭，於是那些被判成新的回合邊界：
+    # 一次紅測試之後載入 skill，那次失敗就整個消失（實測 streak 1 → 0）。
+    #
+    # 而閘自己在第 2 格的訊息叫人去跑抗辯、CLAUDE.md 叫人載入 tdd skill——
+    # 兩件都是載入 skill。**閘的指示會把閘自己關掉**，這個形態這個檔案裡已經
+    # 記過一次（見 block_unexplained_shelf 的說明），這是第二次。
+    #
+    # 有旗標就用旗標，不要拿文字開頭去猜——文字會變，旗標是契約。
+    # `isCompactSummary` 同理：那是壓縮摘要，不是使用者說的話。
+    if entry.get("isMeta") or entry.get("isCompactSummary"):
+        return None
     content = entry.get("message", {}).get("content")
     if isinstance(content, str):
         text = content

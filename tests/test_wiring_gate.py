@@ -908,3 +908,71 @@ def test_w26b_the_control_repo_is_allowed(tmp_path):
     assert _commit_with(repo), "前置不成立：對照組的 hook 根本沒跑"
     assert not _is_deny(_run_gate(_bash("git commit -m x"), repo)), \
         "沒有任何 override，正確接線的 repo 卻被擋"
+
+
+_HP = "hooks" + "Path"   # 拆開寫：這個檔案本身不該觸發那道閘
+
+
+@pytest.mark.parametrize("var", ["GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM"])
+def test_w27_a_config_file_pointed_at_by_a_prefix_variable_is_followed(tmp_path, var):
+    """W27：用**指令列前綴**指到一個設定檔，一樣要擋。
+
+    2026-09-06 第四輪抗辯與外部審查同時指出的第五、第六條通道。它們與前四條
+    有本質差別：`%s` 三個字**從頭到尾不會出現在指令列上**，它在那個檔案裡。
+    所以字串比對的兜底永遠碰不到，實測守衛沒跑而 commit rc=0 成功。
+
+    修法不是再列一種語法，是把指令列上的環境變數前綴**交給探測子行程**，
+    讓 git 自己去解析實際生效的設定。這才是「不要拿列得出來的語法當契約」
+    那句話的正解——第五、第六條之所以存在，正因為前一版又是一次列舉。
+
+    W26 測的是**繼承**形式（gate 的環境裡就有），那一格本來就擋得住；
+    這一條測的是**前綴**形式，hook 行程繼承不到——兩者是不同的格子。
+    """ % _HP
+    empty = tmp_path / "no-hooks"
+    empty.mkdir()
+    cfg = tmp_path / "evil.cfg"
+    cfg.write_text("[core]\n\t%s = %s\n" % (_HP, str(empty).replace("\\", "/")),
+                   encoding="utf-8", newline="")
+    repo = _wired_repo_with_sentinel(tmp_path / "r")
+
+    assert not _commit_with(repo, (), {var: str(cfg)}), (
+        f"{var}：前置不成立，這條沒有真的跳過 hook"
+    )
+    cmd = "%s=%s git commit -m x" % (var, cfg)
+    assert _is_deny(_run_gate(_bash(cmd), repo)), f"{var}：前綴形式沒被擋"
+
+
+@pytest.mark.parametrize("spelling", [
+    "core.hooks''Path",
+    'core.hooks""Path',
+    "core.hoo'ks'Path",   # 拆在 hooks **中間**：前綴比對救不了，只有正規化能擋
+])
+def test_w28_quote_splitting_does_not_hide_the_key(tmp_path, spelling):
+    """W28：用引號把設定鍵拆開，字面上沒有那個字，但 git 收到的就是它。"""
+    empty = tmp_path / "no-hooks"
+    empty.mkdir()
+    repo = _wired_repo_with_sentinel(tmp_path / "r")
+    cmd = "git -c %s=%s commit -m x" % (spelling, str(empty).replace("\\", "/"))
+    assert _is_deny(_run_gate(_bash(cmd), repo)), f"{spelling}：拼接寫法沒被擋"
+
+
+@pytest.mark.parametrize("cmd", [
+    "grep -rn %s . ; git add -A && git commit -m x",
+    "git add tests/test_%s.py && git commit -m x",
+    'git commit -m "note: core.%s is how husky works"',
+    'python -c "print(1)" && git commit -m x',
+])
+def test_w29_mentioning_the_word_elsewhere_is_not_a_bypass(tmp_path, cmd):
+    """W29：W27／W28 的配對——只是**提到**那個字不得被誤擋。
+
+    兜底一度掃整條指令列，於是 `grep -rn …` 、一個叫 `test_…​.py` 的檔名、
+    甚至 `python -c "…"` 裡的 `-c` 都會擋掉 commit。這道閘自己的檔頭寫著
+    「誤擋比漏擋更糟，會讓人把整道閘關掉」——而寫兜底的當下它就擋掉了我
+    自己的一條驗證指令（2026-09-06）。
+
+    現在兜底只看**git 自己的設定賦值片段**：`-c` 只在 git 的選項段裡算，
+    其餘只認 `--config-env=`／`GIT_CONFIG_KEY_n=`／`GIT_CONFIG_PARAMETERS=`。
+    """
+    repo = _git_repo(tmp_path, precommit="#!/bin/sh\n# runs .claude/wiring-guards\n")
+    line = cmd % _HP if "%s" in cmd else cmd
+    assert not _is_deny(_run_gate(_bash(line), repo)), f"誤擋：{line}"

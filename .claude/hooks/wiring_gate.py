@@ -193,6 +193,18 @@ CONFIG_ENV_RE = re.compile(r"--config-env[= ](" + VALUE + r")")
 CONFIG_PARAM_RE = re.compile(r"'([^']*)'\s*=\s*'([^']*)'")
 # 任何提到 hooksPath 的寫法。這是**兜底**：解析不出來就擋，而不是放行。
 HOOKSPATH_MENTION_RE = re.compile(r"hooks?path", re.I)
+# 「這一段是在設定一個 git 設定值嗎」——`-c k=v`、`--config-env=k=v`、
+# `GIT_CONFIG_KEY_n=k`、`GIT_CONFIG_PARAMETERS='k'='v'`。兜底只看這些片段，
+# 不看整條指令列，否則 `grep -rn hooksPath .` 這種正常指令會被誤擋。
+CONFIG_ASSIGN_RE = re.compile(
+    r"-c\s+(" + VALUE + r")")
+# 這幾種寫在 git **之前**，所以要掃整條指令列。
+ENV_CONFIG_ASSIGN_RE = re.compile(
+    r"(?:--config-env[= ]|GIT_CONFIG_KEY_\d+=|GIT_CONFIG_PARAMETERS=)"
+    r"(" + VALUE + r"(?:\s*=\s*" + VALUE + r")?)")
+# 設定的**鍵**裡出現 hooks 就算可疑：`core.hooks''Path`、`core.hooks$K` 這種
+# 拼接／間接寫法，字面上沒有 `hooksPath`，但 git 收到的就是它。
+HOOKS_IN_KEY_RE = re.compile(r"\bcore\.hooks", re.I)
 # 續行的寫法**依 shell 而異**，不能兩種都認：bash 的行尾反引號是命令替換
 # （`` TAG=`git describe` ``），把它當續行會把下一行併上來、讓 `git` 前面失去
 # 分隔符，反而製造一個放行漏洞。工具名已經告訴我們是哪個 shell，就照它分。
@@ -255,7 +267,28 @@ def inline_config(options, line=""):
     return args
 
 
-def unaccounted_hookspath(line, config_args):
+def git_env_prefix(line):
+    """指令列上那些**會改變 git 行為**的環境變數前綴。
+
+    交給探測子行程，讓 git 自己解析實際生效的設定。只取 git 自己會讀的那些，
+    不是整條指令列的所有賦值——後者會把使用者的任意變數帶進我們的子行程。
+    """
+    # 只傳「**指向一個設定檔**」的那幾個——它們的內容 gate 看不到，只能讓 git
+    # 自己去讀。`GIT_CONFIG_PARAMETERS`／`GIT_CONFIG_COUNT` **刻意不傳**：
+    # 它們已經由 `inline_config` 轉成 `-c`，而這裡的一般切法會把
+    # `GIT_CONFIG_PARAMETERS='k'='v'` 在第一個閉引號截斷，餵給 git 一個壞值
+    # ——git 報錯、探測失敗、fail-open 放行，等於用一個修法打開另一個洞。
+    keep = ("GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM",
+            "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR",
+            "HOME", "USERPROFILE", "XDG_CONFIG_HOME")
+    out = {}
+    for name, value in ENV_ASSIGN_RE.findall(line):
+        if name in keep:
+            out[name] = value.strip("\"'")
+    return out
+
+
+def unaccounted_hookspath(line, options, config_args):
     """指令裡提到 hooksPath，而我們沒能把它算進自己的探測——這種一律擋。
 
     這是**兜底**，也是這道閘這一輪學到的東西：git 至少有四條 transient config
@@ -269,7 +302,23 @@ def unaccounted_hookspath(line, config_args):
     假裝沒事：只要指令裡出現 `hooksPath` 而我們沒把它解析進探測參數，就擋。
     誤擋的代價是使用者多打一句說明；漏擋的代價是整道閘靜默失效。
     """
-    if not HOOKSPATH_MENTION_RE.search(line):
+    # 只看**設定賦值**那些片段，不看整條指令列。看整條的話，
+    # `grep -rn hooksPath .` 或一個叫 `test_hookspath.py` 的檔名就會擋掉 commit
+    # ——誤擋比漏擋更糟，這道閘自己的檔頭就這樣寫（2026-09-06 抗辯實測）。
+    #
+    # 比對前先把引號拿掉：`git -c core.hooks''Path=<空目錄>` 是 shell 拼接，
+    # 字面上沒有那個字，但 git 收到的是 `core.hooksPath`。同理 `core.hooks$K`
+    # 這種變數間接——所以判準放寬成「設定的鍵裡出現 hooks」。
+    # `-c` 只在 **git 自己的選項段**裡才算設定賦值。掃整條指令列的話，
+    # `python -c "…core.hooksPath…"` 這種完全無關的 `-c` 會被當成 git 設定
+    # ——寫這段的當下它就擋掉了我自己的一條驗證指令。
+    settings = (CONFIG_ASSIGN_RE.findall(options)
+                + ENV_CONFIG_ASSIGN_RE.findall(line))
+    if not settings:
+        return False
+    suspicious = [s for s in settings
+                  if HOOKS_IN_KEY_RE.search(s.replace("'", "").replace('"', ""))]
+    if not suspicious:
         return False
     accounted = any(HOOKSPATH_MENTION_RE.search(a) for a in config_args)
     return not accounted
@@ -353,7 +402,7 @@ def repo_root(cwd=None):
     return root if out.returncode == 0 and root else None
 
 
-def precommit_path(root, config_args=()):
+def precommit_path(root, config_args=(), env_prefix=None):
     """Where git will actually look for the pre-commit hook, or None.
 
     Not ``<root>/.git/hooks/pre-commit``: in a worktree or a submodule ``.git``
@@ -362,11 +411,24 @@ def precommit_path(root, config_args=()):
     error is just as real — with ``core.hooksPath`` set (husky, lefthook) that
     path can exist while git reads a different one, which would pass a repo
     whose guards never run. ``git rev-parse --git-path`` answers both.
+
+    ⚠ **指令列上的環境變數前綴要交給這個子行程**（`env_prefix`），否則探測問的是
+    「gate 自己的設定」而不是「這次 commit 會用的設定」。少了它，
+    `GIT_CONFIG_GLOBAL=<檔> git commit`、`GIT_CONFIG_SYSTEM=…`、`HOME=<偽 home>`
+    這些**指到一個設定檔**的寫法完全繞得過去：`hooksPath` 三個字從頭到尾不會
+    出現在指令列上，字串比對永遠碰不到，而實測守衛沒跑、commit rc=0 成功。
+
+    這才是 2026-09-06 外部審查那句話的正解——不要列舉語法，讓 git 自己去解析
+    實際生效的設定。前一版加了 `--config-env` 與 `GIT_CONFIG_PARAMETERS` 兩條
+    解析，那仍然是列舉，於是第五、第六條（GLOBAL／SYSTEM）當天就被找出來。
     """
+    env = dict(os.environ)
+    env.update(env_prefix or {})
     try:
         out = subprocess.run(
             ["git", *config_args, "rev-parse", "--git-path", "hooks/pre-commit"],
-            capture_output=True, encoding="utf-8", errors="replace", timeout=5, cwd=root,
+            capture_output=True, encoding="utf-8", errors="replace", timeout=5,
+            cwd=root, env=env,
         )
     except Exception:
         return None
@@ -464,13 +526,13 @@ def note_unregistered(root, declared):
         return  # 提示失敗絕不影響 commit
 
 
-def check_wiring(root, config_args=()):
+def check_wiring(root, config_args=(), env_prefix=None):
     """Return a deny reason, or None when the repo's guards are properly wired."""
     decl = os.path.join(root, DECL_REL)
     if not os.path.isfile(decl):
         return None  # repo has not opted in — do nothing at all
 
-    installed = precommit_path(root, config_args)
+    installed = precommit_path(root, config_args, env_prefix)
     if installed is None:
         return None  # cannot ask git where hooks live → fail open, never guess
     if not os.path.isfile(installed):
@@ -544,10 +606,10 @@ def main(argv=None):
             deny(W1_REASON)
             return 0
         config_args = inline_config(options, line)
-        if unaccounted_hookspath(line, config_args):
+        if unaccounted_hookspath(line, options, config_args):
             deny(HOOKSPATH_REASON)
             return 0
-        reason = check_wiring(root, config_args)
+        reason = check_wiring(root, config_args, git_env_prefix(line))
         if reason:
             deny(reason)
     except Exception:

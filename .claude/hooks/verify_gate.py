@@ -97,6 +97,11 @@ def is_real_user_prompt(entry):
     """
     if entry.get("type") != "user":
         return False
+    # `isMeta`／`isCompactSummary` 是產品自己給的旗標，標記 harness 注入。
+    # 載入 skill 會產生 `isMeta: true` 的條目，拿文字開頭猜會把它當成新回合。
+    # 與 goal_gate 的 `prompt_text` 同一套判準。
+    if entry.get("isMeta") or entry.get("isCompactSummary"):
+        return False
     content = entry.get("message", {}).get("content")
     if isinstance(content, str):
         text = content

@@ -6,9 +6,10 @@
     "tool_result": 24884,
     "real_str": 289,
     "harness_list": 10,
-    "real_list": 591
+    "real_list": 591,
+    "isMeta_true_among_prompt_shaped": 88
   },
-  "_why": "這份 fixture 的存在理由：2026-09-06 之前所有測試都用手寫的transcript 形狀，而那個形狀 Claude Code 不會產生——67 條測試全綠而回合判定在生產環境是反的。fixture 的來源必須是產品本身。",
+  "_why": "這份 fixture 的存在理由：2026-09-06 之前所有測試都用手寫的transcript 形狀，而那個形狀 Claude Code 不會產生——67 條測試全綠而回合判定在生產環境是反的。fixture 的來源必須是產品本身。　⚠ 2026-09-06 補：第一版只收了五種形狀，漏掉產品自己給的機器可讀旗標 `isMeta`——載入一個 skill 就會產生那種條目，而它被判成新的回合邊界，把上一次的失敗整個抹掉。旗標是契約，文字開頭只是猜測。",
   "shapes": {
     "real_str": {
       "type": "user",
@@ -52,6 +53,30 @@
           {
             "type": "text",
             "text": "REDACTED USER TEXT"
+          }
+        ]
+      }
+    },
+    "harness_meta_skill": {
+      "type": "user",
+      "isMeta": true,
+      "message": {
+        "content": [
+          {
+            "type": "text",
+            "text": "Base directory for this skill: REDACTED"
+          }
+        ]
+      }
+    },
+    "harness_compact_summary": {
+      "type": "user",
+      "isCompactSummary": true,
+      "message": {
+        "content": [
+          {
+            "type": "text",
+            "text": "REDACTED SUMMARY"
           }
         ]
       }
