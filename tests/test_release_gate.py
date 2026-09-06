@@ -109,7 +109,8 @@ def test_rg2_a_matching_attestation_passes(tmp_path, monkeypatch):
     """
     monkeypatch.setattr(rel, "ATTEST_DIR", str(tmp_path))
     commit = "b" * 40
-    rel.write_attestation(commit, {"skeptic": "REFUTED"}, "ship", "9 passed")
+    rel.write_attestation(commit, {"skeptic": "REFUTED", "red-team": "REFUTED",
+                                   "simplifier": "REFUTED"}, "ship", "9 passed")
     assert rel.check_review(commit, "") == ""
 
 
@@ -304,7 +305,18 @@ def test_rg15_an_empty_lens_record_is_not_accepted(tmp_path, monkeypatch):
     rel.write_attestation(commit, {}, "", "9 passed")
     assert rel.check_review(commit, ""), "空的鏡頭裁決被當成審查"
 
+    # 只有一個鏡頭仍然不算：讀取端與寫入端必須是**同一份標準**。原本這裡只判
+    # 「lenses 非空」，於是 `{"x": "y"}` 過得去——而把關不可逆動作的正是這一側，
+    # `parse_lenses`（寫入端）的嚴格因此白做（2026-09-06 抗辯）。
     rel.write_attestation(commit, {"skeptic": "REFUTED"}, "ship", "9 passed")
+    problem = rel.check_review(commit, "")
+    assert problem and "red-team" in problem, f"只有一個鏡頭卻放行：{problem!r}"
+
+    rel.write_attestation(commit, {"x": "y"}, "ok", "9 passed")
+    assert rel.check_review(commit, ""), "亂取名的鏡頭被當成審查"
+
+    rel.write_attestation(commit, {"skeptic": "REFUTED", "red-team": "REFUTED",
+                                   "simplifier": "REFUTED"}, "ship", "9 passed")
     assert rel.check_review(commit, "") == "", "齊全的紀錄反而被擋——閘不得鎖死正常流程"
 
 
@@ -330,3 +342,68 @@ def test_rg16_a_dry_run_leaves_no_record(tmp_path, monkeypatch):
     assert not list(tmp_path.iterdir()), (
         f"乾跑留下了紀錄：{[p.name for p in tmp_path.iterdir()]}"
     )
+
+
+def test_rg17_a_later_attest_does_not_erase_the_bypass_trace(tmp_path, monkeypatch):
+    """RG17：事後補一次 `--attest` 不得把破窗的痕跡抹掉。
+
+    RG14 堵的是正向（破窗紀錄不能當審查），反向沒堵：對同一個 commit 補一次
+    完整的 `--attest`，`adversarial_review_bypassed` 就變回 false，痕跡消失
+    且沒有任何警告。而觸發者不是攻擊者——那正是這個專案檔頭自己描述的形態
+    （1.4.1／1.4.2 都是「發佈後才補審查」）。
+
+    留痕是這條通道獲准存在的**唯一**條件；能被自家指令抹掉的痕跡不算痕跡。
+    """
+    monkeypatch.setattr(rel, "ATTEST_DIR", str(tmp_path))
+    commit = "a" * 40
+    rel.write_attestation(commit, {}, "", "", override_reason="prod outage")
+
+    doc = rel.write_attestation(
+        commit, {"skeptic": "REFUTED", "red-team": "REFUTED",
+                 "simplifier": "REFUTED"}, "ship", "9 passed")
+    assert doc["adversarial_review_bypassed"] is True, "破窗的痕跡被事後的審查抹掉了"
+    assert doc.get("bypassed_earlier") is True
+    assert doc["bypass_reason"] == "prod outage", "跳過的理由不見了"
+
+
+def test_rg18_preflight_checks_that_gh_is_usable_not_merely_installed(monkeypatch):
+    """RG18：`gh` 要驗**用得了**，不是驗 PATH 上有沒有這個執行檔。
+
+    實測 `GH_TOKEN=invalid gh --version` rc=0 而 `gh auth status` rc=1——token
+    過期或 scope 不足時，前置條件會放行，然後在**不可逆的 git push 之後**才炸。
+    這道閘的檔頭寫著「前置條件要在不可逆動作之前問完」，那就得問對問題。
+    """
+    calls = []
+
+    def fake_run(args, **kw):
+        calls.append(list(args))
+        rc = 1 if args[:3] == ["gh", "auth", "status"] else 0
+        return SimpleNamespace(returncode=rc, stdout="", stderr="not logged in")
+
+    monkeypatch.setattr(rel, "run", fake_run)
+    monkeypatch.setattr(rel, "check_tests", lambda: ("", "9 passed"))
+    monkeypatch.setattr(rel, "check_clean_tree", lambda: "")
+    monkeypatch.setattr(rel, "check_version_matches", lambda v: "")
+    monkeypatch.setattr(rel, "check_review", lambda c, o: "")
+    monkeypatch.setattr(rel, "head_commit", lambda: "b" * 40)
+
+    problems, _, _ = rel.preflight("9.9.9", "")
+    assert any("gh" in p for p in problems), f"gh 認證失敗卻放行：{problems}"
+    assert ["gh", "auth", "status"] in calls, "問的不是 `gh auth status`"
+
+
+def test_rg19_a_failed_release_says_the_tag_is_already_public(monkeypatch):
+    """RG19：push 成功、建立 Release 失敗時，必須講明 tag 已經公開。
+
+    只說「建立 Release 失敗」會讓人以為什麼都沒發生。push 是不可逆的，而
+    檔頭稱這是一筆交易——那就得說清楚交易停在哪一步，以及怎麼收回。
+    """
+    def fake_run(args, **kw):
+        rc = 1 if args[:2] == ["gh", "release"] else 0
+        stdout = "b" * 40 if args[:2] == ["git", "rev-list"] else ""
+        return SimpleNamespace(returncode=rc, stdout=stdout, stderr="HTTP 403")
+
+    monkeypatch.setattr(rel, "run", fake_run)
+    problem = rel.do_release("9.9.9", "b" * 40, "")
+    assert "已經推上 origin" in problem, f"沒告知 tag 已公開：{problem!r}"
+    assert "push origin :refs/tags/v9.9.9" in problem, "沒給收回的方法"

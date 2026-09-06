@@ -38,7 +38,22 @@ W2 刻意不去比對「版控裡的模板副本」：那需要猜每個 repo �
 指令字串，而「這條指令會不會跳過 hook」無法只靠讀字串完全判定。經 `eval`／`sh -c`／
 `xargs`／`Start-Process`／git alias 送出的 commit，本層看不到；在字串裡引用
 `git commit --no-verify` 當說明文字則會被誤擋。真正擋得住每一個提交者的是
-`wiring_runner.sh`——那是 git 自己執行的 pre-commit，換寫法繞不過。
+`wiring_runner.sh`——那是 git 自己執行的 pre-commit。
+
+⚠ **但「繞不過」是過度宣稱，2026-09-06 外部審查實測推翻。** git 的 `core.hooksPath`
+可以指到別處，而它至少有四條 transient config 通道可設：`-c`、
+`GIT_CONFIG_COUNT/KEY_n/VALUE_n`、`--config-env=`、`GIT_CONFIG_PARAMETERS`。
+實測 `git --config-env=core.hooksPath=<空目錄> commit`：守衛一次都沒跑、
+**commit rc=0 成功**，而當時的 gate 回 allow。
+
+誠實的宣稱是：**git 用 repo 自己的 hook path 時，每一次 commit 都會經過 runner；
+而這道 PreToolUse 另外偵測常見的 runtime override，偵測不到的就擋（fail-closed）。**
+真要做到「提交者繞不過」，enforcement 必須移到 server 端（分支保護／CI），
+那不在本套件的範圍內。
+
+這一課比那兩條繞道本身重要：**只要一道閘的正確性取決於外部系統的實際狀態，
+就不能拿「我列得出來的幾種輸入語法」當成契約。** 前三輪抗辯各自栽在同一個
+形狀上——prompt 的形狀、測試指令的語法、淘汰的情境——這是第四次。
 
 介面：stdin 收 hook JSON（tool_name / tool_input.command）；
       stdout 輸出 deny JSON 或無輸出。任何解析錯誤一律 fail-open
@@ -93,6 +108,25 @@ STRIP_PATTERNS = [
     (re.compile(r"--(?:message|file)(?:=|\s+)'[^']*'"), " "),
     (re.compile(r"--(?:message|file)(?:=|\s+)\S+"), " "),
 ]
+
+HOOKSPATH_REASON = """This commit sets core.hooksPath and the gate cannot follow it
+(fable wiring_gate).
+
+core.hooksPath decides where git looks for pre-commit — which is where the wiring
+guards actually run. Point it somewhere else and the guards never execute, with no
+trace in git history. Git accepts that value through at least four channels: `-c`,
+GIT_CONFIG_COUNT/KEY_n/VALUE_n, `--config-env=`, and GIT_CONFIG_PARAMETERS.
+
+This gate mirrors the ones it can parse into its own probe, so that it asks git the
+same question the commit will. When it sees `hooksPath` on the line and cannot
+account for it, it stops instead of guessing: it would otherwise report on a
+configuration different from the one about to run — a green that means nothing.
+
+Pick one:
+  1. Drop the hooksPath override and let the repo's own hooks run.
+  2. The guards are genuinely red and you must defer → ALLOW_UNWIRED=1 git commit ...
+  3. This is a spelling the gate should understand → open an issue with the exact
+     command; enumerating spellings is how this gate got here, so it wants the case."""
 
 W1_REASON = """This commit uses --no-verify (fable wiring_gate).
 
@@ -151,7 +185,14 @@ def commit_segments(stripped):
 GIT_C_RE = re.compile(r"-C\s+(" + VALUE + r")")
 GIT_CONFIG_RE = re.compile(r"-c\s+(" + VALUE + r")")
 # 指令列前綴形式的環境變數：`GIT_CONFIG_COUNT=1 … git commit`。
-ENV_ASSIGN_RE = re.compile(r"(?:^|\s)(GIT_CONFIG_[A-Z_0-9]+)=(" + VALUE + r")")
+ENV_ASSIGN_RE = re.compile(r"(?:^|\s)([A-Za-z_][A-Za-z0-9_]*)=(" + VALUE + r")")
+# `git --config-env=<key>=<envvar>`：git 官方的第三條 transient config 通道，
+# 語義等同 `-c`，只是值從環境變數取。
+CONFIG_ENV_RE = re.compile(r"--config-env[= ](" + VALUE + r")")
+# `GIT_CONFIG_PARAMETERS="'k'='v' 'k2'='v2'"`：第四條，較內部但目前仍有效。
+CONFIG_PARAM_RE = re.compile(r"'([^']*)'\s*=\s*'([^']*)'")
+# 任何提到 hooksPath 的寫法。這是**兜底**：解析不出來就擋，而不是放行。
+HOOKSPATH_MENTION_RE = re.compile(r"hooks?path", re.I)
 # 續行的寫法**依 shell 而異**，不能兩種都認：bash 的行尾反引號是命令替換
 # （`` TAG=`git describe` ``），把它當續行會把下一行併上來、讓 `git` 前面失去
 # 分隔符，反而製造一個放行漏洞。工具名已經告訴我們是哪個 shell，就照它分。
@@ -181,18 +222,57 @@ def inline_config(options, line=""):
     # 只涵蓋 `git` 與 `commit` 之間那一段，所以掃的是整條指令列。
     # ⚠ 第一版只掃 `options`，繞道照樣過——而我當時「驗證它被擋了」是假的：
     # 那個測試 repo 本來就會因為別的理由被擋。用正確接線的 repo 才測得到。
-    inline_env = dict(ENV_ASSIGN_RE.findall(line or options))
+    whole = line or options
+    inline_env = {k: v.strip("\"'") for k, v in ENV_ASSIGN_RE.findall(whole)}
     for src in (inline_env, os.environ):
         try:
             count = int(src.get("GIT_CONFIG_COUNT", "0"))
         except (TypeError, ValueError):
-            continue
+            count = 0
         for i in range(min(count, 64)):   # 上限：別讓一個大數字把我們卡住
             key = src.get("GIT_CONFIG_KEY_%d" % i)
             val = src.get("GIT_CONFIG_VALUE_%d" % i)
             if key and val is not None:
                 args += ["-c", "%s=%s" % (key.strip("\"'"), val.strip("\"'"))]
+        # 第四條通道：`GIT_CONFIG_PARAMETERS="'k'='v' 'k2'='v2'"`。
+        # 指令列前綴形式的值自己就含引號與空白，一般的 `VAR=值` 切法會在第一個
+        # 閉引號斷掉（實測只取到 `'core.hooksPath'`）。所以看到這個變數名時，
+        # 直接在整條指令列上撈 `'k'='v'` 這個形狀。
+        blob = src.get("GIT_CONFIG_PARAMETERS")
+        if blob is None and "GIT_CONFIG_PARAMETERS" in whole:
+            blob = whole
+        for k, v in CONFIG_PARAM_RE.findall(blob or ""):
+            args += ["-c", "%s=%s" % (k, v)]
+    # 第三條通道：`git --config-env=<key>=<envvar>`，值從環境變數取。
+    for pair in CONFIG_ENV_RE.findall(whole):
+        pair = pair.strip("\"'")
+        if "=" not in pair:
+            continue
+        key, envvar = pair.split("=", 1)
+        val = inline_env.get(envvar, os.environ.get(envvar))
+        if val is not None:
+            args += ["-c", "%s=%s" % (key, val)]
     return args
+
+
+def unaccounted_hookspath(line, config_args):
+    """指令裡提到 hooksPath，而我們沒能把它算進自己的探測——這種一律擋。
+
+    這是**兜底**，也是這道閘這一輪學到的東西：git 至少有四條 transient config
+    通道（`-c`、`GIT_CONFIG_COUNT/KEY/VALUE`、`--config-env`、
+    `GIT_CONFIG_PARAMETERS`），而前三輪抗辯只想到前兩條——第三條是外部審查
+    實測給出來的：`git --config-env=core.hooksPath=EMPTY commit` 讓守衛一次
+    都沒跑而 **commit rc=0 成功**，gate 卻回 allow。
+
+    列舉寫法永遠慢一步。真正的不變量是「git 實際會用的 hooksPath」，而這道閘
+    看不到那個值（它是 PreToolUse，繼承不到指令列的 env 前綴）。看不到就不能
+    假裝沒事：只要指令裡出現 `hooksPath` 而我們沒把它解析進探測參數，就擋。
+    誤擋的代價是使用者多打一句說明；漏擋的代價是整道閘靜默失效。
+    """
+    if not HOOKSPATH_MENTION_RE.search(line):
+        return False
+    accounted = any(HOOKSPATH_MENTION_RE.search(a) for a in config_args)
+    return not accounted
 
 
 def target_dir(options):
@@ -463,7 +543,11 @@ def main(argv=None):
         if verdict == "NOVERIFY":
             deny(W1_REASON)
             return 0
-        reason = check_wiring(root, inline_config(options, line))
+        config_args = inline_config(options, line)
+        if unaccounted_hookspath(line, config_args):
+            deny(HOOKSPATH_REASON)
+            return 0
+        reason = check_wiring(root, config_args)
         if reason:
             deny(reason)
     except Exception:

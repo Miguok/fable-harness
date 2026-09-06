@@ -112,6 +112,15 @@ def write_attestation(commit, lenses, judge, tests, override_reason=""):
         "adversarial_review_bypassed": bool(override_reason),
         "bypass_reason": override_reason,
     }
+    prev = read_attestation(commit)
+    if prev and prev.get("adversarial_review_bypassed") and not override_reason:
+        # 破窗的痕跡不得被一次事後的 `--attest` 抹掉。第二輪只堵了「破窗紀錄
+        # 不能當審查」這個正向，反向沒堵：對同一個 commit 補一次 --attest，
+        # `adversarial_review_bypassed` 就變回 false，痕跡消失且無警告。
+        # 而觸發者不是攻擊者，是檔頭自己描述的正常流程（發佈後才補審查）。
+        doc["bypassed_earlier"] = True
+        doc["bypass_reason"] = prev.get("bypass_reason", "")
+        doc["adversarial_review_bypassed"] = True
     with open(attestation_path(commit), "w", encoding="utf-8", newline="") as fh:
         json.dump(doc, fh, ensure_ascii=False, indent=2)
         fh.write("\n")
@@ -201,9 +210,18 @@ def check_review(commit, override_reason):
                 "  要正式發佈就先跑三鏡頭抗辯再 --attest；仍要跳過就每次都明示 "
                 "--override-review --reason \"…\"。"
                 % (doc.get("bypass_reason") or "未填"))
-    if not doc.get("lenses") or not doc.get("judge"):
-        return ("審查紀錄缺鏡頭裁決或裁定（lenses=%r judge=%r）——形式齊全是最容易的假綠。"
-                % (doc.get("lenses"), doc.get("judge")))
+    if not doc.get("judge"):
+        return "審查紀錄沒有裁定（judge 留白）——形式齊全是最容易的假綠。"
+    lenses = doc.get("lenses")
+    if not isinstance(lenses, dict):
+        return "審查紀錄的 lenses 不是一組鏡頭裁決：%r" % (lenses,)
+    # 讀取端與寫入端必須是**同一份標準**。原本這裡只判「非空」，於是
+    # `{"x": "y"}` 過得去——而 `parse_lenses`（寫入端）要求三個具名鏡頭且
+    # 不得留白。把關不可逆動作的是鬆的那一側，等於嚴格那一側白做。
+    missing = [n for n in LENS_NAMES if not str(lenses.get(n, "")).strip()]
+    if missing:
+        return ("審查紀錄缺這些鏡頭的裁決：%s（有的是 %s）"
+                % (", ".join(missing), ", ".join(sorted(lenses)) or "無"))
     return ""
 
 
@@ -224,9 +242,15 @@ def preflight(version, override_reason):
     # `gh` 在 do_release 的最後一步才用到，而它前面是 `git push`——不可逆。
     # 沒有這條，PATH 裡少一個 gh 就會變成「tag 推上去了、Release 沒建成」，
     # 而檔頭說這是一筆交易。前置條件要在不可逆動作之前問完。
-    if run(["gh", "--version"]).returncode != 0:
-        problems.append("`gh` 不可用——它是建立 Release 的唯一途徑，"
-                        "而它前面的 git push 不可逆")
+    # 驗的是 `gh auth status` 不是 `gh --version`：後者只回答「PATH 上有沒有這個
+    # 執行檔」。實測 `GH_TOKEN=invalid gh --version` rc=0 而 `gh auth status` rc=1
+    # ——token 過期／scope 不足時，前置條件會放行，然後在**不可逆的 git push
+    # 之後**才炸。這道閘的檔頭說前置條件要在不可逆動作之前問完。
+    gh = run(["gh", "auth", "status"])
+    if gh.returncode != 0:
+        problems.append("`gh` 不可用或未通過認證（rc=%d）——它是建立 Release 的"
+                        "唯一途徑，而它前面的 git push 不可逆。%s"
+                        % (gh.returncode, (gh.stderr or gh.stdout or "").strip()[:200]))
     return problems, commit, summary
 
 
@@ -253,7 +277,12 @@ def do_release(version, commit, override_reason):
         return "推送 tag 失敗：%s" % (out.stderr or "").strip()
     out = run(["gh", "release", "create", tag, "--title", tag, "--notes", notes])
     if out.returncode != 0:
-        return "建立 Release 失敗：%s" % (out.stderr or "").strip()
+        # tag 已經公開了，而這是不可逆的。只說「建立 Release 失敗」會讓人以為
+        # 什麼都沒發生——檔頭稱這是一筆交易，那就得說清楚交易停在哪一步。
+        return ("建立 Release 失敗：%s\n"
+                "  ⚠ tag %s **已經推上 origin**（那一步不可逆）。要收回請自己下\n"
+                "     git push origin :refs/tags/%s && git tag -d %s"
+                % ((out.stderr or "").strip(), tag, tag, tag))
     return ""
 
 

@@ -157,6 +157,25 @@ The current version is also kept in [VERSION](VERSION).
 兩種情況給同樣的數字所以分不出來、以及測試 repo 因為**別的理由**被擋而讓修法看起來
 有效。第三條尤其值得記：我當時手動「驗證」過它，而那次驗證本身是假的。
 
+**外部審查（GPT-5.6 Sol）在三輪內部抗辯之後，又找到一個 P0**——而它正好回答了
+我在送審包裡問的那個問題「`-c` 與 `GIT_CONFIG_*` 之外還有沒有第三種寫法」：
+
+- 🔴 **`git --config-env=core.hooksPath=<空目錄> commit` 讓接線閘完全失效。**
+  那是 git 官方的第三條 transient config 通道，語義等同 `-c`，只是值從環境變數取。
+  我自己重現確認：守衛一次都沒跑、**commit rc=0 直接成功**，而 gate 回 allow。
+  第四條 `GIT_CONFIG_PARAMETERS` 同樣有效。兩條現在都會被鏡射進閘自己的探測，
+  而且**只要指令裡出現 `hooksPath` 而閘解析不出來，一律擋**（fail-closed）——
+  因為列舉寫法永遠慢一步。
+
+- ⚠ **同批修正一個過度宣稱**：`wiring_gate` 的檔頭原本寫 runner「換寫法繞不過」。
+  那是錯的。誠實的說法是：git 用 repo 自己的 hook path 時每次 commit 都會經過
+  runner，而 PreToolUse 另外偵測常見的 runtime override、偵測不到就擋。要做到
+  「提交者繞不過」，enforcement 必須在 server 端，那不在本套件範圍內。
+
+外部審查同時指出這四輪是**同一個形狀的四次**：prompt 的形狀、測試指令的語法、
+淘汰的情境、git 的設定通道——每一次都是「實作與測試圍著我當下想得到的表示法，
+而真正的不變量比表示法大」。這句話已寫進 `wiring_gate.py` 的檔頭。
+
 ### Known limitations
 
 - **`.claude/fable-verifier` 是受管束方自己可寫的**。repo 可以宣告一條很容易變綠的

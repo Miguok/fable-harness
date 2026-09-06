@@ -766,3 +766,83 @@ def test_w23b_a_harmless_git_config_env_is_not_blocked(tmp_path):
         "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=user.name GIT_CONFIG_VALUE_0=x "
         "git commit -m x"), repo)
     assert not _is_deny(out), "正確接線的 repo 被無關的設定誤擋了"
+
+
+def _wired_repo_with_sentinel(tmp_path):
+    """一個正確接線的 repo，pre-commit 是會出聲並回非零的哨兵。
+
+    用真實 git 跑，因為這一組要證明的是「git 到底有沒有執行那個 hook」——
+    只測 gate 的解析器會回到它出事的那個模式：測我想到的寫法，不是測不變量。
+    """
+    repo = _git_repo(tmp_path, precommit=(
+        "#!/bin/sh\n# runs .claude/wiring-guards\necho SENTINEL_RAN\nexit 99\n"))
+    os.chmod(str(repo / ".git" / "hooks" / "pre-commit"), 0o755)
+    (repo / "f.txt").write_text("x\n", encoding="utf-8", newline="")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    return repo
+
+
+def _commit_with(repo, extra_args=(), env=None):
+    e = dict(os.environ)
+    e.update(env or {})
+    r = subprocess.run(
+        ["git"] + list(extra_args) + ["-c", "user.email=t@t", "-c", "user.name=t",
+                                      "commit", "-m", "probe"],
+        cwd=str(repo), capture_output=True, encoding="utf-8",
+        errors="replace", env=e, timeout=60)
+    return "SENTINEL_RAN" in (r.stdout + r.stderr)
+
+
+def test_w24_the_sentinel_really_runs_on_an_ordinary_commit(tmp_path):
+    """W24：前置——正常 commit 時 git **真的**執行了那個 hook。
+
+    沒有這條，下面兩條「哨兵沒跑」就證明不了任何事：一個根本不會跑 hook 的
+    fixture 會讓它們全綠。
+    """
+    assert _commit_with(_wired_repo_with_sentinel(tmp_path)), \
+        "前置不成立：正常 commit 也沒跑 pre-commit，這組測試量不到東西"
+
+
+@pytest.mark.parametrize("args,env,label", [
+    (["--config-env=core.hooksPath=FABLE_HOOKS"], {"FABLE_HOOKS": "@EMPTY@"},
+     "--config-env（git 官方第三條 transient config 通道）"),
+    ([], {"GIT_CONFIG_PARAMETERS": "'core.hooksPath'='@EMPTY@'"},
+     "GIT_CONFIG_PARAMETERS（第四條）"),
+])
+def test_w25_hookspath_overrides_really_skip_the_hook_and_must_be_denied(
+        tmp_path, args, env, label):
+    """W25：這兩條真的會讓 hook 完全不執行，所以必須被擋。
+
+    2026-09-06 外部審查（ChatGPT GPT-5.6 Sol）指出並實測，而**三輪內部抗辯
+    全都沒看到**。`--config-env=core.hooksPath=EMPTY` 的實測結果是哨兵沒跑、
+    **commit rc=0 直接成功**，而 gate 回 allow——完整的假綠。
+
+    這條先驗「繞道真的成立」（哨兵沒跑）再驗「gate 擋下來」。少了前半，
+    測試會退化成「gate 對某個字串回 deny」，而那不是被保護的東西。
+    """
+    empty = tmp_path / "no-hooks"
+    empty.mkdir()
+    repo = _wired_repo_with_sentinel(tmp_path / "r")
+    real_env = {k: v.replace("@EMPTY@", str(empty).replace("\\", "/"))
+                for k, v in env.items()}
+    real_args = [a.replace("@EMPTY@", str(empty).replace("\\", "/")) for a in args]
+
+    assert not _commit_with(repo, real_args, real_env), (
+        f"{label}：前置不成立，這條繞道沒有真的跳過 hook，測試量不到東西"
+    )
+
+    prefix = " ".join(f"{k}={v}" for k, v in real_env.items())
+    cmd = ("%s git %s commit -m probe" % (prefix, " ".join(real_args))).strip()
+    assert _is_deny(_run_gate(_bash(cmd), repo)), f"{label}：繞道沒被擋"
+
+
+def test_w25b_an_unrelated_config_env_is_not_blocked(tmp_path):
+    """W25b：W25 的配對——與 hooksPath 無關的 `--config-env` 不得誤擋。
+
+    沒有這條，「看到 --config-env 就擋」也會讓 W25 全綠，而那會擋掉一個
+    git 官方支援的正常用法。
+    """
+    repo = _git_repo(tmp_path, precommit="#!/bin/sh\n# runs .claude/wiring-guards\n")
+    out = _run_gate(_bash(
+        "MYNAME=alice git --config-env=user.name=MYNAME commit -m x"), repo)
+    assert not _is_deny(out), "無關的 --config-env 被誤擋了"
