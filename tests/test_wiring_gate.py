@@ -976,3 +976,54 @@ def test_w29_mentioning_the_word_elsewhere_is_not_a_bypass(tmp_path, cmd):
     repo = _git_repo(tmp_path, precommit="#!/bin/sh\n# runs .claude/wiring-guards\n")
     line = cmd % _HP if "%s" in cmd else cmd
     assert not _is_deny(_run_gate(_bash(line), repo)), f"誤擋：{line}"
+
+
+def test_w30_git_dir_redirect_is_denied_and_work_tree_is_not(tmp_path):
+    """W30：把 env 交給探測之後，兩個方向都要對。
+
+    `GIT_DIR=<別的 repo>/.git` 讓 git 用別人的 hooks——實測哨兵不跑，必須擋。
+    `GIT_WORK_TREE=<別處>` **不會**改 hooks 的位置——實測哨兵照跑，不得誤擋。
+
+    ⚠ 我原本以為兩個都該擋，是實測推翻了那個推論。這一對寫在一起，是因為
+    「把使用者控制的環境變數餵進自己的 git 子行程」是 2026-09-06 新開的面，
+    而它同時可能造成漏擋與誤擋——只驗一邊會漏掉另一邊。
+    """
+    repo = _wired_repo_with_sentinel(tmp_path / "r")
+    other = _git_repo(tmp_path / "other", declare=True)   # 沒有 pre-commit
+
+    assert not _commit_with(repo, (), {"GIT_DIR": str(other / ".git")}), \
+        "前置不成立：GIT_DIR 沒有真的讓 hook 不跑"
+    assert _commit_with(repo, (), {"GIT_WORK_TREE": str(other)}), \
+        "前置不成立：GIT_WORK_TREE 竟然讓 hook 不跑了（與實測相反）"
+
+    deny = _run_gate(_bash("GIT_DIR=%s git commit -m x" % (other / ".git")), repo)
+    assert _is_deny(deny), "GIT_DIR 指到別的 repo，守衛不會跑，卻沒被擋"
+
+    allow = _run_gate(_bash("GIT_WORK_TREE=%s git commit -m x" % other), repo)
+    assert not _is_deny(allow), "GIT_WORK_TREE 不影響 hooks，卻被誤擋"
+
+
+def test_w31_a_hostile_home_gitconfig_does_not_get_executed(tmp_path):
+    """W31：把 `HOME` 交給探測，不得變成執行任意指令的入口。
+
+    這道閘為了不再列舉 hooksPath 的寫法，改成把指令列上的環境變數前綴餵進
+    自己的 git 子行程。那是**使用者控制的值進入我們的行程**——如果 git 會因為
+    某個設定去執行東西（`core.pager`、`core.sshCommand`、`core.fsmonitor`、
+    alias），一道防繞道的修法就變成了任意指令執行。
+
+    實測 `git rev-parse` 不碰這些（哨兵檔案沒被建立），所以這條是**回歸守衛**：
+    哪天探測換成別的 git 子指令，它會叫。
+    """
+    marker = tmp_path / "PWNED.txt"
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".gitconfig").write_text(
+        "[core]\n\tpager = touch %s\n\tsshCommand = touch %s\n"
+        "\tfsmonitor = touch %s\n[alias]\n\trev-parse = !touch %s\n"
+        % (marker, marker, marker, marker), encoding="utf-8", newline="")
+    repo = _wired_repo_with_sentinel(tmp_path / "r")
+
+    _run_gate(_bash("HOME=%s git commit -m x" % home), repo)
+    assert not marker.exists(), (
+        "探測讀了惡意 .gitconfig 並執行了它的指令——防繞道的修法變成了 RCE"
+    )
