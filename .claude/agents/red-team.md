@@ -15,6 +15,8 @@ tools: Read, Grep, Glob, Bash
 
 能用 Read/Grep 實查的必須實查，不得只憑描述推論。
 
+**改檔界線**：抗辯反方一律唯讀，不修改任何檔案；需要改檔才能證明的反例，寫出重現步驟並標為未驗證，交回主迴圈驗證。
+
 回傳格式（純資料）：
 ```
 verdict: REFUTED | SURVIVED

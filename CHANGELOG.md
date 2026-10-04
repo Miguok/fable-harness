@@ -12,6 +12,11 @@ The current version is also kept in [VERSION](VERSION).
 
 ## [Unreleased]
 
+### Changed
+
+- **反方唯讀**：skeptic 與 red-team 不再修改任何檔案；需要改檔才能證明的反例，
+  改為寫出重現步驟並標為未驗證，交回主迴圈驗證。
+
 ## [1.5.0] — 2026-09-07
 
 ### Added
