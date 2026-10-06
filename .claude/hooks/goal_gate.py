@@ -455,6 +455,51 @@ NOT_A_RUN_RE = re.compile(r"--collect-only|--co\b|--version|--fixtures|--markers
 PIPELINE_TAIL_RE = re.compile(r"\s*[0-9]?\s*[|>].*$", re.S)
 
 
+# 只改「輸出長相」的 pytest 旗標，不進目標**身分**（goal_identity）。
+# 根因：鍵原本把 `--tb=no`、`-q`、`-rf` 這類旗標也算進去，於是 `--tb=no` 的紅與
+# `--tb=short -rf` 的綠被當成兩個目標，紅永遠解不掉（2026-10-06 以真實
+# transcript 重放查得）。改變「跑哪些測試」的旗標（-k／-x／-s／路徑）一律保留。
+# ⚠ 鍵本身（test_key）不剝：狀態檔與擱置紀錄存的是使用者實際下的指令形態
+# （G52／G64／G72 釘住 `-q` 留在鍵裡）；只在「紅綠是否同一目標」的比對上剝。
+_TOKEN_RE = re.compile(r"(?:\"[^\"]*\"|'[^']*'|[^\s\"'])+")
+_FORMAT_FLAG_RE = re.compile(
+    r"-q{1,2}|-v{1,2}|-r[fEsxXpPaAwN]+|--tb=\S+|--no-header|--color=\S+")
+
+
+def _unquote(t):
+    """去掉 token 外層成對引號（sol 內審缺口 C／D：G92／G93）。"""
+    if len(t) >= 2 and t[0] == t[-1] and t[0] in "\"'":
+        return t[1:-1]
+    return t
+
+
+def strip_format_flags(run):
+    """Drop output-format-only pytest flags.
+
+    只去掉完整 token 的外層成對引號後再比對；引號內的內容不拆解、不改寫。
+    依賴 `test_key` 已把指令起點切到 runner：第一個 token（去引號、小寫）是
+    `pytest` 或以 `pytest.exe` 結尾才算 pytest；參數位置的 `pytest`
+    （`go test -run pytest`）不算（G97、G100）。fable 終審 2026-10-06 P3：
+    原本的啟動器跳過迴圈在鍵路徑上是死碼，已刪。
+    """
+    toks = _TOKEN_RE.findall(run)
+    first = _unquote(toks[0]).lower() if toks else ""
+    if first != "pytest" and not first.endswith("pytest.exe"):
+        return run
+    out, i = [], 0
+    while i < len(toks):
+        t = toks[i]
+        if _FORMAT_FLAG_RE.fullmatch(_unquote(t)):
+            i += 1
+        elif (_unquote(t) == "-p" and i + 1 < len(toks)
+              and _unquote(toks[i + 1]) == "no:cacheprovider"):
+            i += 2
+        else:
+            out.append(t)
+            i += 1
+    return " ".join(out)
+
+
 def test_key(command):
     """The identity of a test run, with the shell plumbing removed.
 
@@ -512,6 +557,13 @@ def key_context(key):
     失效。
     """
     return key.split(CONTEXT_SEP, 1)[0] if CONTEXT_SEP in key else ""
+
+
+def goal_identity(key):
+    """比對「同一個目標」用的身分：context 照舊，指令部分剝掉輸出格式旗標。"""
+    ctx = key_context(key)
+    run = strip_format_flags(strip_context(key))
+    return ("%s%s%s" % (ctx, CONTEXT_SEP, run)) if ctx else run
 
 
 def run_context(prefix):
@@ -649,11 +701,11 @@ def _verdict(text):
     return "vacuous"
 
 
-def analyze_turn(turn):
+def analyze_turn(turn, last_ids=None, history=None):
     """Return ({test_key: "pass"|"fail"}, {test_key: raw command}, {test_key: 序位}).
 
-    第三個是**順序**，不是可有可無的附錄：協議 §4b-1 第 5 條要求權威驗證的綠
-    必須出現在最後一次紅**之後**才算數，而唯一的證據就是這個序位。docstring
+    第三個是**順序**，不是可有可無的附錄：協議 §4b-1 第 3、5 條要求權威驗證的綠
+    必須出現在同一個 context 已計過的紅**之後**才算數，而唯一的證據就是這個序位。docstring
     原本只寫兩個回傳值，漏掉的正是最需要被寫下來的那一個（2026-09-06 指出）。
 
     A turn counts as failed only when a test actually ran AND its output
@@ -663,6 +715,14 @@ def analyze_turn(turn):
     綠了」，才做得到協議 §4b-1 第 5 條的「同鍵的綠解掉同鍵的紅」。1.4.x 回
     bool，於是解除只能是全有全無，而那正是誤判的來源之一。
     判不出成敗的（"vacuous"）在這裡就被濾掉，不進呼叫端的視野。
+
+    `last_ids`（選用，傳入一個 dict）會被填入 {test_key: 該鍵最後一次結果的
+    tool_use_id}，供 run_stop 判斷「這次紅是否已計過」。用選用參數而不是加第四個
+    回傳值，是為了不動既有的三值解包介面。
+
+    `history`（選用 dict）會被填入 {test_key: [(序位, "pass"|"fail", tool_use_id), …]}，
+    即每鍵**全部**有結果的執行（依序）。fable 複審 2026-10-06：只留最後一筆時，
+    「已計的紅 → 綠 → 新紅」的中間那筆綠被蓋掉（G101）。
     """
     test_ids, commands = {}, {}
     for e in turn:
@@ -723,9 +783,13 @@ def analyze_turn(turn):
             seq += 1
             last_by_cmd[key] = v
             order[key] = seq
+            if history is not None and v in ("pass", "fail"):
+                history.setdefault(key, []).append((seq, v, tid))
             # 鍵是用來「認出同一個目標」的，回報時要給的是使用者實際下的那條指令：
             # 擱置紀錄的用途就是讓人看出當時卡在哪，存截短過的鍵等於把它丟掉。
             raw_by_key[key] = raw
+            if last_ids is not None:
+                last_ids[key] = tid
 
     # A run that reported no result at all is dropped rather than counted as a
     # pass: otherwise one filtered-out pytest between two real failures resets
@@ -853,6 +917,9 @@ def load_state(root):
     s["red"] = {k: v for k, v in s["red"].items()
                 if now - seen.get(k, now) < RED_TTL_SECONDS}
     s[RED_SEEN] = {k: seen.get(k, now) for k in s["red"]}
+    # 手改壞的 `counted`：丟掉無效部分，不得讓它關掉整道閘。
+    c = s.get("counted")
+    s["counted"] = [i for i in c if isinstance(i, str)] if isinstance(c, list) else []
     return s
 
 
@@ -1011,6 +1078,21 @@ def one_line(value, limit):
     """
     text = str(value if value is not None else "")
     return " ".join(text.split())[:limit]
+# `counted`（已計過的紅執行 id）軟性保留上限，目前回合的 id 不受此限；可用 FABLE_GOAL_MAX_COUNTED 調（G91）。
+MAX_COUNTED_IDS = _env_int("FABLE_GOAL_MAX_COUNTED", "512")
+
+
+def _trim_counted(ids, current):
+    """超過上限時先裁最舊的、**不在目前回合**的 id；目前回合的 id 一律保留。"""
+    excess = len(ids) - MAX_COUNTED_IDS
+    out = []
+    for i in ids:
+        if excess > 0 and i not in current:
+            excess -= 1
+            continue
+        out.append(i)
+    return out
+
 MAX_TRACKED_GOALS = 16    # `red` 裡最多留幾個目標的次數
 LOCK_STALE_SECONDS = 30   # 超過這個歲數的鎖視為前一個持有者當掉了
 LOCK_WAIT_SECONDS = 1.5   # 等不到就不鎖繼續跑（見 state_lock 的 fail-open 說明）
@@ -1154,7 +1236,9 @@ def block(reason):
 def run_stop(data, root):
     entries = load_entries(data["transcript_path"])
     turn = current_turn(entries)
-    verdicts, raw_by_key, order = analyze_turn(turn)
+    last_ids = {}
+    history = {}
+    verdicts, raw_by_key, order = analyze_turn(turn, last_ids, history)
     state = load_state(root)
     # 測試用的接縫，預設 0：把 load 與 save 之間的窗口撐開，讓兩個行程的
     # 臨界區確定重疊。沒有它，並行測試在本機是**假綠**——實測拿掉鎖照樣通過，
@@ -1182,19 +1266,57 @@ def run_stop(data, root):
     # 出六種會把真紅燈靜默清掉的情況而退回。
     red = state.setdefault("red", {})
     before = (dict(red), state["streak"])
+    before_counted = list(state.get("counted", []))
     greens = {k for k, v in verdicts.items() if v == "pass"}
-    for k in greens:
+    # 綠解紅比的是**目標身分**，不是原始鍵：`--tb=no` 的紅與 `--tb=short -rf`
+    # 的綠是同一個目標（見 strip_format_flags）。身分相同才解，選取旗標不同不解。
+    #
+    # 根因一（fable 終審 2026-10-06 P1、G98）：原本只看「這個身分有沒有綠」，不看
+    # 順序，於是「先綠後紅」的紅也被同身分的綠解掉。
+    # 根因二（fable 複審 2026-10-06、G101／G102／G98 S2）：後來改成「本回合最後
+    # 一筆是綠」，但 `analyze_turn` 每鍵只留最後一筆，「已計的紅 → 綠 → 新紅」
+    # 中間的綠被蓋掉，測試先行每片「紅→綠→紅」被誤算成連敗而在第三片擱置。
+    # 現在讀每鍵完整的執行序列（`history`），新規則：**同一身分在「已計的紅」之後
+    # 出現過綠，那個紅就收束（pop），之後的新紅從 1 計**。綠在已計的紅之前不算
+    # （G98 S1、G102）；視窗內沒有已計的紅（前一回合計的）視為 0。
+    # 下面 `fresh_red` 共用同一個 `green_after`（該身分最後一個綠的序位）。
+    runs_by_ident = {}
+    for k, hs in history.items():
+        runs_by_ident.setdefault(goal_identity(k), []).extend(hs)
+    counted_ids = set(state.get("counted", []))
+    green_after, counted_red_order = {}, {}
+    for i, rs in runs_by_ident.items():
+        green_after[i] = max((s for s, v, _t in rs if v == "pass"), default=0)
+        counted_red_order[i] = max(
+            (s for s, v, t in rs if v == "fail" and t in counted_ids), default=0)
+    for k in [k for k in red
+              if green_after.get(goal_identity(k), 0)
+              > counted_red_order.get(goal_identity(k), 0)]:
         red.pop(k, None)
 
     # 權威驗證綠了：整段目標視為達成，連還沒各自轉綠的窄鍵也一併收掉。
     # 這是「跑窄的→修好→用全套驗」這個必然節奏唯一的正解——它之所以安全，
     # 是因為「哪一條算權威」由 repo 自己宣告，不是程式從字串猜的。
     #
-    # 但必須**綠在紅之後**才算數。同一回合裡「全套綠 → 改壞 → 窄的紅」也
-    # 存在，那時整段顯然沒達成；只看「有沒有出現過權威綠」會把它讀成達成，
-    # 而那是一道會被靜默關掉的閘——正是退回上一版修法的理由。
-    latest_red = max((order.get(k, 0) for k, v in verdicts.items() if v == "fail"),
-                     default=0)
+    # 但必須**綠在已計的紅之後**才算數。同一回合裡「全套綠 → 改壞 → 窄的紅」也
+    # 存在：綠之前已計的舊紅收束，綠之後的新紅照常從 1 計（G103 H4）；若只看
+    # 「有沒有出現過權威綠」、不看順序，新紅也會被一起收掉，那是一道會被靜默
+    # 關掉的閘——正是退回上一版修法的理由。
+    # 「綠在紅之後」**分 context** 判（sol 第 2 輪、G95）：原本用全域最後一個紅，
+    # 一個 context 的收束會被另一個 context 較晚的紅否決，只剩最後一個 context
+    # 被補記、其餘 context 的舊紅 id 沒記進 `counted` 而在下一次 Stop 復活。
+    # 不同 context 互不清除的語意不變（清除與補記都只到同一個 context）。
+    # 根因（fable 複審 2026-10-06 H2／H4、G103）：門檻原本是該 context 最後一個紅
+    # （含**未計**的新紅）的序位，權威綠夾在「已計的紅」與「新紅」之間時永遠不在
+    # 最後一個紅之後，不收束。門檻改成該 context 內**已計**（id 在 `counted`）的
+    # 紅的最大序位，與身分綠規則（`counted_red_order`）對稱；視窗內沒有已計的紅
+    # （前一回合計的）門檻為 0。權威綠之後的新紅走下面的正常計數，從 1 起。
+    latest_red_by_ctx = {}
+    for k, hs in history.items():
+        c = key_context(k)
+        for s, v, t in hs:
+            if v == "fail" and t in counted_ids:
+                latest_red_by_ctx[c] = max(latest_red_by_ctx.get(c, 0), s)
     # 權威驗證的比對**只看指令本身**（宣告檔寫的是乾淨的
     # `python -m pytest tests/ -q`，而真實執行 93.4% 帶著 `cd=…`，不剝掉的話
     # 這個解除機制對 93.4% 的執行失效），但**清除的範圍只到同一個 context**。
@@ -1210,16 +1332,60 @@ def run_stop(data, root):
     # `cd` 不受宣告檔約束。屬〈引用≠推論〉。
     declared = load_verifiers(root)
     verified_ctx = {key_context(k) for k in greens
-                    if strip_context(k) in declared and order.get(k, 0) > latest_red}
+                    if strip_context(k) in declared
+                    and order.get(k, 0) > latest_red_by_ctx.get(key_context(k), 0)}
     if verified_ctx:
         for k in [k for k in red if key_context(k) in verified_ctx]:
             red.pop(k, None)
         state["streak"] = 0
-        if (dict(red), state["streak"]) != before:
-            save_or_complain(root, state)
-        return block_unexplained_shelf(state)
+        # 根因（sol 內審 2026-10-06 缺口 A、G90）：權威綠收束了它之前的紅，卻沒把
+        # 那些紅的 id 記成已計過；同回合之後出現新紅、權威綠不再「在最後一個紅之後」
+        # 時，下一次 Stop 會把被收束的舊紅當新紅重算而復活。這裡補記：
+        # 同 context、序位在某個權威綠之前、判紅的鍵。
+        auth_order = {}
+        for k in greens:
+            c = key_context(k)
+            if c in verified_ctx and strip_context(k) in declared:
+                auth_order[c] = max(auth_order.get(c, 0), order.get(k, 0))
+        closed_ids = [last_ids[k] for k, v in verdicts.items()
+                      if v == "fail" and last_ids.get(k)
+                      and order.get(k, 0) < auth_order.get(key_context(k), 0)]
+        counted0 = state.get("counted", [])
+        have = set(counted0)
+        state["counted"] = _trim_counted(
+            counted0 + [i for i in closed_ids if i not in have],
+            set(last_ids.values()))
+        # 根因（fable 終審 2026-10-06 裁決 2、G99）：這裡原本在任一權威綠晚於全域
+        # 最後紅時存檔並提早 return，把**沒有權威綠的其他 context** 的紅一併吞掉。
+        # 不提早 return：未收束 context 的紅走下面的正常計數；已收束的紅 id 已在
+        # `counted`；全部收束時 `fresh_red` 為空，落到「沒有觀察到紅」那一支。
 
-    fresh_red = [k for k, v in verdicts.items() if v == "fail"]
+    # 每一次紅的執行只計一次。根因：每次 Stop 都重讀整個 current_turn，同一次紅
+    # 的執行每次 Stop 都被 `red[key] += 1`；自主長回合會 Stop 很多次，一次紅就被
+    # 計成 3～4 次而擱置（2026-10-06 以真實 transcript 重放查得）。以 tool_use id
+    # 去重：已計過的紅只是「不再累加」，**不歸零、不 pop、也不當成綠**——它仍然是
+    # 紅，只是同一次執行不該被數第二遍；歸零等於把真實的連敗抹掉。
+    counted = state.get("counted", [])
+    counted_set = set(counted)
+    #
+    # 同回合裡「紅之後同身分的綠」已經解掉它：那次紅不再是紅，也標成已計過，
+    # 免得下一次 Stop 把它當新紅重算。
+    fresh_red, new_ids = [], []
+    for k, v in verdicts.items():
+        if v != "fail" or last_ids.get(k) in counted_set:
+            continue
+        if green_after.get(goal_identity(k), 0) > order.get(k, 0):
+            if last_ids.get(k):
+                new_ids.append(last_ids[k])
+            continue
+        fresh_red.append(k)
+        if last_ids.get(k):
+            new_ids.append(last_ids[k])
+    # id 全域唯一，只需記得目前回合可能被重讀到的範圍，故設上限、超過裁舊的。
+    # 根因（sol 內審 2026-10-06 缺口 B、G91）：原本一律 `[-MAX:]` 只留最新 N 筆，
+    # 目前回合紅執行多於 N 時，回合內的 id 也被裁掉，下一次 Stop 重讀就重算。
+    # 現在先裁**不在目前回合**的 id，目前回合的 id 一律保留。
+    state["counted"] = _trim_counted(counted + new_ids, set(last_ids.values()))
 
     if not fresh_red:
         # 這一回合沒有觀察到任何紅。有綠就歸零——「這一回合什麼都沒失敗」，
@@ -1233,9 +1399,15 @@ def run_stop(data, root):
         # ⚠ 曾經寫成 `greens and not red`，那把一個**再也不會被重跑的舊鍵**
         # 變成永久的絆腳石：`not red` 從此恆假，於是「綠燈歸零」整條路死掉，
         # 明明中間綠過一次，閘仍然宣稱「連續失敗兩次」（2026-09-06 抗辯實測）。
-        if greens and state["streak"]:
+        #
+        # fable 終審 2026-10-06 P1（G98 S1）：本回合判紅、已計過、且仍留在 `red`
+        # 的鍵（例如先綠後紅，紅未被解）不算「什麼都沒失敗」，不得歸零。
+        # 註：`state["streak"]` 是鏡像欄位，階梯由 `red[key]` 決定。
+        if (greens and state["streak"]
+                and not any(k in red for k, v in verdicts.items() if v == "fail")):
             state["streak"] = 0
-        if (dict(red), state["streak"]) != before:
+        if ((dict(red), state["streak"]) != before
+                or state["counted"] != before_counted):
             save_or_complain(root, state)
         return block_unexplained_shelf(state)
 

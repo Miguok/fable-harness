@@ -26,9 +26,71 @@
   G27 `.fable` 解析後不在 repo 內 → 拒寫並出聲（含 Windows junction）
   G28 擱置項的 note 注入前要截斷
   G29 G27 的讀取面：不得跟著連結讀 repo 外的狀態檔
+  G82 同一次紅執行（同 tool_use id）連續 Stop 三次 → 只計 1 次、不擋、不擱置
+  G83 G82 的配對：同回合新的紅執行（新 id）仍累加到 2 並擋下
+  G84 streak 2 被擋後沒有新執行再 Stop → 不擱置
+  G85 只差輸出旗標（-q/-v、--tb、-r、--no-header、--color）的綠要解掉紅
+  G86 G85 的配對：-k／-x／-s／路徑不同不得合併
+  G87 狀態檔 `counted`（已計過的 id）清單有上限
+  G88 跨回合：前一回合記下的紅，被下一回合只差輸出旗標的綠解掉（配對：-k 不同不解）
+  G89 壞掉的 `counted`（字串／dict／混型 list）不得關掉閘，且被正規化成字串 list
+  G90 權威綠收束時，其之前的紅 id 要記進 `counted`，之後同回合的新紅不得讓它復活（缺口 A）
+  G91 `counted` 裁切不得淘汰目前回合的 id；上限可由 FABLE_GOAL_MAX_COUNTED 調（缺口 B）
+  G92 「是不是 pytest」看 token、不分大小寫；`go test ./pytest_helpers/...` 的 -v 不剝（缺口 C）
+  G93 格式旗標去外層引號再比；`-r` 只認報告字元，`-rootdir` 不剝（缺口 D）
+  G94 同回合同一條指令紅兩次（不同管線尾巴、不同 id）只計 1——釘住既有設計（缺口 E）
+  G95 多個 context 各被權威綠收束，之後同回合的新紅不得讓任一 context 的舊紅復活（sol 第 2 輪）
+  G96 引號包住的 `-p no:cacheprovider` 要剝；`-p xdist` 不剝（sol 第 2 輪）
+  G97 pytest 看 runner 位置：`go test -run pytest -v` 不剝，`uv run … pytest`／`python -m pytest` 剝（sol 第 2 輪）
+  G98 身分合併的綠解紅要看順序：先綠後紅的紅不得被解（S1 同回合重複 Stop、S2 跨回合計 2 並擋）（fable 終審 P1）
+  G99 權威綠分支不得吞掉其他 context 的紅（fable 終審裁決 2）；G62 改寫為兩條指令同 context
+  G100 簡化後的 pytest 身分判斷不退化：`uv run … pytest -v` 同身分、`go test -run pytest -v` 不同（fable 終審 P3）
+  G101 同回合 tests-first「紅→綠→紅→綠→紅」三片不爬梯、不擱置，最後計數 1（fable 複審 C′）
+  G102 沒有綠的真連敗仍爬梯：第二次 Stop 擋、第三次擱置；綠在已計的紅之前不得重置（G101 配對）
+  G104 權威綠門檻是「每個 context 自己的已計紅」，不是全域最大值（MG-14）；配對：權威綠在已計紅之前不收束
+  G103 權威綠夾在「已計的紅」與「新紅」之間要收束（H2 同回合、H4 跨回合）；無權威綠／權威綠在已計紅之前仍爬梯（配對）
+  （G98 S2 期望於 2026-10-06 fable 複審改為「綠→紅 計 1、不擋」）
 
 執行命令：
   cd <repo> && python -m pytest tests/test_goal_gate.py -v
+
+══════════════════════════════════════
+執行紀錄（G82～G102，依時間由新到舊；最上面是最新一次）
+══════════════════════════════════════
+最後執行：2026-10-06 13:19 → 196 passed ✅
+2026-10-06 13:19 補 G104（MG-14：權威綠門檻改回全域已計紅，G103 後無測試咬得到）：只寫測試、未改 goal_gate.py；
+  現行碼 196 passed；暫存複本上套 MG-14 → 1 failed, 195 passed
+  （FAILED test_g104_…[False-True]）；配對列（權威綠在已計紅之前，A 不收束）綠。
+2026-10-06 13:12 G103 實作後 194 passed ✅（goal_gate.py 改為已計紅門檻）
+2026-10-06 12:36 → 2 failed, 192 passed（G103 補測試時 goal_gate.py 尚未改權威綠門檻；見下一則）
+2026-10-06 12:36 補 G103（fable 複審 H2／H4）：只寫測試、未改 goal_gate.py；
+  預期紅：H2（同回合權威綠夾中間，第二次 Stop 被擋，計 2）、H4（跨回合，計數 2 而非 1）；
+  配對兩列（無權威綠、權威綠在已計紅之前）綠。
+2026-10-06 12:14 → 190 passed ✅（全套 tests/ 488 passed, 4 skipped）
+2026-10-06 12:14 實作 fable 複審新語意（goal_gate.py：`analyze_turn` 的 `history`、已計紅之後有綠即收束）：
+  G101、G102、G98 S2 全綠；本檔 190 passed。
+2026-10-06 12:09 4 failed, 186 passed（goal_gate.py 尚未實作新語意；見下一則）
+2026-10-06 12:09 補 G101、G102、改 G98 S2 期望（fable 複審）：只寫測試、未改 goal_gate.py；
+  預期紅：G101 兩參數（同回合紅綠紅被擋並擱置）、G98 S2 兩參數（計 2 並擋，期望已改為 1 不擋）；G102 兩參數綠。
+2026-10-06 11:40 實作 G98～G100（goal_gate.py）：最後執行 2026-10-06 11:40 → 本檔 186 passed ✅；
+  全套 tests/ 484 passed, 4 skipped。
+2026-10-06 11:35 補 G98～G100、改寫 G62（fable 終審）：只寫測試、未改 goal_gate.py；
+  最後執行 2026-10-06 11:35 → 3 failed, 183 passed（預期紅：G98 S1、G98 S2 非同鍵列、G99；G62 改寫後、G100、G98 S2 對照列綠）。
+2026-10-06 11:09 實作 G95～G97（goal_gate.py）：最後執行 2026-10-06 11:09 → 本檔 181 passed ✅；
+  全套 tests/ 479 passed, 4 skipped。
+2026-10-06 11:03 補 G95～G97（sol 第 2 輪）：只寫測試、未改 goal_gate.py；
+  最後執行 2026-10-06 11:03 → 3 failed, 178 passed（預期紅：G95、G96 引號列、G97 go test 列；配對列綠）。
+2026-10-06 10:54 G93 加配對列 `-rootdir`（不帶 `=`，咬 `-r[A-Za-z]+` 放寬的變異 MG-11）：只加參數；結果見下行。
+2026-10-06 10:46 實作缺口 A～D（goal_gate.py）：最後執行 2026-10-06 10:46 → 本檔 174 passed ✅；
+  全套 tests/ 472 passed, 4 skipped。G91 咬力：裁切改回 `[-MAX_COUNTED_IDS:]` → 1 failed（紅鍵次數 2），還原後 1 passed。
+2026-10-06 10:37 補 G90～G94（sol 內審第 1 輪缺口 A～E）：只寫測試、未改 goal_gate.py；
+  最後執行 2026-10-06 10:37 → 4 failed, 170 passed（預期紅：G90、G92 的 PYTEST 與 go test 兩列、G93 引號列；
+  G91 現行為綠＝FABLE_GOAL_MAX_COUNTED 尚未被讀取、上限仍 512，實作後才咬得到；G94 與各配對列綠）。
+2026-10-06 10:22 補 G88（MG-2 跨回合）、G89（MG-6 壞 counted）：只寫測試、未改 goal_gate.py。
+2026-10-06 10:12 G82～G87：每次紅執行只計一次／輸出旗標不進目標身分
+  fail-then-pass：實作前 7 failed（G82、G84、G85×4、G87）、154 passed；
+  實作後本檔 161 passed；全套 tests/ 459 passed, 4 skipped（改前基準 7 failed, 452 passed, 4 skipped）。
+  最後執行：2026-10-06 10:12 → 161 passed ✅
 
 ══════════════════════════════════════
 驗收邊界說明 + 執行紀錄（2026-09-05 12:55 GMT+8）
@@ -79,6 +141,10 @@ G9 的期望隨之反轉（提 id 仍要擋）。文件與程式不一致時，�
   ② 讀取端當時根本沒有測試。
   另外 G27 的第一版把「repo 外」的目錄建在 repo 內（repo 根就是 tmp_path），
   情境根本不成立。三者都是「突變沒翻紅」才抓到的。
+最後執行：2026-10-06 10:04 → 現行實作 154 passed / 7 failed（只寫測試，goal_gate.py 未改）
+  fixture 改唯一 id（_uid）後既有 149 格全綠（149 passed in 22.58s）。
+  新增 G82-G87（共 12 格）：G82、G84、G85×4、G87 紅（預期，實作尚未做）；
+  G83、G86×4 綠（配對格，現行實作本來就會爬梯／不合併）。
 最後執行：2026-09-06 14:47 → 149 passed ✅（全套 409 passed in 38.89s）
 第六／七輪抗辯新增 G72-G81，逐條突變驗過（每條「還原修法 → 對應守衛翻紅」）：
   判不出成敗的輸出又判回 pass → G78 的 5 個參數紅。真實語料回放 689 份 transcript：
@@ -200,8 +266,26 @@ def _user_prompt(text):
     return {"type": "user", "message": {"content": [{"type": "text", "text": text}]}}
 
 
-def _turn(cmd=None, output=None, assistant_text=None, uid="tu1"):
-    """One user prompt followed by an optional test run and its result."""
+_ID_SEQ = [0]
+
+
+def _uid():
+    """每次呼叫產生一個**全域唯一**的 tool_use id（`toolu_…`）。
+
+    生產環境的 Claude Code id 全域唯一；舊 fixture 在不同回合重用 `tu1`／`t0`
+    是假象。修法「每次執行只計一次」以 tool_use_id 為身分，重用 id 會讓
+    不同次的紅被誤認成同一次。計數器是模組層的，跨測試也不重複。
+    """
+    _ID_SEQ[0] += 1
+    return "toolu_%06d" % _ID_SEQ[0]
+
+
+def _turn(cmd=None, output=None, assistant_text=None, uid=None):
+    """One user prompt followed by an optional test run and its result.
+
+    `uid` 沒傳就產生唯一 id（見 `_uid`）；呼叫端明確傳入則照用。
+    """
+    uid = uid or _uid()
     entries = [_user_prompt("do the thing")]
     if cmd is not None:
         entries.append({"type": "assistant", "message": {"content": [
@@ -310,7 +394,7 @@ def _multi_turn(runs):
     """One user prompt then a sequence of (command, output) test runs."""
     entries = [{"type": "user", "message": {"content": "do the thing"}}]
     for i, (cmd, out) in enumerate(runs):
-        uid = f"t{i}"
+        uid = _uid()  # 唯一 id，理由見 _uid
         entries.append({"type": "assistant", "message": {"content": [
             {"type": "tool_use", "id": uid, "name": "Bash",
              "input": {"command": cmd}}]}})
@@ -872,7 +956,7 @@ def _runs(*pairs):
     """一段 turn 內依序跑數條測試指令：((cmd, output), …)。"""
     entries = [_user_prompt("do the thing")]
     for i, (cmd, output) in enumerate(pairs):
-        uid = f"t{i}"
+        uid = _uid()  # 唯一 id，理由見 _uid
         entries.append({"type": "assistant", "message": {"content": [
             {"type": "tool_use", "id": uid, "name": "Bash",
              "input": {"command": cmd}}]}})
@@ -1638,11 +1722,17 @@ def test_g62_the_declared_verifier_matches_a_run_that_carries_context(tmp_path):
     context 存在的理由是「別讓 A 專案的綠清掉 B 專案的紅」（G56）。那個理由
     在這裡不成立：宣告檔與狀態檔都在**同一個 repo** 內，跨專案的問題不會經由
     這條路徑發生。所以比對只看指令本身。
+
+    2026-10-06 fable 終審裁決改寫：原本窄指令不帶 `cd`（ctx 空字串）、權威綠帶
+    `cd`，是靠權威綠分支的提早 return 把 ctx 空字串的紅整個吞掉才綠——那是缺陷
+    （G99 盯它）。現在兩條指令都帶同一個 `cd <repo>` 前綴，仍保住本格要驗的
+    「乾淨宣告對得上帶 context 的執行」。
     """
     repo = _repo(tmp_path, {"streak": 0, "shelved": [], "red": {}})
     _declare_verifier(repo, "python -m pytest tests/ -q")
-    narrow = "python -m pytest tests/test_x.py -q -k g27"
-    broad = "cd %s && python -m pytest tests/ -q" % str(repo).replace("\\", "/")
+    cd = "cd %s && " % str(repo).replace("\\", "/")
+    narrow = cd + "python -m pytest tests/test_x.py -q -k g27"
+    broad = cd + "python -m pytest tests/ -q"
 
     out = _run(repo, _runs((narrow, FAIL_OUT), (broad, PASS_OUT)))
     st = _state(repo)
@@ -2134,3 +2224,574 @@ def test_g81_the_tracking_cap_actually_caps(tmp_path):
         "上限沒有生效：%d 個鍵（上限 %d）" % (len(red), gg.MAX_TRACKED_GOALS))
     assert gg.test_key("pytest tests/test_new.py -q") in red, (
         "這一回合剛計數的鍵被淘汰了——計數會永遠停在 1")
+
+
+# ── 每次執行只計一次／輸出旗標不進鍵（G82～G87）────────────────────────────
+def _exec(cmd, output):
+    """一次測試執行（assistant tool_use ＋ user tool_result），id 唯一。"""
+    uid = _uid()
+    return [
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": uid, "name": "Bash",
+             "input": {"command": cmd}}]}},
+        {"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": uid,
+             "content": [{"type": "text", "text": output}]}]}}]
+
+
+def test_g82_one_red_run_is_counted_once_across_repeated_stops(tmp_path):
+    """G82：同一次紅執行（同一個 tool_use id）連續 Stop 三次，只計 1 次。
+
+    根因：`run_stop` 每次 Stop 都重讀整個回合，把同一次紅再加 1。
+    實證：只真的紅過 1 次的 `pytest -k "t37 or t38"` 被計到 3、4 次。
+    配對：G83（新的一次紅仍要爬梯）。
+    """
+    repo = _repo(tmp_path)
+    entries = _runs(("pytest tests/test_x.py -q", FAIL_OUT))
+    outs = [_run(repo, entries if i == 0 else None) for i in range(3)]
+    st = _state(repo)
+    assert st["streak"] == 1, "同一次紅被重複計數：streak=%r" % st["streak"]
+    assert not any(_blocked(o) for o in outs), "沒有新執行卻被擋"
+    assert not st["shelved"], "沒有新執行卻被擱置"
+
+
+def test_g83_a_new_red_run_in_the_same_turn_still_climbs(tmp_path):
+    """G83：同回合內同一個鍵的**新**紅執行（新 id）仍要爬梯（G82 的配對）。
+
+    只有 G82 的話，「永遠只計 1 次」的實作也會全綠，長回合的連敗就爬不上去。
+    """
+    repo = _repo(tmp_path)
+    cmd = "pytest tests/test_x.py -q"
+    first = _runs((cmd, FAIL_OUT))
+    assert not _blocked(_run(repo, first))
+    assert _state(repo)["streak"] == 1
+    out = _run(repo, first + _exec(cmd, FAIL_OUT))
+    assert _state(repo)["streak"] == 2, "新的一次紅沒有累加"
+    assert _blocked(out), "第二次紅應該擋下並要求抗辯"
+
+
+def test_g84_a_block_is_not_escalated_by_stopping_again(tmp_path):
+    """G84：streak 2 被擋之後，沒有新執行再 Stop → 不擱置。
+
+    閘自己的訊息說「再結束一次就放行」；重算舊紅會讓它變成擱置。
+    配對：G83（有新執行才升級）。
+    """
+    repo = _repo(tmp_path)
+    cmd = "pytest tests/test_x.py -q"
+    first = _runs((cmd, FAIL_OUT))
+    _run(repo, first)
+    assert _blocked(_run(repo, first + _exec(cmd, FAIL_OUT)))
+    out = _run(repo)  # 同一份 transcript，沒有任何新執行
+    assert not _blocked(out), "沒有新執行卻再被擋（升級成擱置）"
+    st = _state(repo)
+    assert not st["shelved"], "沒有新執行卻被擱置：%r" % (st["shelved"],)
+    assert st["streak"] == 2
+
+
+@pytest.mark.parametrize("green", [
+    "pytest tests/test_x.py -q -p no:cacheprovider --tb=short -rf",
+    "pytest tests/test_x.py -v -p no:cacheprovider --tb=no",
+    "pytest tests/test_x.py -q -p no:cacheprovider --tb=no --no-header",
+    "pytest tests/test_x.py -q -p no:cacheprovider --tb=no --color=no",
+])
+def test_g85_output_format_flags_do_not_split_the_goal(tmp_path, green):
+    """G85：只差輸出格式旗標的兩條指令是同一個目標，綠要解掉紅。
+
+    根因：鍵把 `-q`／`--tb`／`-r`／`--no-header`／`--color` 等「只改輸出長相」
+    的旗標也算進去，紅永遠解不掉。配對：G86（改變選取的旗標不得合併）。
+    """
+    repo = _repo(tmp_path)
+    red_cmd = "pytest tests/test_x.py -q -p no:cacheprovider --tb=no"
+    _run(repo, _runs((red_cmd, FAIL_OUT), (green, PASS_OUT)))
+    st = _state(repo)
+    assert not st["red"], "輸出旗標不同導致紅沒被解掉：%r" % (st["red"],)
+    assert st["streak"] == 0
+
+
+@pytest.mark.parametrize("red_cmd,green_cmd", [
+    ("pytest tests/test_x.py -q -k a", "pytest tests/test_x.py -q -k b"),
+    ("pytest tests/test_x.py -q -x", "pytest tests/test_x.py -q"),
+    ("pytest tests/test_x.py -q -s", "pytest tests/test_x.py -q"),
+    ("pytest tests/test_x.py -q", "pytest tests/test_y.py -q"),
+])
+def test_g86_selection_flags_are_not_merged(tmp_path, red_cmd, green_cmd):
+    """G86：改變「跑哪些測試」的旗標不得合併——別條指令的綠不能解掉這條紅。
+
+    G85 的配對：只有 G85 的話，「所有旗標都剝掉」的實作也會全綠。
+    """
+    repo = _repo(tmp_path)
+    _run(repo, _runs((red_cmd, FAIL_OUT), (green_cmd, PASS_OUT)))
+    st = _state(repo)
+    assert st["red"], "選取不同的指令被當成同一個目標，紅被誤解"
+    assert st["streak"] >= 1
+
+
+def test_g87_the_counted_id_list_is_bounded(tmp_path):
+    """G87：狀態檔裡已計過的 id 清單（`counted`）必須有界。
+
+    根因防線：以 id 去重的清單若不設上限，狀態檔會無限長大。
+    做法：種入 600 個舊 id，再跑一次新的紅，清單長度必須 < 600 且含新 id。
+    """
+    old = ["toolu_old%04d" % i for i in range(600)]
+    repo = _repo(tmp_path, {"streak": 0, "red": {}, "shelved": [],
+                            "counted": old})
+    entries = _runs(("pytest tests/test_x.py -q", FAIL_OUT))
+    new_id = entries[1]["message"]["content"][0]["id"]
+    _run(repo, entries)
+    counted = _state(repo).get("counted")
+    assert isinstance(counted, list), "狀態檔沒有 counted 清單"
+    assert len(counted) < 600, "counted 無上限：%d 筆" % len(counted)
+    assert new_id in counted, "新的一次紅沒有被記進 counted"
+
+
+@pytest.mark.parametrize("green,cleared", [
+    ("pytest tests/test_x.py -v -p no:cacheprovider --tb=short -rf", True),
+    ("pytest tests/test_x.py -q -p no:cacheprovider --tb=no -k other", False),
+])
+def test_g88_a_green_in_a_later_turn_clears_the_red_by_goal_identity(
+        tmp_path, green, cleared):
+    """G88：跨回合——前一回合已記進狀態檔的紅，下一回合只差輸出旗標的綠要解掉它。
+
+    盯變異 MG-2（`run_stop` 開頭的綠解紅改回比原始鍵）。原本漏掉：G85 的紅與綠
+    在同一回合，被「同回合紅之後的綠」那段先處理，開頭那段比對從沒被單獨咬到；
+    本格讓紅先經一次 Stop 落進狀態檔，再由新回合（新 transcript）的綠去解。
+    配對：`-k other` 選取不同的綠不得解掉紅（只剝所有旗標的實作會翻紅）。
+    """
+    repo = _repo(tmp_path)
+    red_cmd = "pytest tests/test_x.py -q -p no:cacheprovider --tb=no"
+    _run(repo, _runs((red_cmd, FAIL_OUT)))
+    st = _state(repo)
+    assert gg.test_key(red_cmd) in st["red"] and st["streak"] == 1, "前置不成立"
+
+    _run(repo, payload={"hook_event_name": "UserPromptSubmit"})
+    _run(repo, _runs((green, PASS_OUT)))
+    st = _state(repo)
+    if cleared:
+        assert gg.test_key(red_cmd) not in st["red"], (
+            "跨回合的綠（只差輸出旗標）沒有解掉紅：%r" % (st["red"],))
+        assert st["streak"] == 0
+    else:
+        assert gg.test_key(red_cmd) in st["red"], "選取不同的綠誤解了紅"
+
+
+@pytest.mark.parametrize("bad", ["garbage", {"a": 1}, ["ok", 3, None]],
+                         ids=["str", "dict", "mixed-list"])
+def test_g89_a_corrupt_counted_does_not_disable_the_gate(tmp_path, bad):
+    """G89：手改壞的 `counted` 不得讓閘關掉——仍要計數，且之後被正規化成字串 list。
+
+    盯變異 MG-6（`load_state` 對 `counted` 的防呆改成原樣保留壞值）。原本漏掉：
+    G87 只餵合法的 list，沒有任何測試餵壞值；壞值原樣保留時閘會拋例外、
+    fail-open 退出，streak 永遠 0。
+    """
+    repo = _repo(tmp_path, {"streak": 0, "shelved": [], "counted": bad})
+    _run(repo, _runs(("pytest tests/test_x.py -q", FAIL_OUT)))
+    st = _state(repo)
+    assert st["streak"] == 1, "壞掉的 counted 讓閘停止計數：streak=%r" % st["streak"]
+    assert isinstance(st["counted"], list), "counted 沒被正規化成 list"
+    assert all(isinstance(x, str) for x in st["counted"]), st["counted"]
+
+
+def _red_only(cmd):
+    """一段只有一次紅執行的 transcript，回傳 (entries, tool_use id)。"""
+    entries = _runs((cmd, FAIL_OUT))
+    return entries, entries[1]["message"]["content"][0]["id"]
+
+
+def test_g90_authoritative_green_marks_earlier_reds_as_counted(tmp_path):
+    """G90（缺口 A）：權威綠收束時，其之前的紅 id 要一併記進 `counted`。
+
+    情境：同回合「紅 A → 權威綠」→ Stop（A 被收束）；同回合又出現紅 B → Stop。
+    此時權威綠在 B 之前、不再收束，A 若沒被記成已計過就會被當新紅重算。
+    斷言：A 的鍵不在 `red`、streak 為 1（只有 B）、沒擋。
+    配對：G68（權威綠仍清得掉同 context 的紅）；本格盯的是「清掉之後不復活」。
+    """
+    repo = _repo(tmp_path, {"streak": 0, "shelved": [], "red": {}})
+    _declare_verifier(repo, "pytest -q")
+    a = "pytest tests/test_a.py -q"
+    b = "pytest tests/test_b.py -q"
+    first = _runs((a, FAIL_OUT), ("pytest -q", PASS_OUT))
+    _run(repo, first)
+    assert _state(repo)["red"] == {}, "前置不成立：權威綠沒收束紅 A"
+
+    second = first + _runs((b, FAIL_OUT))[1:]   # 同一回合：不重送使用者輸入
+    out = _run(repo, second)
+    st = _state(repo)
+    assert gg.test_key(a) not in st["red"], "紅 A 被當新紅重算：%r" % (st["red"],)
+    assert gg.test_key(b) in st["red"]
+    assert st["streak"] == 1, "streak=%r，A 被重算" % st["streak"]
+    assert not _blocked(out)
+
+
+def test_g91_counted_trim_keeps_ids_of_the_current_turn(tmp_path):
+    """G91（缺口 B）：`counted` 裁到上限時，不得淘汰仍在目前回合裡的 id。
+
+    FABLE_GOAL_MAX_COUNTED=3，一份 transcript 內 5 個不同鍵各紅一次；同一份
+    transcript 連續 Stop 兩次。若裁切淘汰了目前回合的 id，第二次 Stop 會重算，
+    某些鍵的次數變 2。斷言：每鍵次數仍是 1、沒擋、`counted` 至少 5 筆。
+    配對：G87（清單仍有上限、舊 id 會被裁）。
+    """
+    repo = _repo(tmp_path, {"streak": 0, "shelved": [], "red": {}})
+    cmds = ["pytest tests/test_%s.py -q" % c for c in "abcde"]
+    entries = _runs(*[(c, FAIL_OUT) for c in cmds])
+    env = {"FABLE_GOAL_MAX_COUNTED": "3"}
+    _run(repo, entries, env=env)
+    out = _run(repo, entries, env=env)
+    st = _state(repo)
+    assert [st["red"].get(gg.test_key(c)) for c in cmds] == [1] * 5, st["red"]
+    assert not _blocked(out)
+    assert len(st["counted"]) >= 5, "目前回合的 id 被淘汰：%r" % (st["counted"],)
+
+
+@pytest.mark.parametrize("red_cmd,green_cmd,cleared", [
+    ("PYTEST tests/test_x.py -q --tb=no", "PYTEST tests/test_x.py -q --tb=short", True),
+    ("python -m pytest tests/test_x.py -q --tb=no",
+     "python -m pytest tests/test_x.py -q --tb=short", True),
+    ("go test ./pytest_helpers/... -v", "go test ./pytest_helpers/...", False),
+])
+def test_g92_pytest_is_judged_by_token_not_substring(
+        tmp_path, red_cmd, green_cmd, cleared):
+    """G92（缺口 C）：「是不是 pytest」看 token、不分大小寫，不看子字串。
+
+    前兩列（大寫 PYTEST、python -m pytest）：只差輸出旗標的綠要解紅。
+    第三列配對：`go test ./pytest_helpers/...` 路徑含 pytest 字樣但不是 pytest，
+    `-v` 不得被剝，紅**仍在**。`go test` 被 `TEST_CMD_RE` 認成測試指令
+    （goal_gate.py 的 go test 那一支），故沿用，不需換 runner。
+    """
+    repo = _repo(tmp_path)
+    _run(repo, _runs((red_cmd, FAIL_OUT), (green_cmd, PASS_OUT)))
+    st = _state(repo)
+    if cleared:
+        assert st["red"] == {}, "只差輸出旗標的綠沒解紅：%r" % (st["red"],)
+    else:
+        assert gg.test_key(red_cmd) in st["red"], "非 pytest 的 -v 被剝，紅被誤解"
+
+
+@pytest.mark.parametrize("red_cmd,green_cmd,cleared", [
+    ('pytest tests/test_x.py -q "--tb=no"', "pytest tests/test_x.py -q", True),
+    ("pytest tests/test_x.py -q -rootdir=x", "pytest tests/test_x.py -q", False),
+    ("pytest tests/test_x.py -q -rootdir", "pytest tests/test_x.py -q", False),
+])
+def test_g93_quoted_flags_are_stripped_and_r_only_takes_report_chars(
+        tmp_path, red_cmd, green_cmd, cleared):
+    """G93（缺口 D）：格式旗標比對前先去外層引號；`-r` 只認報告字元。
+
+    第一列：`"--tb=no"` 帶引號也要剝，紅被解。
+    配對（第二列）：`-rootdir=x` 不是 `-r` 報告旗標，不剝，綠不解紅。
+    """
+    repo = _repo(tmp_path)
+    _run(repo, _runs((red_cmd, FAIL_OUT), (green_cmd, PASS_OUT)))
+    st = _state(repo)
+    if cleared:
+        assert st["red"] == {}, "帶引號的格式旗標沒被剝：%r" % (st["red"],)
+    else:
+        assert gg.test_key(red_cmd) in st["red"], "-rootdir 被當成 -r 旗標剝掉"
+
+
+def test_g94_same_failure_viewed_twice_in_one_window_counts_once(tmp_path):
+    """G94（缺口 E，釘住既有設計、不採納變更）：同回合同一條指令紅兩次只計 1。
+
+    同一個失敗換個方式看兩次（`| tail -3` 與 `| grep FAILED`，兩個不同 id）
+    不是兩次嘗試——鍵相同、一個回合視窗只留該鍵最後一次結果。只 Stop 一次 →
+    streak 1、沒擋。配對：G83（同回合不同鍵／新的紅仍會累加）。
+    """
+    repo = _repo(tmp_path)
+    out = _run(repo, _runs(
+        ("pytest tests/test_x.py -q | tail -3", FAIL_OUT),
+        ("pytest tests/test_x.py -q | grep FAILED", FAIL_OUT)))
+    st = _state(repo)
+    assert st["streak"] == 1, "同一個失敗被數成 %r 次" % st["streak"]
+    assert list(st["red"].values()) == [1]
+    assert not _blocked(out)
+
+
+def test_g95_every_context_closed_by_authoritative_green_stays_closed(tmp_path):
+    """G95（sol 第 2 輪：只補記最後一個 context）：多 context 的權威綠都要記 id。
+
+    同回合：context A 紅 test_x → A 權威綠；context B 紅 test_y → B 權威綠 → Stop。
+    再於同一段紀錄後追加 `cd a` 的新紅 test_z → Stop。A 的舊紅（test_x）不得復活，
+    streak 只算 test_z（1）。配對：G90（單一 context 的同型情境）。
+    """
+    repo = _repo(tmp_path, {"streak": 0, "shelved": [], "red": {}})
+    _declare_verifier(repo, "pytest -q")
+    x = "cd a && pytest tests/test_x.py -q"
+    first = _runs((x, FAIL_OUT), ("cd a && pytest -q", PASS_OUT),
+                  ("cd b && pytest tests/test_y.py -q", FAIL_OUT),
+                  ("cd b && pytest -q", PASS_OUT))
+    _run(repo, first)
+    assert _state(repo)["red"] == {}, "前置不成立：兩個 context 都應收束"
+    z = "cd a && pytest tests/test_z.py -q"
+    out = _run(repo, first + _runs((z, FAIL_OUT))[1:])
+    st = _state(repo)
+    assert gg.test_key(x) not in st["red"], "A 的舊紅復活：%r" % (st["red"],)
+    assert gg.test_key(z) in st["red"]
+    assert st["streak"] == 1, "streak=%r，舊紅被重算" % st["streak"]
+    assert not _blocked(out)
+
+
+@pytest.mark.parametrize("red_cmd,green_cmd,cleared", [
+    ('pytest tests/test_x.py -q "-p" "no:cacheprovider" --tb=no',
+     "pytest tests/test_x.py -q", True),
+    ("pytest tests/test_x.py -q -p xdist", "pytest tests/test_x.py -q", False),
+])
+def test_g96_quoted_p_no_cacheprovider_is_stripped_other_plugins_are_not(
+        tmp_path, red_cmd, green_cmd, cleared):
+    """G96（sol 第 2 輪：引號包住的 `-p no:cacheprovider`）。
+
+    第一列：`"-p" "no:cacheprovider"` 帶引號也要剝，與無旗標的綠同一目標，紅被解。
+    配對（第二列）：`-p xdist` 會改變載入的外掛，不得剝，紅仍在。
+    """
+    repo = _repo(tmp_path)
+    _run(repo, _runs((red_cmd, FAIL_OUT), (green_cmd, PASS_OUT)))
+    st = _state(repo)
+    if cleared:
+        assert st["red"] == {}, "引號包住的 -p no:cacheprovider 沒被剝：%r" % (st["red"],)
+    else:
+        assert gg.test_key(red_cmd) in st["red"], "-p xdist 被誤剝，紅被誤解"
+
+
+@pytest.mark.parametrize("red_cmd,green_cmd,cleared", [
+    ("go test -run pytest -v ./pkg", "go test -run pytest ./pkg", False),
+    ("uv run --no-sync pytest tests/test_x.py -v",
+     "uv run --no-sync pytest tests/test_x.py", True),
+    ("python -m pytest tests/test_x.py -v", "python -m pytest tests/test_x.py", True),
+])
+def test_g97_pytest_is_judged_by_runner_position(
+        tmp_path, red_cmd, green_cmd, cleared):
+    """G97（sol 第 2 輪：pytest 要看 runner 位置，不是任一 token）。
+
+    第一列：`go test -run pytest -v ./pkg` 的 `pytest` 是 -run 的參數，不是 runner，
+    `-v` 不得剝，紅仍在（`go test` 沿用 G92 已確認被 TEST_CMD_RE 認成測試指令）。
+    配對（第二、三列）：`uv run --no-sync pytest`、`python -m pytest` 是真 pytest，
+    只差 `-v` 的綠要解紅。
+    """
+    repo = _repo(tmp_path)
+    _run(repo, _runs((red_cmd, FAIL_OUT), (green_cmd, PASS_OUT)))
+    st = _state(repo)
+    if cleared:
+        assert st["red"] == {}, "只差輸出旗標的綠沒解紅：%r" % (st["red"],)
+    else:
+        assert gg.test_key(red_cmd) in st["red"], "非 pytest runner 的 -v 被剝，紅被誤解"
+
+
+def test_g98_s1_green_before_red_of_same_identity_does_not_clear_the_red(tmp_path):
+    """G98 S1（fable 終審 P1：身分合併的綠解紅不看順序）。
+
+    同回合：`pytest x -q` 綠（先）→ `pytest x -q --tb=short` 紅（後）→ Stop，再 Stop
+    一次（無新執行）。兩者身分相同，但綠在紅**之前**，不得解掉那個紅：紅仍在、
+    次數 1、streak 不歸 0。配對：G98 S2（跨回合同形態）、G92（綠在紅之後仍要解）。
+    """
+    repo = _repo(tmp_path)
+    red = "pytest tests/test_x.py -q --tb=short"
+    entries = _runs(("pytest tests/test_x.py -q", PASS_OUT), (red, FAIL_OUT))
+    _run(repo, entries)
+    assert _state(repo)["red"] == {gg.test_key(red): 1}, "前置不成立"
+    _run(repo, entries)
+    st = _state(repo)
+    assert st["red"] == {gg.test_key(red): 1}, "先綠後紅的紅被身分合併解掉：%r" % (st["red"],)
+    assert st["streak"] == 1, "streak=%r，被歸 0" % st["streak"]
+
+
+@pytest.mark.parametrize("green_cmd", [
+    "pytest tests/test_x.py -q",                  # 身分相同、鍵不同
+    "pytest tests/test_x.py -q --tb=short",       # 對照組：精確同鍵
+])
+def test_g98_s2_green_then_red_in_new_turn_restarts_at_one(tmp_path, green_cmd):
+    """G98 S2（fable 終審 P1，跨回合）；2026-10-06 fable 複審改期望。
+
+    前一回合 `--tb=short` 紅＝1；新回合先綠、後又紅（同身分）→ 計數 1、不擋。
+    原期望是 2 並擋下，fable 複審指出它釘住的正是結構性假陽性：綠出現在「已計的
+    紅」之後，那個紅就收束，之後的新紅從 1 重新計（tests-first 的「紅→綠→紅」）。
+    兩列都改成 1：第二列精確同鍵的對照組同理。配對：G98 S1（紅之後沒有綠仍是紅）、
+    G101（同回合遞增版）、G102（沒有綠的真連敗仍爬梯）。
+    """
+    repo = _repo(tmp_path)
+    red = "pytest tests/test_x.py -q --tb=short"
+    _run(repo, _runs((red, FAIL_OUT)))
+    assert _state(repo)["red"] == {gg.test_key(red): 1}, "前置不成立"
+    out = _run(repo, _runs((green_cmd, PASS_OUT), (red, FAIL_OUT)))
+    st = _state(repo)
+    assert st["red"].get(gg.test_key(red)) == 1, "計數 %r，應為 1" % (st["red"],)
+    assert not _blocked(out), "綠之後的新紅被當成連敗擋下"
+
+
+def test_g99_red_in_another_context_is_counted_despite_authoritative_green(tmp_path):
+    """G99（fable 終審裁決 2：權威綠分支的提早 return 吞掉其他 context 的紅）。
+
+    宣告權威驗證 `pytest -q`。同回合 `cd b` 的窄指令紅 → `cd a` 的權威綠 → Stop。
+    context b 沒有自己的權威綠，它的紅必須被計數（red 內有 `cd=b` 鍵、次數 1）。
+    配對：G62（同 context 的權威綠仍收束紅）、G63（不同 context 互不清除）。
+    """
+    repo = _repo(tmp_path, {"streak": 0, "shelved": [], "red": {}})
+    _declare_verifier(repo, "pytest -q")
+    red = "cd b && pytest tests/test_y.py -q"
+    _run(repo, _runs((red, FAIL_OUT), ("cd a && pytest -q", PASS_OUT)))
+    st = _state(repo)
+    assert st["red"].get(gg.test_key(red)) == 1, "b 的紅被吞掉：%r" % (st["red"],)
+
+
+def test_g100_goal_identity_survives_the_simplified_pytest_check():
+    """G100（fable 終審 P3：簡化後的身分判斷不得退化）。
+
+    `uv run --no-sync pytest … -v` 與不帶 `-v` 的身分相同；
+    配對：`go test -run pytest -v ./pkg` 與不帶 `-v` 的身分**不同**（pytest 在參數位置）。
+    """
+    ident = lambda c: gg.goal_identity(gg.test_key(c))
+    assert (ident("uv run --no-sync pytest tests/test_x.py -v")
+            == ident("uv run --no-sync pytest tests/test_x.py"))
+    assert (ident("go test -run pytest -v ./pkg")
+            != ident("go test -run pytest ./pkg"))
+
+
+def _stops(repo, entries, upto):
+    """同一回合的遞增 transcript：依序在前 n 筆處各 Stop 一次，回傳每次的輸出。"""
+    return [_run(repo, entries[:n]) for n in upto]
+
+
+@pytest.mark.parametrize("green_cmd", [
+    "pytest tests/test_x.py -q",
+    "pytest tests/test_x.py -q --tb=short",       # 同身分、不同鍵的綠
+])
+def test_g101_tests_first_red_green_red_slices_never_climb(tmp_path, green_cmd):
+    """G101（fable 複審 C′）：同一回合 tests-first 三片「紅→綠→紅→綠→紅」不得爬梯。
+
+    `analyze_turn` 每鍵只留最後一筆，中間的綠被最後的紅蓋掉，已計的紅解不掉、
+    第三片就被擱置。斷言：三次 Stop 都沒擋、沒擱置，最後 `red` 該鍵為 1。
+    配對：G102（沒有綠的真連敗仍爬梯）、G94（段落內多次紅只計一次）。
+    """
+    repo = _repo(tmp_path)
+    cmd = "pytest tests/test_x.py -q"
+    entries = _runs((cmd, FAIL_OUT), (green_cmd, PASS_OUT), (cmd, FAIL_OUT),
+                    (green_cmd, PASS_OUT), (cmd, FAIL_OUT))
+    outs = _stops(repo, entries, (3, 7, 11))   # 紅1／紅3／紅5 之後各 Stop
+    assert not any(_blocked(o) for o in outs), "同回合的紅綠紅被擋下：%r" % (outs,)
+    st = _state(repo)
+    assert st["shelved"] == [], "被擱置：%r" % (st["shelved"],)
+    assert st["red"] == {gg.test_key(cmd): 1}, "最後的計數不是 1：%r" % (st["red"],)
+
+
+@pytest.mark.parametrize("lead_green", [False, True])
+def test_g102_red_streak_without_a_green_after_it_still_climbs(tmp_path, lead_green):
+    """G102（G101 的配對）：沒有綠的真連敗仍要爬梯。
+
+    同一回合同一鍵紅(id1)→Stop→紅(id2)→Stop：第二次 Stop 計 2 並擋；第三次擱置。
+    `lead_green=True`：第一片之前有一次綠（id0）——綠在已計的紅**之前**，不得重置，
+    第二次 Stop 仍是 2 並擋。只會「什麼都不擋」的實作過不了本格。
+    """
+    repo = _repo(tmp_path)
+    cmd = "pytest tests/test_x.py -q"
+    pairs = ([(cmd, PASS_OUT)] if lead_green else []) + [(cmd, FAIL_OUT)] * (
+        2 if lead_green else 3)
+    entries = _runs(*pairs)
+    first = 5 if lead_green else 3   # 第一個紅（id1）之後的 transcript 長度
+    outs = _stops(repo, entries, range(first, len(entries) + 1, 2))
+    st = _state(repo)
+    assert _blocked(outs[1]), "第二次 Stop 沒擋：%r" % (outs,)
+    if lead_green:
+        assert st["red"] == {gg.test_key(cmd): 2}, st["red"]
+    else:
+        assert st["shelved"], "第三次 Stop 沒擱置：%r" % (st,)
+
+
+def test_g103_h2_authoritative_green_between_counted_and_new_red_closes_it(tmp_path):
+    """G103 H2（fable 複審）：同回合 K 紅→權威綠→K 紅→權威綠→K 紅，不得爬梯。
+
+    根因：`verified_ctx` 的門檻是該 context 最後一個紅（含未計的新紅）的序位，
+    權威綠夾在「已計的紅」與「新紅」之間時永遠不在最後一個紅之後，不收束。
+    斷言三次 Stop 都不擋、不擱置，最後 K 為 1。配對：下面 H4／無權威綠兩格。
+    """
+    repo = _repo(tmp_path, {"streak": 0, "shelved": [], "red": {}})
+    _declare_verifier(repo, "pytest -q")
+    k = "pytest tests/test_x.py -q"
+    entries = _runs((k, FAIL_OUT), ("pytest -q", PASS_OUT), (k, FAIL_OUT),
+                    ("pytest -q", PASS_OUT), (k, FAIL_OUT))
+    outs = _stops(repo, entries, (3, 7, 11))
+    assert not any(_blocked(o) for o in outs), "被擋：%r" % (outs,)
+    st = _state(repo)
+    assert st["shelved"] == [], "被擱置：%r" % (st["shelved"],)
+    assert st["red"] == {gg.test_key(k): 1}, "最後計數不是 1：%r" % (st["red"],)
+
+
+def test_g103_h4_authoritative_green_in_new_turn_closes_the_old_red(tmp_path):
+    """G103 H4（fable 複審）：前一回合 K 紅＝1；新回合 權威綠→K 紅 → 計 1、不擋。
+
+    舊紅被新回合的權威綠收束，之後的新紅從 1 計。配對：H2、無權威綠的連敗。
+    """
+    repo = _repo(tmp_path, {"streak": 0, "shelved": [], "red": {}})
+    _declare_verifier(repo, "pytest -q")
+    k = "pytest tests/test_x.py -q"
+    _run(repo, _runs((k, FAIL_OUT)))
+    assert _state(repo)["red"] == {gg.test_key(k): 1}, "前置不成立"
+    out = _run(repo, _runs(("pytest -q", PASS_OUT), (k, FAIL_OUT)))
+    st = _state(repo)
+    assert st["red"] == {gg.test_key(k): 1}, "計數不是 1：%r" % (st["red"],)
+    assert not _blocked(out), "權威綠之後的新紅被當成連敗擋下"
+
+
+@pytest.mark.parametrize("lead_authoritative_green", [False, True])
+def test_g103_without_a_green_after_the_counted_red_it_still_climbs(
+        tmp_path, lead_authoritative_green):
+    """G103 配對：沒有權威綠夾在中間就照爬。
+
+    K 紅→Stop→K 紅→Stop：第二次擋（2）。`lead_authoritative_green=True`：權威綠在
+    已計的紅**之前**，不得重置，第二次仍是 2 並擋。只會「什麼都不擋」的實作過不了。
+    """
+    repo = _repo(tmp_path, {"streak": 0, "shelved": [], "red": {}})
+    _declare_verifier(repo, "pytest -q")
+    k = "pytest tests/test_x.py -q"
+    pairs = ([("pytest -q", PASS_OUT)] if lead_authoritative_green else []) + [
+        (k, FAIL_OUT)] * 2
+    entries = _runs(*pairs)
+    first = 5 if lead_authoritative_green else 3
+    outs = _stops(repo, entries, (first, first + 2))
+    assert _blocked(outs[1]), "第二次 Stop 沒擋：%r" % (outs,)
+    assert _state(repo)["red"] == {gg.test_key(k): 2}
+
+
+def _call_ids(entries):
+    """依序取出 transcript 內每個 tool_use 的 id。"""
+    return [e["message"]["content"][0]["id"] for e in entries
+            if e.get("type") == "assistant"]
+
+
+@pytest.mark.parametrize("auth_first_in_a,a_closed", [(False, True), (True, False)])
+def test_g104_authoritative_threshold_is_per_context_not_global(
+        tmp_path, auth_first_in_a, a_closed):
+    """G104（MG-14：權威綠門檻改回「全域」已計紅的最大序位，G103 後沒有測試咬得到）。
+
+    兩個 context（`cd a`／`cd b`）的紅都**已在前一次 Stop 計過**（狀態檔預先寫入
+    `red` 與 `counted`；不能用真的 Stop 兩次造出，因為任何含 B 紅的 transcript
+    前綴必然也含序位更小的 A 權威綠，會在那次 Stop 就收束）。
+    第一列：A 紅(1)→A 權威綠(2)→B 紅(3)→B 權威綠(4)。全域門檻＝3 大於 A 權威綠 2，
+    只有分 context 的門檻（A 為 1）才收束 A；斷言兩者都收束、再 Stop 一次不復活。
+    第二列（配對，防「什麼都收」）：A 權威綠(1)→A 紅(2)，綠在已計的紅**之前**，
+    A 不得收束。
+    ⚠ fable 複審（2026-10-06）：第一列的狀態**現行版本自己造不出來**——第一個看見
+    A 權威綠的 Stop 必然已收束 A（差分模糊 1500 個可達情境，原版與 MG-14 零差異）。
+    它唯一的來源是**升級中途**：上一版（門檻含未計的紅、取全域最大）在同一回合寫下
+    的狀態檔。所以本格盯的是「舊版狀態檔遷移」，MG-14 也只有本格咬得到。
+    """
+    repo = _repo(tmp_path)
+    _declare_verifier(repo, "pytest -q")
+    ka, kb = "cd a && pytest tests/test_x.py -q", "cd b && pytest tests/test_y.py -q"
+    auth_a, auth_b = "cd a && pytest -q", "cd b && pytest -q"
+    if auth_first_in_a:
+        entries = _runs((auth_a, PASS_OUT), (ka, FAIL_OUT))
+        ids = _call_ids(entries)
+        seeded = {"red": {gg.test_key(ka): 1}, "counted": [ids[1]]}
+    else:
+        entries = _runs((ka, FAIL_OUT), (auth_a, PASS_OUT),
+                        (kb, FAIL_OUT), (auth_b, PASS_OUT))
+        ids = _call_ids(entries)
+        seeded = {"red": {gg.test_key(ka): 1, gg.test_key(kb): 1},
+                  "counted": [ids[0], ids[2]]}
+    d = repo / ".fable"
+    d.mkdir(exist_ok=True)
+    (d / "goal_state.json").write_text(json.dumps(
+        {"streak": 1, "shelved": [], **seeded}), encoding="utf-8", newline="")
+    for _ in range(2):                       # 第二次 Stop：不得復活
+        out = _run(repo, entries)
+        red = _state(repo)["red"]
+        assert not _blocked(out)
+        assert (gg.test_key(ka) not in red) == a_closed, "A 的收束狀態不對：%r" % (red,)
+        if not auth_first_in_a:
+            assert red == {}, "兩個 context 的已計紅都該收束：%r" % (red,)
