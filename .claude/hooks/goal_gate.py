@@ -500,6 +500,15 @@ def strip_format_flags(run):
     return " ".join(out)
 
 
+HEREDOC_RE = re.compile(r"(<<-?[ \t]*(['\"]?)(\w+)\2[^\n]*\n)(.*?)(^[ \t]*\3[ \t]*$)",
+                        re.DOTALL | re.MULTILINE)
+
+
+def strip_heredoc_bodies(command):
+    """切掉 heredoc 內文，保留起始行與結束記號（G107）。沒有 heredoc 則原樣回傳。"""
+    return HEREDOC_RE.sub(lambda m: m.group(1) + m.group(5), command)
+
+
 def test_key(command):
     """The identity of a test run, with the shell plumbing removed.
 
@@ -527,6 +536,8 @@ def test_key(command):
     # 讓每一個目標都變成鍵 `'cat'`——三個無關的目標會被串成一條強制擱置，
     # 正是逐鍵計數要根治的那個病。`go test -run 'A|B'` 與 `'A|Z'` 同理，
     # 兩者都變成 `go test -run 'A`，一邊的綠會清掉另一邊的紅。
+    # G107：heredoc 內文的「pytest」字樣不得起算鍵——先切掉內文再找。
+    command = strip_heredoc_bodies(command)
     m = TEST_CMD_RE.search(command)
     stripped = command[m.start():] if m else command
     run = " ".join(strip_pipeline_tail(stripped).split())
@@ -535,8 +546,27 @@ def test_key(command):
 
 
 CD_RE = re.compile(r"(?:^|[;&|]|\bthen\b|\bdo\b)\s*cd\s+(\"[^\"]*\"|'[^']*'|\S+)")
-ENV_PREFIX_RE = re.compile(r"(?:^|[;&|]|\s)([A-Za-z_][A-Za-z0-9_]*)="
-                           r"(\"[^\"]*\"|'[^']*'|\S*)")
+_ENV_VALUE = r"(?:\"[^\"]*\"|'[^']*'|[^\s;&|]*)"
+ENV_PREFIX_RE = re.compile(r"(?:^|[;&|]|\s)([A-Za-z_][A-Za-z0-9_]*)=(" + _ENV_VALUE + ")")
+_EXPORT_BEFORE_RE = re.compile(
+    r"(?:^|[;&|\n])\s*export\s+(?:[A-Za-z_]\w*=" + _ENV_VALUE + r"\s+)*$")
+
+
+def _env_assignments(prefix):
+    """context 用的環境變數賦值：`export` 的賦值，或緊接命令的前綴賦值。
+
+    獨立賦值敘述（`P=x &&`、`P=x;`，非 export）不改變測試語義，不算（G106）。
+    """
+    out = []
+    for m in ENV_PREFIX_RE.finditer(prefix):
+        if _EXPORT_BEFORE_RE.search(prefix[:m.start(1)]):
+            out.append((m.group(1), m.group(2)))
+            continue
+        rest = prefix[m.end():].lstrip(" \t")
+        if rest and rest[0] in ";&|\n":
+            continue
+        out.append((m.group(1), m.group(2)))
+    return out
 
 
 CONTEXT_SEP = " :: "
@@ -606,7 +636,7 @@ def run_context(prefix):
     cds = CD_RE.findall(prefix)
     if cds:
         parts.append("cd=" + cds[-1].strip("\"'").replace("\\", "/").rstrip("/"))
-    for name, value in ENV_PREFIX_RE.findall(prefix):
+    for name, value in _env_assignments(prefix):
         masked = redact("%s=%s" % (name, value))
         head, _, shown = masked.partition("=")
         parts.append("%s=%s" % (head, shown.strip("\"'")))
@@ -737,7 +767,7 @@ def analyze_turn(turn, last_ids=None, history=None):
             if b.get("name") not in SHELL_TOOLS:
                 continue
             cmd = (b.get("input") or {}).get("command", "")
-            if TEST_CMD_RE.search(cmd) and not NOT_A_RUN_RE.search(cmd):
+            if TEST_CMD_RE.search(strip_heredoc_bodies(cmd)) and not NOT_A_RUN_RE.search(cmd):
                 test_ids[b.get("id")] = True
                 commands[b.get("id")] = cmd
 
@@ -1330,9 +1360,9 @@ def run_stop(data, root):
     #
     # 那句辯護的錯在於：「宣告檔在這個 repo」推不出「這個綠來自這個 repo」——
     # `cd` 不受宣告檔約束。屬〈引用≠推論〉。
-    declared = load_verifiers(root)
+    declared = {strip_format_flags(d) for d in load_verifiers(root)}
     verified_ctx = {key_context(k) for k in greens
-                    if strip_context(k) in declared
+                    if strip_format_flags(strip_context(k)) in declared
                     and order.get(k, 0) > latest_red_by_ctx.get(key_context(k), 0)}
     if verified_ctx:
         for k in [k for k in red if key_context(k) in verified_ctx]:
@@ -1345,7 +1375,7 @@ def run_stop(data, root):
         auth_order = {}
         for k in greens:
             c = key_context(k)
-            if c in verified_ctx and strip_context(k) in declared:
+            if c in verified_ctx and strip_format_flags(strip_context(k)) in declared:
                 auth_order[c] = max(auth_order.get(c, 0), order.get(k, 0))
         closed_ids = [last_ids[k] for k, v in verdicts.items()
                       if v == "fail" and last_ids.get(k)

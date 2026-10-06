@@ -47,6 +47,9 @@
   G100 簡化後的 pytest 身分判斷不退化：`uv run … pytest -v` 同身分、`go test -run pytest -v` 不同（fable 終審 P3）
   G101 同回合 tests-first「紅→綠→紅→綠→紅」三片不爬梯、不擱置，最後計數 1（fable 複審 C′）
   G102 沒有綠的真連敗仍爬梯：第二次 Stop 擋、第三次擱置；綠在已計的紅之前不得重置（G101 配對）
+  G105 權威驗證比對先剝輸出格式旗標；配對：-k 不同不收束（fable 複審 2026-10-06）
+  G106 `export A=1;` 與 `&&` 同 context、獨立賦值敘述不進 context；配對：值不同／指令前綴賦值仍算
+  G107 heredoc 內文的 pytest 字樣不得起算鍵；配對：一般指令鍵不變、無測試指令的 heredoc 不是執行
   G104 權威綠門檻是「每個 context 自己的已計紅」，不是全域最大值（MG-14）；配對：權威綠在已計紅之前不收束
   G103 權威綠夾在「已計的紅」與「新紅」之間要收束（H2 同回合、H4 跨回合）；無權威綠／權威綠在已計紅之前仍爬梯（配對）
   （G98 S2 期望於 2026-10-06 fable 複審改為「綠→紅 計 1、不擋」）
@@ -55,9 +58,14 @@
   cd <repo> && python -m pytest tests/test_goal_gate.py -v
 
 ══════════════════════════════════════
-執行紀錄（G82～G102，依時間由新到舊；最上面是最新一次）
+執行紀錄（G82～G107，依時間由新到舊；最上面是最新一次）
 ══════════════════════════════════════
-最後執行：2026-10-06 13:19 → 196 passed ✅
+最後執行：2026-10-06 14:42 → 207 passed（G105～G107 實作完成：權威比對剝格式旗標、context 只認 export
+  與緊接命令的賦值、判斷前切掉 heredoc 內文；暫存複本變異 MG-21～MG-26 六格各自翻紅）
+2026-10-06 14:11 → 6 failed, 201 passed（補 G105～G107 只寫測試、未改 goal_gate.py）
+2026-10-06 14:11 補 G105～G107（fable 複審三個誤擋缺陷）：預期紅 6 條（G105 兩列、G106 兩條、
+  G107 含 pytest 內文一列與無測試指令 heredoc 一條）；配對列（-k、值不同、一般指令、內文無 pytest）綠。
+2026-10-06 13:19 → 196 passed ✅
 2026-10-06 13:19 補 G104（MG-14：權威綠門檻改回全域已計紅，G103 後無測試咬得到）：只寫測試、未改 goal_gate.py；
   現行碼 196 passed；暫存複本上套 MG-14 → 1 failed, 195 passed
   （FAILED test_g104_…[False-True]）；配對列（權威綠在已計紅之前，A 不收束）綠。
@@ -2795,3 +2803,115 @@ def test_g104_authoritative_threshold_is_per_context_not_global(
         assert (gg.test_key(ka) not in red) == a_closed, "A 的收束狀態不對：%r" % (red,)
         if not auth_first_in_a:
             assert red == {}, "兩個 context 的已計紅都該收束：%r" % (red,)
+
+
+@pytest.mark.parametrize("green_cmd,closes", [
+    ("python -m pytest tests/ -q -p no:cacheprovider", True),
+    ("python -m pytest tests/ -q -rf --tb=no", True),
+    ("python -m pytest tests/ -q -k foo", False),     # 配對：選取不同，不是同一條
+])
+def test_g105_declared_verifier_green_with_format_flags_still_closes(
+        tmp_path, green_cmd, closes):
+    """G105（fable 複審）：權威驗證的比對要先剝輸出格式旗標。
+
+    根因：`strip_context(k) in declared` 是精確字串比對、不經 `strip_format_flags`，
+    宣告 `python -m pytest tests/ -q`，實跑加了 `-p no:cacheprovider`／`-rf --tb=no`
+    的綠比對不到，宣告形同無效。前置：窄鍵的紅已在前一回合計 1。
+    配對：`-k foo`（選取不同）的綠不是權威指令，不得收束（只會「什麼都收」的實作過不了）。
+    """
+    repo = _repo(tmp_path, {"streak": 0, "shelved": [], "red": {}})
+    _declare_verifier(repo, "python -m pytest tests/ -q")
+    narrow = "python -m pytest tests/test_x.py -q"
+    _run(repo, _runs((narrow, FAIL_OUT)))
+    assert _state(repo)["red"] == {gg.test_key(narrow): 1}, "前置不成立"
+    out = _run(repo, _runs((green_cmd, PASS_OUT)))
+    st = _state(repo)
+    assert not _blocked(out)
+    if closes:
+        assert st["red"] == {}, "權威綠（只差格式旗標）沒收束窄鍵的紅：%r" % (st["red"],)
+        assert st["streak"] == 0
+    else:
+        assert st["red"] == {gg.test_key(narrow): 1}, "選取不同的綠不該收束：%r" % (st["red"],)
+
+
+def test_g106_export_with_semicolon_and_and_and_share_one_context():
+    """G106 ①：`export A=1; …` 與 `export A=1 && …` 的 context 相同。
+
+    根因：`ENV_PREFIX_RE` 的值原本是「任意非空白字元」，`A=1;` 把分號吃進值，context 變成 `A=1;`。
+    """
+    k1 = gg.test_key("export A=1; uv run pytest t.py -q")
+    k2 = gg.test_key("export A=1 && uv run pytest t.py -q")
+    assert gg.key_context(k1) == gg.key_context(k2), (k1, k2)
+    assert gg.key_context(k1) != "", "A=1 這個 context 不見了：%r" % (k1,)
+
+
+def test_g106_real_red_and_green_have_one_goal_identity_and_green_closes_red(tmp_path):
+    """G106 ②：實例的紅與綠是同一個目標身分，綠解掉紅。
+
+    紅 `export TMPDIR=… PYTHONDONTWRITEBYTECODE=1; uv run --no-sync pytest t.py -q --tb=no`；
+    綠前面多一段獨立賦值敘述 `P="…" && `（不是 pytest 的指令前綴），尾旗標 `--tb=short`。
+    """
+    red = ("export TMPDIR=/tmp/x PYTHONDONTWRITEBYTECODE=1; "
+           "uv run --no-sync pytest t.py -q --tb=no")
+    green = ('P="/a/b/patch.py" && export TMPDIR=/tmp/x PYTHONDONTWRITEBYTECODE=1; '
+             "uv run --no-sync pytest t.py -q --tb=short")
+    assert gg.goal_identity(gg.test_key(red)) == gg.goal_identity(gg.test_key(green)), (
+        gg.test_key(red), gg.test_key(green))
+    repo = _repo(tmp_path, {"streak": 0, "shelved": [], "red": {}})
+    _run(repo, _runs((red, FAIL_OUT)))
+    assert _state(repo)["red"], "前置不成立：紅沒被記下"
+    _run(repo, _runs((green, PASS_OUT)))
+    assert _state(repo)["red"] == {}, "同一目標的綠沒解掉紅：%r" % (_state(repo)["red"],)
+
+
+def test_g106_pair_different_env_values_and_command_prefix_still_count_as_context(
+        tmp_path):
+    """G106 配對：值不同仍是不同 context；指令前綴賦值 `A=1 pytest …` 仍算 context。
+
+    防「context 一律清空」的過度修正：`TMPDIR=x`／`TMPDIR=y` 是兩個目標，
+    `TMPDIR=y` 的綠不得解掉 `TMPDIR=x` 的紅。
+    """
+    kx = gg.test_key("TMPDIR=x pytest t.py -q")
+    ky = gg.test_key("TMPDIR=y pytest t.py -q")
+    assert gg.key_context(kx) != gg.key_context(ky), (kx, ky)
+    assert gg.key_context(gg.test_key("A=1 pytest t.py -q")) == "A=1"
+    repo = _repo(tmp_path, {"streak": 0, "shelved": [], "red": {}})
+    _run(repo, _runs(("TMPDIR=x pytest t.py -q", FAIL_OUT)))
+    _run(repo, _runs(("TMPDIR=y pytest t.py -q", PASS_OUT)))
+    assert list(_state(repo)["red"]) == [kx], "另一個 context 的綠解掉了紅"
+
+
+@pytest.mark.parametrize("body", ["print('只認 pytest 的綠')", "print('只認 綠')"])
+def test_g107_heredoc_body_does_not_start_the_test_command_key(body):
+    """G107：heredoc 內文含「pytest」字樣時，鍵不得從內文起算。
+
+    根因：`TEST_CMD_RE.search` 取第一個命中，heredoc 內文裡的 pytest 先命中，
+    鍵變成 `cd=/x :: pytest 的綠') EOF python -m pytest …`。兩種內文都要得到
+    `cd=/x :: pytest tests/ -q`（內文改不改字樣不影響鍵）。
+    """
+    cmd = "cd /x && cat > f.py <<'EOF'\n%s\nEOF\npython -m pytest tests/ -q" % body
+    assert gg.test_key(cmd) == "cd=/x :: pytest tests/ -q", gg.test_key(cmd)
+
+
+@pytest.mark.parametrize("cmd,expected", [
+    ("cd /x && pytest tests/ -q", "cd=/x :: pytest tests/ -q"),
+    ("pytest tests/test_x.py -q | tail -3", "pytest tests/test_x.py -q"),
+])
+def test_g107_pair_commands_without_heredoc_keep_their_keys(cmd, expected):
+    """G107 配對：沒有 heredoc 的一般指令，鍵不變。"""
+    assert gg.test_key(cmd) == expected, gg.test_key(cmd)
+
+
+def test_g107_pair_heredoc_mentioning_pytest_with_no_test_command_is_not_a_run(
+        tmp_path):
+    """G107 配對：heredoc 內文含 pytest、之後沒有任何測試指令 → 不是測試執行。
+
+    以帶 FAIL_OUT 的輸出餵進去：若被當成測試指令，會記一個紅鍵。斷言不產生任何鍵。
+    """
+    repo = _repo(tmp_path, {"streak": 0, "shelved": [], "red": {}})
+    cmd = "cd /x && cat > f.py <<'EOF'\nprint('只認 pytest 的綠')\nEOF"
+    out = _run(repo, _runs((cmd, FAIL_OUT)))
+    assert not _blocked(out)
+    st = _state(repo)
+    assert st.get("red", {}) == {}, "heredoc 內文被當成測試指令：%r" % (st.get("red"),)
+    assert st.get("streak", 0) == 0

@@ -29,6 +29,12 @@ The current version is also kept in [VERSION](VERSION).
 - **已記過的紅之後出現綠，紅就收束**：段落只看最後一筆時，「紅→綠→紅」中間的綠被後面的紅
   蓋掉，測試先行每片一紅一綠也會在第三片被擱置。現在已計的紅之後只要出現同一目標的綠，
   那個紅就收束，之後的新紅從 1 計（§4b-1 第 3 條）；權威驗證綠同理（同一 context 內）。
+- **權威驗證指令只差輸出格式旗標就比對不到**：宣告 `python -m pytest tests/ -q`，實跑帶
+  `-p no:cacheprovider` 或 `-rf --tb=no` 時宣告形同無效。比對兩邊都先剝格式旗標；選取旗標不同仍不相符。
+- **`export A=1;` 的 `;` 被吞進 context，獨立賦值 `P=… &&` 也被算進 context**：同一個目標的紅與綠
+  因此落在兩個 context。值不再吞 `;`／`&`／`|`；只有 `export` 的賦值與緊接命令的前綴賦值算 context。
+- **heredoc 內文的「pytest」字樣被當成測試指令**：鍵從內文起算，那筆執行的紅綠都對不上。判斷是不是
+  測試指令、以及算鍵之前，先切掉 heredoc 內文；切掉後沒有 pytest 就不是測試指令。
 - 以上幾項以本機真實 transcript 重放確認誤擱置大幅下降；重放腳本與資料不在 repo，數字不列。
 
 ### Known limitations
@@ -42,13 +48,21 @@ The current version is also kept in [VERSION](VERSION).
   主對話用同一條測試指令（選取相同、輸出旗標可不同）親自跑一次綠。
 - **計數單位是 Stop 劃界的段落**：同一段落內同鍵真的連紅三次（中間有改碼）也只計 1——假陰性，
   落在 `_verdict` 明示偏好的方向；更準的「嘗試」訊號（兩次紅之間有 Edit／Write）另議。
-- **以下三項會造成誤擋，排在下一批修**（2026-10-06 fable 複審以真實 transcript 查出）：
-  - 權威驗證指令比對的是剝掉 context 後的原字串，不剝輸出格式旗標：宣告 `python -m pytest tests/ -q`，
-    實跑帶 `-p no:cacheprovider` 就比對不到，宣告形同無效。
-  - `export A=1; uv run pytest …` 的 context 值會把 `;` 吞進去，非 export 的 `P=…` 也被算進 context，
-    同一個目標的紅與綠因此落在兩個 context，紅解不掉。
-  - 判斷「是不是測試指令」取第一個 `pytest` 字樣，heredoc 內文含「pytest」時鍵會從內文起算，
-    那筆綠整筆報廢。
+- **heredoc 內用腳本呼叫 pytest 的執行看不到**：判斷前先切掉 heredoc 內文，所以
+  `python - <<'EOF' … subprocess.run(["pytest", …]) … EOF` 這類執行既不記紅也不記綠——假陰性，
+  保守方向。
+- **引號字串裡出現「pytest」仍會被當成測試指令**：例如交給其他工具的長提示文字含「pytest」字樣。
+  鍵從那個字樣起算，紅綠都對不上真正的目標；與 heredoc 內文同一類，尚未處理。
+- **連續的獨立賦值**：`X=1 Y=2 && cmd` 的 `X` 會因後面還有 token 而被算進 context；`set -a` 之後的
+  獨立賦值實際上會 export，但不算 context。
+- **「不是真的執行」的判斷仍看原始指令**：heredoc 內文含 `--collect-only`／`--version` 等字樣時，
+  後面真跑的 pytest 整筆不記（紅綠都看不見）——假陰性；修法是對切過內文的指令判斷。
+- **context 的 `cd` 只取第一個 `<<` 之前**：`cd A && cat > f <<'EOF' … EOF … cd B && pytest …`
+  記成 `cd=A`；狀態檔不分專案、只靠 `cd=` 分，這種形態下不同專案的紅綠可能互相解除（危險方向）。
+- **heredoc 邊界**：一般 `<<'EOF'` 的內文若有一行縮排的 `EOF` 會提前收尾（bash 不會）；
+  `<<\EOF`、CRLF 行尾、未閉合的 heredoc 不切，回到舊行為；引號內的 `<<` 在極端排版下可能誤切。
+- **`TMPDIR=$SP` 這類引用變數的值不展開**：`SP` 本身是獨立賦值、不算 context，於是不同暫存目錄的
+  執行被視為同一個 context——放寬方向，只影響「哪個綠能解哪個紅」。
 - **任一 context 被權威綠收束就把 `streak` 歸零**：其他 context 的已計紅仍在時這個鏡像欄失真；
   計數與擋人看的是 `red`，不受影響，只影響訊息顯示。
 
