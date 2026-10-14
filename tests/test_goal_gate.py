@@ -216,6 +216,23 @@ G9 的期望隨之反轉（提 id 仍要擋）。文件與程式不一致時，�
   Claude Code 真的把 decision:block 當成擋下收工：與 verify_gate 用的是同一個
   block 封包格式（該機制已由 verify_gate 在真實 session 驗證過），但本 gate 的
   兩種 block 尚未在真實 session 觸發過。解鎖條件＝連續兩次紅燈後觀察它是否擋下收工。
+
+──────────────────────────────────────
+2026-10-14 23:50 GMT+8：「這是不是測試執行」只認指令位置（G108～G111）
+──────────────────────────────────────
+缺陷類別：用子字串／整行判斷「這道指令是不是在做 X」（reports/defect_class_scan_20261014.md 類別一）。
+  G108／G108b（#6、#9）`cat pytest.ini`、`grep -rn pytest docs/`、`git commit -m "add pytest"`
+      不是測試執行；`uv run pytest`、`FOO=1 pytest`、`timeout 60 pytest`、`bash -lc "cd p && pytest"`、
+      `./venv/bin/pytest`、`bundle exec rspec`、`php vendor/bin/phpunit` 仍是
+  G109（#9）兩份 TEST_CMD_RE 文字相同（G66）之外，再綁行為：同一批指令兩份給同一個答案
+  G110（#11）`pytest tests/ && python3 --version` 的 `--version` 不屬於測試那一段，照計
+  G111（#10）鍵取自被判為測試執行的那一段：`pytest --collect-only -q && pytest tests/x.py -q`
+      → `pytest tests/x.py -q`
+修復前（G108～G111 + verify_gate T19～T20 合計）：26 failed, 44 passed（本檔 13 failed：G108 5、G110 4、G111 4）；
+修復後：全套 597 passed, 3 skipped。
+突變（指令位置改成「任何位置」＋ NOT_A_RUN 改回整行）：17 failed, 43 passed；還原 → 60 passed。
+⏳ 清單 #7（`python test_*.py` 非測試腳本被當測試）：這是已登記的檔名啟發式（T9／T11 同類），
+  寫不出期望值明確的紅燈，判定不成立，不修。
 """
 import atexit
 import json
@@ -2915,3 +2932,87 @@ def test_g107_pair_heredoc_mentioning_pytest_with_no_test_command_is_not_a_run(
     st = _state(repo)
     assert st.get("red", {}) == {}, "heredoc 內文被當成測試指令：%r" % (st.get("red"),)
     assert st.get("streak", 0) == 0
+
+
+# ── G108～G111：「這是不是測試執行」只認指令位置；--collect-only 只看自己那一段 ──────
+# 缺陷類別同 verify_gate T19：用子字串／整行判斷「這道指令是不是在做 X」
+# （reports/defect_class_scan_20261014.md 清單 #6／#9／#10／#11）。
+@pytest.mark.parametrize("cmd", [
+    "cat pytest.ini",
+    "grep -rn pytest docs/",
+    'git commit -m "add pytest"',
+    "pip install pytest",
+    "echo vitest",
+])
+def test_g108_mentioning_a_runner_is_not_a_test_run(tmp_path, cmd):
+    """G108（#6／#9）：goal_gate 與 verify_gate 一樣，只在指令位置才算測試執行。
+
+    端到端：這些指令的輸出若帶著失敗字樣，不得被計成一次紅。
+    """
+    assert not gg.TEST_CMD_RE.search(cmd), f"{cmd!r} 被認成測試指令"
+    repo = _repo(tmp_path)
+    _run(repo, _turn(cmd, FAIL_OUT))
+    streak = _state(repo)["streak"] if (repo / STATE_REL).exists() else 0
+    assert streak == 0, "只是提到 pytest 的指令被計成一次失敗的執行"
+
+
+@pytest.mark.parametrize("cmd", [
+    "pytest -q", "python -m pytest tests/ -q", "uv run pytest -q", "FOO=1 pytest -q",
+    "timeout 60 pytest -q", "env A=1 pytest -q", "cd p && pytest -q", "./venv/bin/pytest -q",
+    "py -m pytest", 'bash -lc "cd p && pytest -q"', "npx jest", "bundle exec rspec",
+    "php vendor/bin/phpunit", "python3 tool.py --test",
+])
+def test_g108b_real_runs_in_command_position_still_count(tmp_path, cmd):
+    """G108b：G108 的配對——真的跑測試（含前綴與包裝）仍然要計入。"""
+    assert gg.TEST_CMD_RE.search(cmd), f"{cmd!r} 不再被認成測試指令"
+    repo = _repo(tmp_path)
+    _run(repo, _turn(cmd, FAIL_OUT))
+    assert _state(repo)["streak"] == 1, "真的測試執行沒被計入"
+
+
+def test_g109_the_two_copies_of_the_test_command_pattern_stay_identical():
+    """G109（#9）：兩支 hook 各自獨立可執行，所以各有一份 TEST_CMD_RE——必須逐字相同。
+
+    G66 已綁文字與旗標；這裡再綁**行為**：同一批指令在兩份上給出同一個答案
+    （含這次新增的指令位置判定），改一份而不改另一份會在這裡叫。
+    """
+    import verify_gate as vg
+    assert gg.TEST_CMD_RE.pattern == vg.TEST_CMD_RE.pattern
+    for cmd in ["cat pytest.ini", "uv run pytest", "echo a && pytest -q", "make test",
+                "grep -rn jest src/", "python x.py --test", "FOO=1 tox"]:
+        assert bool(gg.TEST_CMD_RE.search(cmd)) == bool(vg.TEST_CMD_RE.search(cmd)), cmd
+
+
+@pytest.mark.parametrize("cmd,expect_counted", [
+    ("pytest tests/ -q && python3 --version", True),     # --version 屬於另一個指令
+    ("python3 --version && pytest tests/ -q", True),
+    ("pytest tests/ -q; pip --version", True),
+    ("pytest --collect-only -q && echo done", False),     # 配對：自己這一段才算
+    ("pytest --co -q", False),
+    ("pytest --collect-only -q; pytest tests/ -q", True),  # 同一行第二個才是真的執行
+    ("pytest --version | head -1", False),
+])
+def test_g110_not_a_run_flags_are_read_per_segment(tmp_path, cmd, expect_counted):
+    """G110（#11）：`--collect-only`／`--version` 只在含測試指令的那一段才算「不是執行」。
+
+    以前 `NOT_A_RUN_RE` 掃整行：`pytest tests/ && python3 --version` 整筆不計，
+    真正的紅被吞掉。
+    """
+    repo = _repo(tmp_path)
+    _run(repo, _turn(cmd, FAIL_OUT))
+    streak = _state(repo)["streak"] if (repo / STATE_REL).exists() else 0
+    assert (streak == 1) is expect_counted, f"{cmd!r}：streak={streak}"
+
+
+@pytest.mark.parametrize("cmd,expect", [
+    ("pytest --collect-only -q && pytest tests/test_x.py -q", "pytest tests/test_x.py -q"),
+    ("cat pytest.ini && pytest tests/test_x.py -q", "pytest tests/test_x.py -q"),
+    ("pytest tests/test_x.py -q && python3 --version", "pytest tests/test_x.py -q"),
+    ("cd /x && pytest --co -q; pytest tests/ -q", "cd=/x :: pytest tests/ -q"),
+    # 配對：沒有別的段落時鍵不變
+    ("pytest tests/test_x.py -q | tail -3", "pytest tests/test_x.py -q"),
+    ("cd /x && pytest tests/ -q", "cd=/x :: pytest tests/ -q"),
+])
+def test_g111_the_key_comes_from_the_segment_that_was_judged_a_run(cmd, expect):
+    """G111（#10）：鍵取自被判為測試執行的那一段，不是第一個字面命中。"""
+    assert gg.test_key(cmd) == expect, gg.test_key(cmd)

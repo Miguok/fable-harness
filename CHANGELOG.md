@@ -14,6 +14,7 @@ The current version is also kept in [VERSION](VERSION).
 
 ### Fixed
 
+- **「這是不是一次測試執行」只認指令位置**：驗證關卡與目標關卡以前對整條指令做子字串搜尋，`cat pytest.ini`、`grep -rn pytest docs/`、`git commit -m "add pytest"` 只是提到測試工具，卻被當成跑過測試（驗證關卡因此放行未驗證的改碼，目標關卡把它們的輸出計成紅或綠）。現在命中必須落在指令段的開頭，前面只允許環境變數賦值與 `env`、`timeout N`、`uv run`、`python -m`、`py -m`、`npx`、`bundle exec`、`bash -c` 等包裝，工具本身可帶路徑；兩支 hook 的辨識規則仍逐字相同。目標關卡另外修了兩處：`--collect-only`／`--version` 只看含測試指令的那一段（`pytest && python3 --version` 不再整筆不計），目標的鍵取自被判為測試執行的那一段。驗證關卡判斷「改了程式碼」時，先遮掉引號內文字：`echo "a > b.py"` 不再被當成寫入 b.py，被引號包住且含空白的寫入目標（`> "src/app code.py"`）與含分號的 `sed -i` 腳本則補上偵測。
 - **接線閘判斷「這是不是帶旗標的 commit」改用 shell 斷詞**：以前對整行做正則與子字串比對，`git log --grep commit -n 3`、`hooks/pre-commit`、檔名含 hookspath 會被當成 `git commit -n` 而誤擋；`git 'commit' --no-verify`、`c""ommit`、反斜線續行拆字、帶路徑的 `git.exe`、同一行用 `-c alias.<名>=commit` 定義的別名則漏擋。現在先斷詞並切成指令段，找出 git、跳過全域選項、取子命令，跳過 hook 的旗標與 `core.hooksPath` 只看該次 commit 呼叫自己的參數與設定。`-C` 目標是變數、命令替換或不存在的路徑，而該呼叫帶跳過 hook 的旗標或 hooksPath 時，改為擋下（以前直接放行）；引號不成對無法斷詞時退回舊判定，且只在該指令段內判斷。命令替換或變數當作子命令列入已知限制。
 - **目標關卡把同一次紅重複計數**：每次 Stop 都重讀整個回合，同一次紅的執行每次
   Stop 都再加 1；自主長跑時一個回合會 Stop 很多次，一次紅就被計成 3～4 次而擱置。

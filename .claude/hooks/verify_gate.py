@@ -24,17 +24,47 @@ CODE_EXTS = {
     ".go", ".rs", ".java", ".c", ".cpp", ".h", ".hpp", ".cs", ".rb", ".sql", ".php",
 }
 
+# 「這是不是一次測試執行」只認**指令位置**（2026-10-14，清單 #6／#9）。
+# 以前是對整條指令字串做子字串搜尋：`cat pytest.ini`、`grep -rn pytest docs/`、
+# `git commit -m "add pytest"` 都只是**提到**測試工具，卻被當成跑過測試。
+# 現在命中必須落在一個指令段的開頭：段首（行首、`;`、`&&`、`||`、`|`、`(`、換行、
+# `then`／`do`…）之後，只允許環境變數賦值，以及這幾種包裝——`env`、`timeout N`、
+# `uv run`、`python -m`、`py -m`、`npx`、`bundle exec`、`bash -c "…"` 等——
+# 然後是（可帶路徑的）測試工具本身。具名群組 `run` 是測試指令的起點，
+# 給 `goal_gate.test_key` 切鍵用；包裝與賦值留在 `run` 之外，才不會改變鍵的形狀。
+# ⚠ 這份文字與 goal_gate.py／verify_gate.py 的另一份**必須逐字相同**（G66 綁住）。
+_CMD_POS = (r"(?:^|[;&|(\r\n]|\bthen\b|\bdo\b|\belse\b|\belif\b|\bif\b|\bwhile\b|\buntil\b)"
+            r"[ \t]*")
+_CMD_ENV = r"[A-Za-z_][A-Za-z0-9_]*=(?:\"[^\"]*\"|'[^']*'|[^\s;&|]*)[ \t]+"
+_CMD_WRAP = (
+    r"(?:(?:sudo|nice|nohup|time|command|exec|winpty|setsid|xvfb-run|unbuffer|ionice"
+    r"|stdbuf|php|node|ruby)(?:[ \t]+-\S+)*[ \t]+"
+    r"|env(?:[ \t]+-\S+)*[ \t]+"
+    r"|timeout(?:[ \t]+-\S+)*[ \t]+[0-9][\w.]*[ \t]+"
+    r"|(?:uv|poetry|pipenv|pdm|hatch|rye)[ \t]+run[ \t]+"
+    r"(?:-[\w-]+(?:[= ](?!-)[^\s;&|]+)?[ \t]+)*"
+    r"|(?:npx|bunx|pnpx|pnpm[ \t]+(?:exec|dlx)|yarn[ \t]+exec|npm[ \t]+exec"
+    r"|pipx[ \t]+run|bundle[ \t]+exec)[ \t]+(?:-\S+[ \t]+)*"
+    r"|(?:[^\s;&|\"']*[/\\])?py(?:thon)?[0-9.]*(?:\.exe)?[ \t]+(?:-(?!m\b)[\w.]+[ \t]+)*-m[ \t]+"
+    r"|coverage[ \t]+run[ \t]+(?:-\S+[ \t]+)*-m[ \t]+"
+    r"|(?:ba|z|da|k)?sh[ \t]+-\w*c[ \t]+[\"']?"
+    r"|cmd(?:\.exe)?[ \t]+/[ck][ \t]+[\"']?"
+    r"|(?:powershell|pwsh)(?:\.exe)?[ \t]+(?:-\w+[ \t]+)*-c(?:ommand)?[ \t]+[\"']?"
+    r"|wsl(?:[ \t]+-\S+)*[ \t]+)"
+)
 TEST_CMD_RE = re.compile(
-    r"(pytest"
+    _CMD_POS + r"(?:" + _CMD_WRAP + r"|" + _CMD_ENV + r")*"
+    r"(?:[^\s;&|\"']*[/\\])?"
+    r"(?P<run>(pytest"
     r"|python[3]?(\.exe)?\s+(-m\s+unittest|(\S*[/\\])?(test\S*\.py|\S*_test\.py))"
     r"|npm\s+(run\s+)?test(?:[:._-][\w:.-]*)?|yarn\s+test(?:[:._-][\w:.-]*)?|pnpm\s+(run\s+)?test(?:[:._-][\w:.-]*)?|bun\s+test\b|node\s+--test"
     r"|go\s+test|cargo\s+test|\bvitest\b|\bjest\b"
     r"|mvnw?(\.cmd)?\s+(\S+\s+)*test(\s|$)|gradlew?(\.bat)?\s+(\S+\s+)*test(\s|$)|dotnet\s+test(\s|$)"
     r"|\brspec\b|\bphpunit\b|\bctest\b|make\s+test\b|rake\s+(\S+\s+)*test\b|mix\s+test\b"
-    r"|(^|[;&|]\s*)(tox|nox)\b|deno\s+test|rails\s+test"
+    r"|(tox|nox)\b|deno\s+test|rails\s+test"
     # 腳本自帶 --test 自測入口（2026-07-05 T11：zh_convert_safe.py --test 真實
     # session 連續誤攔實證）；(\s|$) 錨定使 --tests/--testing/--test-pypi 不假放行
-    r"|\s--test(\s|$))"
+    r"|[^;&|\r\n]*?\s--test(\s|$)))"
     # 與 goal_gate 的同一條尾界：路徑裡的 `pytest`／`jest` 不得被當成測試指令。
     # 兩份必須同時改——2026-09-06 只改了一份，於是同一條 `./gradlew test --info`
     # 在兩支 hook 得到相反的答案，而 verify_gate 的測試還釘住了其中一個。
@@ -63,14 +93,27 @@ _SED_INPLACE_RE = re.compile(
 _TEMP_MARKERS = ("/tmp/", "\\temp\\", "/temp/", "scratchpad", "appdata", "\\tmp\\")
 
 
+_QUOTED_SPAN_RE = re.compile(r"\$?'[^']*'|\"(?:[^\"\\]|\\.)*\"")
+
+
+def _mask_quoted(text):
+    """把引號內容（含引號本身，`$'…'` 也算）換成等長的底線，位置不變。"""
+    return _QUOTED_SPAN_RE.sub(lambda m: "_" * len(m.group(0)), text)
+
+
 def shell_written_code_files(command):
     """回傳這道 shell 命令寫入的程式碼檔名（沒有就空列表）。
 
     只看寫入目標的副檔名，不看命令裡出現過哪些檔——讀 .py 而寫 .txt 不算改碼。
     """
     written = []
+    # 引號內的 `>`、`tee` 不是寫入運算子：`echo "a > b.py"` 沒有改任何檔（清單 #8）。
+    # 比對在「引號內容換成底線」的版本上做，目標再從原字串同一個位置取回——
+    # 被引號包住的目標（`> "src/a b.py"`）因此仍抓得到，而且含空白也整段取到。
+    masked = _mask_quoted(command)
     for pattern in (_REDIRECT_OR_TEE_RE, _SED_INPLACE_RE):
-        for target in pattern.findall(command):
+        for m in pattern.finditer(masked):
+            target = command[m.start(1):m.end(1)].strip("'\"")
             lowered = target.lower()
             if any(marker in lowered for marker in _TEMP_MARKERS):
                 continue

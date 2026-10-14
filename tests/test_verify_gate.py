@@ -96,10 +96,19 @@ fail-then-pass guard：
   真實 Stop 事件端到端觸發：需在互動 session 中讓模型改碼後結束才能觀察，
   無法以 claude -p 穩定重現（-p 模式模型行為不可控）；解鎖條件＝佈署後
   以真實互動 session 手動演練一次（改一行 .py 不跑測試即結束，應見擋回訊息）。
+
+──────────────────────────────────────
+2026-10-14 23:50 GMT+8：T19～T20（清單 #6、#8）
+──────────────────────────────────────
+  T19／T19b 只提到測試工具的指令不算跑過測試（8 條必須仍擋）；指令位置的真測試執行仍放行（20 條）
+  T20／T20b 引號內的 `>`、`tee` 不是寫入（4 條不擋）；引號外與被引號包住的目標仍是改碼（5 條擋）
+      ——T20b 的 `cat > "src/app code.py"` 與 `sed -i 's/a;b/c/' d.py` 在修復前**漏擋**
+修復前：T19 7 failed、T20 4 failed、T20b 2 failed；修復後：本檔 55 passed。
 """
 import atexit
 import shutil
 import json
+import pytest
 import subprocess
 import sys
 import tempfile
@@ -507,3 +516,95 @@ def test_t18_injected_file_names_are_flattened_and_capped(tmp_path):
     assert "\n" not in reason, f"注入內容帶著換行進了擋人訊息：{reason!r}"
     assert reason.count("f%d.py" % 59) == 0, "沒有上限，全部 61 個檔名都列了出來"
     assert reason.count("、") < mod.MAX_LISTED_FILES + 2, f"超出上限：{reason!r}"
+
+
+# ── T19～T21：「這是不是測試執行」與「這是不是改碼」只認指令位置／引號外 ─────────────
+# 缺陷類別：判斷「這道指令是不是在做 X」用子字串比對（reports/defect_class_scan_20261014.md
+# 類別一）。`cat pytest.ini`、`grep -rn pytest docs/` 只是**提到** pytest，卻被當成跑過測試，
+# Stop 就放行了一輪沒驗證的改碼；`echo "a > b.py"` 的 `>` 在引號裡，卻被當成寫入 b.py。
+def _blocked_after(tmp_path, command, edit_path="D:\\proj\\app.py"):
+    entries = [
+        _user("幫我修 bug"),
+        _tool_use("Edit", {"file_path": edit_path, "old_string": "a", "new_string": "b"}),
+        _tool_result(),
+        _tool_use("Bash", {"command": command}),
+        _tool_result(),
+    ]
+    out, rc = run_gate(tmp_path, entries)
+    assert rc == 0
+    return bool(out) and json.loads(out).get("decision") == "block"
+
+
+_MERE_MENTIONS = [
+    "cat pytest.ini",
+    "grep -rn pytest docs/",
+    'git commit -m "add pytest"',
+    "pip install pytest",
+    "ls node_modules/.bin | grep jest",
+    "echo vitest is installed",
+    "cat package.json | grep -n jest",
+    "git log --oneline -- tests/test_pytest_plugin.sh",
+]
+
+_REAL_RUNS = [
+    "pytest -q",
+    "python -m pytest tests/ -q",
+    "python3 -m pytest",
+    "py -m pytest tests/",
+    "uv run pytest tests/ -q",
+    "uv run --with pytest-cov pytest -q",
+    "FOO=1 pytest -q",
+    "timeout 60 pytest -q",
+    "env A=1 B=2 pytest -q",
+    "cd proj && pytest -q",
+    "cd proj; python -m pytest",
+    "./venv/bin/pytest -q",
+    ".venv/Scripts/python.exe -m pytest tests/",
+    'bash -lc "cd proj && pytest -q"',
+    "npx jest",
+    "bundle exec rspec spec/models",
+    "php vendor/bin/phpunit tests/",
+    "echo start && pytest -q | tail -3",
+    "if pytest -q; then echo ok; fi",
+    "PYTEST -q",
+]
+
+
+@pytest.mark.parametrize("cmd", _MERE_MENTIONS)
+def test_t19_a_command_that_only_mentions_a_runner_is_not_a_test_run(tmp_path, cmd):
+    """T19（清單 #6）：只是提到 pytest／jest 等字樣，不算跑過測試 → 改碼後仍要擋。"""
+    assert _blocked_after(tmp_path, cmd), f"{cmd!r} 被當成測試執行，Stop 放行了未驗證的改碼"
+
+
+@pytest.mark.parametrize("cmd", _REAL_RUNS)
+def test_t19b_a_real_test_run_in_command_position_still_counts(tmp_path, cmd):
+    """T19b：T19 的配對——真的在指令位置的測試執行（含前綴、包裝、路徑）仍要放行。"""
+    assert not _blocked_after(tmp_path, cmd), f"{cmd!r} 是一次真的測試執行，卻被擋了"
+
+
+@pytest.mark.parametrize("cmd", [
+    'echo "a > b.py"',
+    "echo 'x | tee c.py'",
+    'grep ">> d.py" notes.txt',
+    'printf "%s" "tee e.py"',
+])
+def test_t20_redirect_inside_quotes_is_not_a_write(tmp_path, cmd):
+    """T20（清單 #8）：引號內的 `>`、`tee` 不是寫入——沒有改碼就不該擋。"""
+    entries = [_user("看一下"), _tool_use("Bash", {"command": cmd}), _tool_result()]
+    out, rc = run_gate(tmp_path, entries)
+    assert rc == 0 and out == "", f"引號內文字被當成改碼：{cmd!r} → {out[:80]!r}"
+
+
+@pytest.mark.parametrize("cmd,name", [
+    ("echo x > b.py", "b.py"),
+    ('cat > "src/app code.py" <<EOF\nx=1\nEOF', "app code.py"),
+    ("echo x | tee -a c.py", "c.py"),
+    ("sed -i 's/a;b/c/' d.py", "d.py"),
+    ('echo "hello" > "e.py"', "e.py"),
+])
+def test_t20b_real_writes_to_code_still_block(tmp_path, cmd, name):
+    """T20b：T20 的配對——引號外的重導向／tee／sed -i（含目標被引號包住）仍是改碼。"""
+    entries = [_user("改檔"), _tool_use("Bash", {"command": cmd}), _tool_result()]
+    out, rc = run_gate(tmp_path, entries)
+    assert rc == 0 and out, f"真的寫入 {name} 卻沒擋：{cmd!r}"
+    assert name in json.loads(out)["reason"]
