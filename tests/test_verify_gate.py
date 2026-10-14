@@ -104,10 +104,28 @@ fail-then-pass guard：
   T20／T20b 引號內的 `>`、`tee` 不是寫入（4 條不擋）；引號外與被引號包住的目標仍是改碼（5 條擋）
       ——T20b 的 `cat > "src/app code.py"` 與 `sed -i 's/a;b/c/' d.py` 在修復前**漏擋**
 修復前：T19 7 failed、T20 4 failed、T20b 2 failed；修復後：本檔 55 passed。
+
+──────────────────────────────────────
+2026-10-14 23:56 GMT+8：T22～T25（清單 #17、#18、#19）——範圍判定
+──────────────────────────────────────
+缺陷類別二：判斷「這個檔案屬不屬於本專案」的範圍缺失。判準只有一個，Edit/Write 與
+shell 寫入共用：該檔所在目錄的 `git rev-parse --git-common-dir` 與 session cwd 的相同才算。
+  T22／T22b（#17）Edit/Write 寫到非 repo 目錄、無關 repo 不算；本專案、linked worktree、
+      名字含 temp／scratchpad 的專案子目錄仍算
+  T23（#18）shell 寫入用同一判準，`_TEMP_MARKERS` 子字串移除：`src/temp/a.py`、
+      `scratchpad/b.py` 在專案內 → 擋；相對路徑以 payload cwd 解析
+  T24（#19）變數目標先用同一道指令內的賦值與環境變數展開；展不開 → fail-closed 算改碼
+      （副檔名確定不是程式碼者除外）
+  T25 git 不可用（PATH 清空）→ fail-closed；配對：git 可用時同一個 scratch 檔不擋
+修復前：8 failed, 7 passed（T22／T23×3／T24×2＋`$(mktemp -d)`／T25）；修復後：本檔 70 passed。
+突變（Scope.contains 恆回 True）：6 failed, 9 passed；還原 → 15 passed。
+⚠ 目錄不存在（問不到 git）→ 算專案程式碼（fail-closed）；既有 T1／T13 等用不存在的 `D:\\proj`、
+  `/proj` 路徑，因此維持原判定，期望值未改。
 """
 import atexit
 import shutil
 import json
+import os
 import pytest
 import subprocess
 import sys
@@ -608,3 +626,125 @@ def test_t20b_real_writes_to_code_still_block(tmp_path, cmd, name):
     out, rc = run_gate(tmp_path, entries)
     assert rc == 0 and out, f"真的寫入 {name} 卻沒擋：{cmd!r}"
     assert name in json.loads(out)["reason"]
+
+
+# ── T22～T25：「改的是不是本專案的程式碼」——Edit/Write 與 shell 寫入共用同一個範圍判準 ──
+# 缺陷類別二（reports/defect_class_scan_20261014.md）：判斷「這個檔案屬不屬於本專案」
+# 的範圍缺失。以前 shell 寫入靠路徑子字串（`_TEMP_MARKERS`）排除暫存區，Edit/Write
+# 完全沒有排除；變數路徑兩個方向都錯。判準現在只有一個：該檔所在目錄的
+# `git rev-parse --git-common-dir` 與 session cwd 的相同才算。
+def _git(*args, cwd):
+    subprocess.run(["git", *args], cwd=str(cwd), check=True, capture_output=True,
+                   text=True, encoding="utf-8")
+
+
+def _project(tmp_path):
+    """tmp 下的專案 repo（有一個 commit）、同 repo 的 linked worktree、另一個無關 repo、非 repo 目錄。"""
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    _git("init", "-q", cwd=proj)
+    (proj / "src").mkdir()
+    (proj / "src" / "temp").mkdir()
+    (proj / "scratchpad").mkdir()
+    (proj / "README.txt").write_text("x", encoding="utf-8")
+    _git("add", "-A", cwd=proj)
+    _git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init", cwd=proj)
+    wt = tmp_path / "proj-wt"
+    _git("worktree", "add", "-q", str(wt), "-b", "side", cwd=proj)
+    other = tmp_path / "other"
+    other.mkdir()
+    _git("init", "-q", cwd=other)
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    return proj, wt, other, plain
+
+
+def _scoped_run(tmp_path, entries, cwd, env=None):
+    tp = tmp_path / "transcript.jsonl"
+    tp.write_text("\n".join(json.dumps(e, ensure_ascii=False) for e in entries),
+                  encoding="utf-8")
+    payload = json.dumps({"session_id": "t", "hook_event_name": "Stop",
+                          "stop_hook_active": False, "cwd": str(cwd),
+                          "transcript_path": str(tp)})
+    proc = subprocess.run([sys.executable, str(GATE)], input=payload, capture_output=True,
+                          text=True, encoding="utf-8", timeout=60, env=env)
+    assert proc.returncode == 0, proc.stderr
+    out = proc.stdout.strip()
+    return bool(out) and json.loads(out).get("decision") == "block"
+
+
+def _edit_entries(path):
+    return [_user("改一下"), _tool_use("Edit", {"file_path": str(path), "old_string": "a",
+                                                "new_string": "b"}), _tool_result()]
+
+
+def _shell_entries(command):
+    return [_user("改一下"), _tool_use("Bash", {"command": command}), _tool_result()]
+
+
+def test_t22_edit_and_write_outside_the_project_do_not_count(tmp_path):
+    """T22（清單 #17）：Edit/Write 寫到別的 repo 或非 repo 目錄，不是本專案的改碼。
+
+    本 session 實際發生 4 次：在 scratchpad 寫一次性腳本，Stop 卻被擋、被要求補測試。
+    配對 T22b：專案裡與專案的 linked worktree 裡的檔案仍然算。
+    """
+    proj, wt, other, plain = _project(tmp_path)
+    assert not _scoped_run(tmp_path, _edit_entries(plain / "scratch.py"), proj), "非 repo 目錄被當成專案"
+    assert not _scoped_run(tmp_path, _edit_entries(other / "tool.py"), proj), "無關的 repo 被當成專案"
+
+
+def test_t22b_the_project_and_its_linked_worktree_still_count(tmp_path):
+    """T22b：T22 的配對——本專案、本專案的 linked worktree、名字裡有 temp／scratchpad 的子目錄都要擋。"""
+    proj, wt, other, plain = _project(tmp_path)
+    for target in (proj / "src" / "app.py", wt / "app.py",
+                   proj / "src" / "temp" / "a.py", proj / "scratchpad" / "b.py"):
+        assert _scoped_run(tmp_path, _edit_entries(target), proj), f"{target} 是本專案的改碼卻沒擋"
+
+
+@pytest.mark.parametrize("make_command,counts", [
+    (lambda d: f'echo x > "{d["plain"]}/out.py"', False),
+    (lambda d: f'echo x > {d["other"]}/out.py', False),
+    (lambda d: f'echo x > {d["proj"]}/src/temp/a.py', True),     # 以前被 `/temp/` 子字串排除
+    (lambda d: f'echo x > {d["proj"]}/scratchpad/b.py', True),   # 以前被 `scratchpad` 子字串排除
+    (lambda d: f'echo x | tee {d["wt"]}/c.py', True),
+    (lambda d: "echo x > src/rel.py", True),                      # 相對路徑以 session cwd 解析
+])
+def test_t23_shell_writes_use_the_same_scope_as_edit(tmp_path, make_command, counts):
+    """T23（清單 #18）：shell 寫入與 Edit/Write 同一個判準；子字串排除（`/temp/`、`scratchpad`）移除。"""
+    proj, wt, other, plain = _project(tmp_path)
+    d = {k: str(v).replace("\\", "/") for k, v in
+         {"proj": proj, "wt": wt, "other": other, "plain": plain}.items()}
+    assert _scoped_run(tmp_path, _shell_entries(make_command(d)), proj) is counts
+
+
+@pytest.mark.parametrize("make_command,counts", [
+    ('SP={plain}; echo x > $SP/a.py', False),                  # 變數展開後在專案外 → 不算
+    ('SP="{plain}"; echo x > "$SP/a.py"', False),
+    ('SP={proj}/src; echo x > ${{SP}}/a.py', True),            # 展開後在專案內 → 算
+    ('echo x > $NO_SUCH_VAR_Q9/a.py', True),                   # 展不開 → fail-closed
+    ('echo x > $(mktemp -d)/a.py', True),
+    ('echo x > $NO_SUCH_VAR_Q9/notes.txt', False),             # 展不開但副檔名確定不是程式碼
+])
+def test_t24_variable_targets_are_expanded_or_fail_closed(tmp_path, make_command, counts):
+    """T24（清單 #19）：shell 目標含變數時，先用同一道指令內的賦值與環境變數展開。
+
+    以前 `$SP/a.py` 連展開都沒有：scratchpad 變數被誤擋、專案內變數路徑的判斷靠字面碰運氣。
+    """
+    proj, wt, other, plain = _project(tmp_path)
+    cmd = make_command.format(plain=str(plain).replace("\\", "/"),
+                              proj=str(proj).replace("\\", "/"))
+    assert _scoped_run(tmp_path, _shell_entries(cmd), proj) is counts, cmd
+
+
+def test_t25_when_git_cannot_answer_the_gate_fails_closed(tmp_path):
+    """T25：git 不可用（PATH 被清空）→ 問不到範圍 → 算專案程式碼（fail-closed）。
+
+    配對：同一個 scratch 檔，git 可用時不擋（T22）。沒有這一條，「git 一壞就全放行」
+    的實作也會讓 T22 全綠。
+    """
+    proj, wt, other, plain = _project(tmp_path)
+    env = {k: v for k, v in os.environ.items() if k.upper() != "PATH"}
+    env["PATH"] = ""
+    assert _scoped_run(tmp_path, _edit_entries(plain / "scratch.py"), proj, env=env), \
+        "git 不可用時應 fail-closed 算改碼"
+    assert not _scoped_run(tmp_path, _edit_entries(plain / "scratch.py"), proj)

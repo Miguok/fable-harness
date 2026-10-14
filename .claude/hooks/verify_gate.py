@@ -15,6 +15,7 @@ T11 --test 自測入口、T12 fail-open 屍檢遙測且 sanitize 不倒 payload�
 import json
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path, PurePath
 
@@ -89,8 +90,13 @@ _SED_INPLACE_RE = re.compile(
     # 貪婪（非 lazy）是刻意的：sed 的檔名在最後，lazy 會停在 script 參數上（實測 's/a/b/' 被當成檔名）
     r"\bsed\b(?:\s+-[^\s]+)*\s+-i(?:\.\w+)?\b[^|;&\n]*\s+['\"]?([^\s'\";|&<>]+)"
 )
-# 暫存區不算專案程式碼：寫 scratchpad 的一次性腳本不該觸發 gate。
-_TEMP_MARKERS = ("/tmp/", "\\temp\\", "/temp/", "scratchpad", "appdata", "\\tmp\\")
+# 「這個檔案屬不屬於本專案」不再用路徑裡的子字串猜（以前的 `_TEMP_MARKERS`：
+# `src/temp/a.py` 因為含 `/temp/` 被排除而漏擋，scratchpad 的檔案走 Edit/Write 卻
+# 照樣被擋）。判準只有一個，Edit/Write 與 shell 寫入共用：**該檔所在目錄的
+# `git rev-parse --git-common-dir` 與 session cwd 的相同才算**——Fable 的 linked
+# worktree 算；scratchpad 裡另外 `git init` 的測試 repo、非 repo 目錄不算。
+# git 不可用、逾時、出錯、或目錄已不存在 → 算（fail-closed）：寧可多擋一次，
+# 也不要因為認不出來就讓未驗證的改碼溜過去。
 
 
 _QUOTED_SPAN_RE = re.compile(r"\$?'[^']*'|\"(?:[^\"\\]|\\.)*\"")
@@ -101,25 +107,133 @@ def _mask_quoted(text):
     return _QUOTED_SPAN_RE.sub(lambda m: "_" * len(m.group(0)), text)
 
 
-def shell_written_code_files(command):
+def _msys_to_native(path):
+    """Git Bash 寫的 `/c/Users/…`、`/tmp/…` 換成 Windows 原生路徑（非 Windows 原樣）。"""
+    if os.name != "nt" or not path.startswith("/"):
+        return path
+    m = re.match(r"^/([A-Za-z])(?:/(.*))?$", path)
+    if m:
+        return m.group(1).upper() + ":/" + (m.group(2) or "")
+    if path == "/tmp" or path.startswith("/tmp/"):
+        import tempfile
+        return tempfile.gettempdir() + path[4:]
+    return path
+
+
+def _common_dir(directory):
+    """`("repo", 正規化的 common dir)`／`("nogit", None)`／`("error", None)`。"""
+    try:
+        out = subprocess.run(
+            ["git", "-C", directory, "rev-parse", "--git-common-dir"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=5, env=dict(os.environ, LC_ALL="C"))
+    except Exception as exc:
+        note_quiet("scope: git 不可用", exc)
+        return "error", None
+    if out.returncode != 0:
+        if "not a git repository" in (out.stderr or "").lower():
+            return "nogit", None
+        note_quiet("scope: git rev-parse 失敗")
+        return "error", None
+    path = (out.stdout or "").strip()
+    if not path:
+        return "error", None
+    if not os.path.isabs(path):
+        path = os.path.join(directory, path)
+    return "repo", os.path.normcase(os.path.realpath(path))
+
+
+class Scope:
+    """Does a path belong to the project of the session's cwd?  One answer per directory."""
+
+    def __init__(self, cwd=None):
+        self.cwd = os.path.realpath(cwd or os.getcwd())
+        self._by_dir = {}
+        self._session = None
+
+    def _kind(self, directory):
+        key = os.path.normcase(directory)
+        if key not in self._by_dir:
+            self._by_dir[key] = _common_dir(directory)
+        return self._by_dir[key]
+
+    def contains(self, path):
+        native = _msys_to_native(os.path.expanduser(path))
+        if not os.path.isabs(native):
+            native = os.path.join(self.cwd, native)
+        directory = os.path.dirname(native)
+        if not os.path.isdir(directory):
+            return True  # 目錄不存在：問不到 git，fail-closed
+        directory = os.path.realpath(directory)
+        if self._session is None:
+            self._session = self._kind(self.cwd)
+        kind, cdir = self._kind(directory)
+        skind, sdir = self._session
+        if "error" in (kind, skind):
+            return True
+        if kind == "repo" and skind == "repo":
+            return cdir == sdir
+        if kind == "nogit" and skind == "nogit":
+            # 專案本身沒有 git：只有 session cwd 底下的才算
+            rel = os.path.relpath(os.path.normcase(directory), os.path.normcase(self.cwd))
+            return not rel.startswith("..")
+        return False
+
+
+# shell 目標裡的簡單賦值：`SP=/x`、`SP="/x y"`、`export SP=/x`。
+_ASSIGN_RE = re.compile(
+    r"(?:^|[;&|\n]|\bexport\s+)\s*([A-Za-z_]\w*)=(\"[^\"]*\"|'[^']*'|[^\s;&|]*)")
+_VAR_RE = re.compile(r"\$(?:\{(\w+)\}|(\w+))")
+
+
+def _expand(target, assigns):
+    """用同一道指令內的賦值，再用環境變數展開 `$VAR`／`${VAR}`；展不開的原樣留著。"""
+    def sub(m):
+        name = m.group(1) or m.group(2)
+        return assigns.get(name, m.group(0))
+    for _ in range(5):
+        new = _VAR_RE.sub(sub, target)
+        if new == target:
+            break
+        target = new
+    return os.path.expandvars(os.path.expanduser(target))
+
+
+def _is_code_write(raw_target, assigns, scope):
+    """這個 shell 寫入目標是不是專案程式碼；回傳要顯示的檔名或 None。"""
+    target = raw_target.replace('"', "").replace("'", "")
+    expanded = _expand(target, assigns)
+    suffix = PurePath(expanded).suffix.lower()
+    if "$" in expanded or "`" in expanded:
+        # 展不開：路徑未知。能確定副檔名不是程式碼才放過，其餘 fail-closed。
+        if suffix and "$" not in suffix and "`" not in suffix and suffix not in CODE_EXTS:
+            return None
+        return PurePath(target).name
+    if suffix in CODE_EXTS and scope.contains(expanded):
+        return PurePath(expanded).name
+    return None
+
+
+def shell_written_code_files(command, scope=None):
     """回傳這道 shell 命令寫入的程式碼檔名（沒有就空列表）。
 
     只看寫入目標的副檔名，不看命令裡出現過哪些檔——讀 .py 而寫 .txt 不算改碼。
     """
     written = []
+    scope = scope or Scope()
+    assigns = {name: value.strip("\"'") for name, value in _ASSIGN_RE.findall(command)}
     # 引號內的 `>`、`tee` 不是寫入運算子：`echo "a > b.py"` 沒有改任何檔（清單 #8）。
     # 比對在「引號內容換成底線」的版本上做，目標再從原字串同一個位置取回——
     # 被引號包住的目標（`> "src/a b.py"`）因此仍抓得到，而且含空白也整段取到。
     masked = _mask_quoted(command)
     for pattern in (_REDIRECT_OR_TEE_RE, _SED_INPLACE_RE):
         for m in pattern.finditer(masked):
-            target = command[m.start(1):m.end(1)].strip("'\"")
-            lowered = target.lower()
-            if any(marker in lowered for marker in _TEMP_MARKERS):
-                continue
-            if PurePath(target).suffix.lower() in CODE_EXTS:
-                written.append(PurePath(target).name)
+            name = _is_code_write(command[m.start(1):m.end(1)], assigns, scope)
+            if name:
+                written.append(name)
     return written
+
+
 # harness 注入的東西。清單由本機 200 份真實 transcript 取樣得出，不是憑想像列的
 # ——尤其 `Stop hook feedback:` 是**閘自己的擋人訊息**，把它當成新回合的開始，
 # 等於閘一邊擋人一邊把自己的擋人讀成「使用者回來了」。
@@ -196,8 +310,13 @@ def iter_tool_uses(entries):
                 yield block.get("name", ""), block.get("input", {}) or {}
 
 
-def analyze(entries):
-    """回傳 (本輪修改的程式碼檔名列表, 是否偵測到測試執行)。"""
+def analyze(entries, cwd=None):
+    """回傳 (本輪修改的程式碼檔名列表, 是否偵測到測試執行)。
+
+    ``cwd`` 是 hook payload 的 session cwd；Edit/Write 與 shell 寫入用同一個 `Scope`
+    判斷「改的是不是本專案的程式碼」。
+    """
+    scope = Scope(cwd)
     last_prompt_idx = -1
     for i, entry in enumerate(entries):
         if is_real_user_prompt(entry):
@@ -208,13 +327,13 @@ def analyze(entries):
     for name, tool_input in iter_tool_uses(current_turn):
         if name in EDIT_TOOLS:
             path = tool_input.get("file_path") or tool_input.get("notebook_path") or ""
-            if PurePath(path).suffix.lower() in CODE_EXTS:
+            if PurePath(path).suffix.lower() in CODE_EXTS and scope.contains(path):
                 edited.append(PurePath(path).name)
         elif name in SHELL_TOOLS:
             command = tool_input.get("command", "")
             if TEST_CMD_RE.search(command):
                 test_seen = True
-            edited.extend(shell_written_code_files(command))
+            edited.extend(shell_written_code_files(command, scope))
     return edited, test_seen
 
 
@@ -381,7 +500,7 @@ def main():
             # 同一份只截斷那一行 blocked=True。方向是誤擋，而誤擋掛在一道硬閘上。
             # 記一次而不是逐行記：逐行會把屍檢灌爆，真正的失效反而寫不進去。
             note_quiet("transcript 有行讀不動，這一輪的判定可能不完整", count=torn)
-        edited, test_seen = analyze(entries)
+        edited, test_seen = analyze(entries, data.get("cwd"))
         if edited and not test_seen:
             files = "、".join(one_line(n, 80) for n in
                              list(dict.fromkeys(edited))[:MAX_LISTED_FILES])
