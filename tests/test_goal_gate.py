@@ -233,6 +233,18 @@ G9 的期望隨之反轉（提 id 仍要擋）。文件與程式不一致時，�
 突變（指令位置改成「任何位置」＋ NOT_A_RUN 改回整行）：17 failed, 43 passed；還原 → 60 passed。
 ⏳ 清單 #7（`python test_*.py` 非測試腳本被當測試）：這是已登記的檔名啟發式（T9／T11 同類），
   寫不出期望值明確的紅燈，判定不成立，不修。
+
+──────────────────────────────────────
+2026-10-15 00:15 GMT+8：G112～G112c——變數或加引號的執行器（B 的退步修復）
+──────────────────────────────────────
+退步：指令位置判定認不出 `"$PY" -m pytest …`、`THIN="$P/t" "$FZ/.venv/Scripts/python.exe" -m pytest …`，
+  連本 repo 自己的 .claude/wiring-guards 都判成非測試執行。
+  G112／G112b 變數與加引號路徑的執行器後接 `-m pytest|unittest`（或引號路徑的 basename 是 pytest／python 系列）才算；
+      `$EDITOR file_test.py`、`"$PY" -m pip install pytest` 等 6 條不算
+  G112c 盯真實對象：逐行讀 .claude/wiring-guards（去註解與空行），每行兩支 hook 都要判為測試執行
+修復前：10 failed, 7 passed（另加 `-X faulthandler` 案：1 failed）；修復後：18 passed；全套 630 passed, 3 skipped。
+真實 transcript 比對（replay_compare.py）：test-run hits old=1634 new=1379 lost=255 gained=0
+  （B 之後 lost=260／256）；抽查剩餘 lost：多為 prompt 文字與 heredoc 內文提到 `-m pytest`，非真正執行。
 """
 import atexit
 import json
@@ -3016,3 +3028,59 @@ def test_g110_not_a_run_flags_are_read_per_segment(tmp_path, cmd, expect_counted
 def test_g111_the_key_comes_from_the_segment_that_was_judged_a_run(cmd, expect):
     """G111（#10）：鍵取自被判為測試執行的那一段，不是第一個字面命中。"""
     assert gg.test_key(cmd) == expect, gg.test_key(cmd)
+
+
+# ── G112：指令位置的執行器可以是變數或加引號的路徑 ─────────────────────────────
+# 退步（commit 3159796 的指令位置判定）：`"$PY" -m pytest …`、`"$FZ/.venv/Scripts/python.exe"
+# -m pytest …` 認不出來，而 Fable 自己的 .claude/wiring-guards 就是這種寫法。
+_VAR_RUNNERS = [
+    'PY=$(command -v python3 || command -v python); "$PY" -m pytest tests/x.py -q',
+    '$PY -m pytest tests/x.py -q',
+    '"$PY" -m pytest tests/x.py -q',
+    '${PY} -m unittest discover',
+    '"${PY}" -m pytest -q',
+    'THIN="$P/t" "$FZ/.venv/Scripts/python.exe" -m pytest test_pri_thin.py -q',
+    '"C:/Program Files/Python313/python.exe" -m pytest tests/ -q',
+    '/d/x/.venv/Scripts/python.exe -m pytest t.py -q',
+    '"$FZ/.venv/bin/pytest" -q',
+    'cd p && "$PY" -m pytest -q',
+    'for v in a b; do .venv/Scripts/python.exe -X faulthandler -m pytest "$S/x_$v.py" -q; done',
+]
+_VAR_NON_RUNS = [
+    '$EDITOR file_test.py',
+    '"$EDITOR" tests/test_x.py',
+    '"$PY" script.py --verbose',
+    '"$PY" -m pip install pytest',
+    '"$X" pytest.ini',
+    '"C:/Program Files/Git/bin/git.exe" log -- pytest.ini',
+]
+
+
+@pytest.mark.parametrize("cmd", _VAR_RUNNERS)
+def test_g112_a_variable_or_quoted_runner_in_command_position_is_a_test_run(cmd):
+    """G112：執行器 token 可以是 `$X`／`"$X"`／`${X}`／加引號的路徑，後接 `-m pytest|unittest`。"""
+    import verify_gate as vg
+    assert gg.TEST_CMD_RE.search(cmd), f"goal 認不出：{cmd!r}"
+    assert vg.TEST_CMD_RE.search(cmd), f"verify 認不出：{cmd!r}"
+    assert gg.is_test_run(cmd), f"goal is_test_run 認不出：{cmd!r}"
+
+
+@pytest.mark.parametrize("cmd", _VAR_NON_RUNS)
+def test_g112b_a_variable_runner_that_is_not_pytest_or_unittest_is_not_a_run(cmd):
+    """G112b：配對——變數執行器後面不是 `-m pytest|unittest` 就不算（`$EDITOR file_test.py`）。"""
+    import verify_gate as vg
+    assert not gg.TEST_CMD_RE.search(cmd), f"goal 誤認：{cmd!r}"
+    assert not vg.TEST_CMD_RE.search(cmd), f"verify 誤認：{cmd!r}"
+
+
+def test_g112c_every_line_of_this_repos_own_wiring_guards_is_a_test_run():
+    """G112c：盯真實對象——本 repo `.claude/wiring-guards` 的每一條守衛，兩支 hook 都要判為測試執行。"""
+    import verify_gate as vg
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        ".claude", "wiring-guards")
+    lines = [ln.strip() for ln in open(path, encoding="utf-8")
+             if ln.strip() and not ln.strip().startswith("#")]
+    assert lines, "宣告檔沒有守衛，測試成了空轉"
+    for ln in lines:
+        assert vg.TEST_CMD_RE.search(ln), f"verify_gate 認不出自家守衛：{ln!r}"
+        assert gg.is_test_run(ln), f"goal_gate 認不出自家守衛：{ln!r}"
