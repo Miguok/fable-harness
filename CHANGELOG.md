@@ -14,6 +14,7 @@ The current version is also kept in [VERSION](VERSION).
 
 ### Fixed
 
+- **接線閘判斷「這是不是帶旗標的 commit」改用 shell 斷詞**：以前對整行做正則與子字串比對，`git log --grep commit -n 3`、`hooks/pre-commit`、檔名含 hookspath 會被當成 `git commit -n` 而誤擋；`git 'commit' --no-verify`、`c""ommit`、反斜線續行拆字、帶路徑的 `git.exe`、同一行用 `-c alias.<名>=commit` 定義的別名則漏擋。現在先斷詞並切成指令段，找出 git、跳過全域選項、取子命令，跳過 hook 的旗標與 `core.hooksPath` 只看該次 commit 呼叫自己的參數與設定。`-C` 目標是變數、命令替換或不存在的路徑，而該呼叫帶跳過 hook 的旗標或 hooksPath 時，改為擋下（以前直接放行）；引號不成對無法斷詞時退回舊判定，且只在該指令段內判斷。命令替換或變數當作子命令列入已知限制。
 - **目標關卡把同一次紅重複計數**：每次 Stop 都重讀整個回合，同一次紅的執行每次
   Stop 都再加 1；自主長跑時一個回合會 Stop 很多次，一次紅就被計成 3～4 次而擱置。
   改為以工具呼叫 id 去重複：計數單位是 Stop 劃界的工作段落，段落結束時仍紅才記一次，

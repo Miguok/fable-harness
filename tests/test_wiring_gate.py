@@ -163,6 +163,23 @@ W14 原本的 fixture 寫的是 `repo: x`（別人的提示）卻斷言它必須
   Claude Code 真的把 deny JSON 當成拒絕：本檔只驗到 gate 吐出正確的 deny 封包，
   沒有驗到 harness 收到它之後真的擋下那次 Bash 呼叫。解鎖條件＝在真實 session 裡
   對一個已 opt-in 的 repo 下 `git commit --no-verify` 並觀察它被拒（INSTALL.md 步驟 10）。
+
+──────────────────────────────────────
+2026-10-14 23:33 GMT+8：判斷「這是不是一次 commit」改用 shell 斷詞（W42～W45）
+──────────────────────────────────────
+缺陷類別：用整行子字串／正則判斷「這道指令是不是在做 X」（reports/defect_class_scan_20261014.md 類別一）。
+  W42 只是同一行出現 git／commit／-n／hookspath 不算 commit -n（清單 #1、#2、#3）
+      → 10 條「必須仍然放行」，含 `git log --grep commit -n 3`、`echo git commit -n`
+  W43 引號子命令、`c""ommit`、帶路徑的 git.exe、同行 `-c alias.ci=commit ci -n`、
+      hooksPath 只認該呼叫的 -c／--config-env／GIT_CONFIG_*（清單 #1b）→ 15 條必須擋
+  W43b／W43c bash 反斜線續行拆字、PowerShell 反引號續行與 `& "…git.exe"`
+  W44 `-C` 目標解析不出來（變數／命令替換／不存在）而帶跳過 hook 旗標或 hooksPath → 擋（清單 #15）
+  W45 斷詞失敗（引號不成對）退回舊判定，但只看該指令段
+修復前：21 failed, 8 passed；修復後：29 passed（本檔 157 passed）。
+突變（把 unparsed_commit_risk 改回整行舊正則）：18 failed, 11 passed；還原 → 29 passed。
+⏳ 清單 #4（已裝 hook 只要含 "wiring-guards" 字串就算接線）、#5（GUARD_FILE_RE 子字串，只影響提示）
+  實測成立（echo-only hook 回 None；`attestation_gated.py` 命中），屬另案：本層是盡力而為，
+  真正的執行層是 wiring_runner.sh。解鎖條件＝另案決定是否讓 check_wiring 改為解析可執行行。
 """
 import atexit
 import json
@@ -1411,3 +1428,114 @@ def test_w40_a_commented_out_runner_is_not_wiring(tmp_path):
 def test_w41_a_message_glued_to_the_flag_is_still_stripped(cmd, expect):
     """W41：`git commit -m"訊息"` 的內文同樣要剝掉。"""
     assert wiring_gate.classify(_bash(cmd)) == expect
+
+
+# ── W42～W45：「這是不是一次 commit／它帶不帶跳過 hook 的旗標」改用 shell 斷詞 ──────
+# 缺陷類別（reports/defect_class_scan_20261014.md 類別一）：判斷「這道指令是不是在
+# 做 X」用的是文字比對——對整行做子字串／正則，而不是先把指令切成「指令段 → token」。
+# 兩個方向都錯：誤擋（`git log -n 3` 的 -n 被當成 commit -n、`hooks/pre-commit`
+# 的 commit 被當成子命令）與漏擋（引號、續行、帶路徑的 git.exe、同行別名）。
+_PRECOMMIT_WIRED = "#!/bin/sh\ntest -f .claude/wiring-guards || exit 0\n"
+
+_ONE_LINE_ALLOW = [
+    # 以下每一條都「同時有 git 與 commit 字樣，加上一個 -n 或 hookspath 字樣」，
+    # 但都不是一次帶旗標的 commit。
+    "git log --grep commit -n 3",
+    "git log -n 3 -- commit.txt",
+    "git log --grep commit -- tests/test_hookspath.py",
+    "git rev-parse --git-path hooks/pre-commit; grep -n x f",
+    "echo hookspath",
+    "grep -rn hooksPath .",
+    'git commit -m "x" && git log -n 1',
+    "git commit-tree -p HEAD -m x HEAD^{tree}",
+    "echo git commit -n",
+    "git config --get core.hooksPath",
+    # 子命令之後的 -c 是 `git commit -c <commit>`（reuse-message），不是設定賦值
+    "git commit -c core.hooksPath=/x",
+]
+
+_ONE_LINE_DENY = [
+    "git 'commit' --no-verify",
+    'git "commit" -n',
+    'git c""ommit -n',
+    '"C:/Program Files/Git/cmd/git.exe" commit -n',
+    "/usr/bin/git commit --no-verify -m x",
+    "git -c alias.ci=commit ci -n",
+    "git -c alias.ci='commit -m x' ci --no-verify",
+    'V=/x; git -C "$V" commit --no-verify',
+    "git commit -m ok && git 'commit' -n",
+    "git --no-pager 'commit' -n",
+    "git -P 'commit' --no-verif",
+    "git -c core.hooksPath=/x 'commit' -m x",
+    "git -c CORE.HOOKSPATH=/x 'commit' -m x",
+    "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/x git 'commit' -m x",
+]
+
+
+@pytest.mark.parametrize("cmd", _ONE_LINE_ALLOW)
+def test_w42_a_line_that_merely_mentions_commit_is_not_a_commit(tmp_path, cmd):
+    """W42：只是同一行出現 git、commit、-n、hookspath，不等於一次 `commit -n`。
+
+    以前 `unparsed_commit_risk` 對整行做 `git…commit` 正則比對，再對整行找 `-n`
+    與 `hooks?path`——於是 `git log --grep commit -n 3` 被當成 `git commit -n`。
+    配對 W43：同一組判定也必須仍然擋得到真的繞道。
+    """
+    repo = _git_repo(tmp_path, declare=True, precommit=_PRECOMMIT_WIRED)
+    assert not _is_deny(_run_gate(_bash(cmd), repo)), f"誤擋：{cmd}"
+
+
+@pytest.mark.parametrize("cmd", _ONE_LINE_DENY)
+def test_w43_a_quoted_or_aliased_commit_with_a_bypass_is_still_caught(tmp_path, cmd):
+    """W43：引號、續行外的拼法、帶路徑的 git.exe、同行別名——都要認得出是 commit。"""
+    repo = _git_repo(tmp_path, declare=True, precommit=_PRECOMMIT_WIRED)
+    assert _is_deny(_run_gate(_bash(cmd), repo)), f"漏擋：{cmd}"
+
+
+def test_w43b_a_backslash_newline_inside_the_word_joins_it_in_bash(tmp_path):
+    """W43b：bash 的「反斜線加換行」把前後接成同一個字——`co`＋續行＋`mmit` 就是 commit。"""
+    repo = _git_repo(tmp_path, declare=True, precommit=_PRECOMMIT_WIRED)
+    assert _is_deny(_run_gate(_bash("git co\\\nmmit -n"), repo)), "bash 續行拆字漏擋"
+    assert not _is_deny(_run_gate(_bash("git log \\\n  -n 3"), repo)), "續行後的 -n 屬 git log"
+
+
+def test_w43c_powershell_backtick_continuation_and_exe_path(tmp_path):
+    """W43c：PowerShell 用反引號續行；`& "…/git.exe" commit -n` 同樣要擋。"""
+    repo = _git_repo(tmp_path, declare=True, precommit=_PRECOMMIT_WIRED)
+    ps = lambda c: {"tool_name": "PowerShell", "tool_input": {"command": c}}  # noqa: E731
+    assert _is_deny(_run_gate(ps('& "C:\\Program Files\\Git\\cmd\\git.exe" commit -n'), repo))
+    assert _is_deny(_run_gate(ps("git `\n commit -n"), repo))
+    assert not _is_deny(_run_gate(ps("git log `\n -n 3"), repo))
+
+
+def test_w44_unresolvable_dash_C_target_with_a_bypass_fails_closed(tmp_path):
+    """W44（清單 #15）：`-C` 目標解析不出來，而這次呼叫帶跳過 hook 的旗標 → 擋。
+
+    以前 `repo_root` 回 None 就 `continue` 放行：`V=/x; git -C "$V" commit
+    --no-verify` 只要路徑是變數就整個過去。配對：同樣解析不出來、但沒帶旗標 → 放行；
+    解析得出來的 -C 目標仍照原本邏輯（指向沒宣告的 repo → 放行）。
+    """
+    repo = _git_repo(tmp_path / "r", declare=True, precommit=_PRECOMMIT_WIRED)
+    other = _git_repo(tmp_path / "o", declare=False)
+    for bad in ('git -C "$V" commit --no-verify -m x',
+                "git -C `pwd`/x commit -n",
+                "git -C $(pwd)/x commit -n -m x",
+                "git -C /no/such/dir commit --no-verify",
+                'git -C "$V" -c core.hooksPath=/x commit -m x'):
+        assert _is_deny(_run_gate(_bash(bad), repo)), f"漏擋：{bad}"
+    for ok in ('git -C "$V" commit -m x', "git -C /no/such/dir commit -m x",
+               'git -C "$V" log -n 3'):
+        assert not _is_deny(_run_gate(_bash(ok), repo)), f"誤擋：{ok}"
+    here = str(other).replace("\\", "/")
+    assert not _is_deny(_run_gate(_bash("git -C %s commit --no-verify -m x" % here), repo)), \
+        "指向沒宣告 repo 的 -C 不屬這道閘"
+
+
+def test_w45_shlex_failure_falls_back_but_only_inside_its_own_segment(tmp_path):
+    """W45：引號不成對時退回舊判定，但只看該指令段。
+
+    `git log --grep commit; echo "unbalanced -n` 的 -n 屬於 echo 那一段，不得算到前段。
+    配對：壞引號下真的 `timeout 5 git commit --no-verify` 仍然要擋。
+    """
+    repo = _git_repo(tmp_path, declare=True, precommit=_PRECOMMIT_WIRED)
+    assert not _is_deny(_run_gate(_bash('git log --grep commit; echo "unbalanced -n'), repo))
+    assert _is_deny(_run_gate(_bash('timeout 5 git commit -m x --no-verify; echo "unbalanced'), repo))

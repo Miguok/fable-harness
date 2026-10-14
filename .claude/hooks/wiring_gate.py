@@ -36,7 +36,8 @@ W2 刻意不去比對「版控裡的模板副本」：那需要猜每個 repo �
 
 ⚠ **本層是盡力而為，不是執行層**（既有決議見 `wiring_runner.sh` 檔頭）：它讀的是
 指令字串，而「這條指令會不會跳過 hook」無法只靠讀字串完全判定。經 `eval`／`sh -c`／
-`xargs`／`Start-Process`／git alias 送出的 commit，本層看不到；在字串裡引用
+`xargs`／`Start-Process`／git alias（同一行以 `-c alias.<名>=commit` 定義者除外）、
+命令替換或變數當作子命令（`$(echo commit)`、`git $SUB`）送出的 commit，本層看不到；在字串裡引用
 `git commit --no-verify` 當說明文字則會被誤擋。真正擋得住每一個提交者的是
 `wiring_runner.sh`——那是 git 自己執行的 pre-commit。
 
@@ -63,6 +64,7 @@ W2 刻意不去比對「版控裡的模板副本」：那需要猜每個 repo �
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 
@@ -499,6 +501,27 @@ def git_env_prefix(env_prefix, options=""):
     return out
 
 
+def suspicious_hooks_settings(options, line):
+    """The `-c`／`--config-env`／`GIT_CONFIG_*` settings on this call whose key is core.hooks*."""
+    settings = (CONFIG_ASSIGN_RE.findall(options)
+                + ENV_CONFIG_ASSIGN_RE.findall(line))
+    return [s for s in settings
+            if HOOKS_IN_KEY_RE.search(s.replace("'", "").replace('"', ""))]
+
+
+def call_hits_declared_repo(target):
+    """True when the repo this call acts on opted in.
+
+    ``target`` is the call's `-C` path; None, or one that cannot be resolved,
+    means the session's own repo — the only declaration the gate can see.
+    """
+    if target and not unresolvable_target(target):
+        root = repo_root(cwd=target)
+    else:
+        root = repo_root()
+    return bool(root and os.path.isfile(os.path.join(root, DECL_REL)))
+
+
 def unaccounted_hookspath(line, options, config_args):
     """指令裡提到 hooksPath，而我們沒能把它算進自己的探測——這種一律擋。
 
@@ -523,13 +546,7 @@ def unaccounted_hookspath(line, options, config_args):
     # `-c` 只在 **git 自己的選項段**裡才算設定賦值。掃整條指令列的話，
     # `python -c "…core.hooksPath…"` 這種完全無關的 `-c` 會被當成 git 設定
     # ——寫這段的當下它就擋掉了我自己的一條驗證指令。
-    settings = (CONFIG_ASSIGN_RE.findall(options)
-                + ENV_CONFIG_ASSIGN_RE.findall(line))
-    if not settings:
-        return False
-    suspicious = [s for s in settings
-                  if HOOKS_IN_KEY_RE.search(s.replace("'", "").replace('"', ""))]
-    if not suspicious:
+    if not suspicious_hooks_settings(options, line):
         return False
     accounted = any(HOOKSPATH_MENTION_RE.search(a) for a in config_args)
     return not accounted
@@ -600,12 +617,240 @@ def mask_quoted(text):
     return _QUOTED_SPAN_RE.sub(lambda m: "_" * len(m.group(0)), text)
 
 
-def unparsed_commit_risk(line):
-    """解析不出呼叫、卻明顯是一次會繞過 hook 的 commit —— 回傳擋人理由。
+def _legacy_commit_risk(line):
+    """舊判定（正則＋整段旗標掃描），**只在 shlex 斷詞失敗時使用**，且逐指令段呼叫。
+
+    引號不成對等情況下斷不了詞，只好退回字串比對。範圍限縮在單一指令段內
+    （由 `unparsed_commit_risk` 先以 `SEGMENT_END_RE` 切開），否則 `git log -n 3;
+    echo "未閉合` 這種前段的 `-n` 會被當成後段 commit 的旗標。
+    """
+    masked = mask_quoted(line)
+    if not _BARE_GIT_COMMIT_RE.search(masked):
+        return False
+    return bool(skips_the_hook(masked) or HOOKSPATH_MENTION_RE.search(masked))
+
+
+# ── shell 斷詞（取代舊的整行正則比對）────────────────────────────────────────
+# 缺陷類別：判斷「這道指令是不是在做 X」用整行子字串／正則——`git log --grep
+# commit -n 3` 被當 `git commit -n`（誤擋），`git 'commit' --no-verify` 與
+# `git -c alias.ci=commit ci -n` 認不出是 commit（漏擋）。改為：先斷詞、切指令段、
+# 在段內找 git、跳過 git 全域選項、取子命令，旗標只看該呼叫自己的參數。
+_SEP_CHARS = set(";&|()")
+_PREFIX_WRAPPERS = set(WRAPPER_NAME[3:-1].split("|"))
+_CONTROL_WORDS = {"then", "do", "else", "!", "{", "}", "exec"}
+_ENV_TOKEN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+_WRAP_ARG_TOKEN_RE = re.compile(r"^[-\w./=:+]+$")
+# git 全域選項裡吃下一個 token 當值的（`--exec-path` 只有 `=` 形式，不吃下一個）。
+_GIT_VALUE_GLOBALS = {"--git-dir", "--work-tree", "--namespace", "--super-prefix",
+                      "--attr-source", "--config-env"}
+# `git commit` 自己吃下一個 token 當值的長旗標。
+_COMMIT_VALUE_LONG = {"--message", "--file", "--author", "--date", "--template",
+                      "--cleanup", "--reuse-message", "--reedit-message", "--fixup",
+                      "--squash", "--trailer", "--pathspec-from-file"}
+
+
+def _newlines_to_separators(text):
+    """引號外的換行換成 ` ; `（shlex 把換行當空白，指令段邊界會丟）。"""
+    out, quote, i = [], None, 0
+    while i < len(text):
+        c = text[i]
+        if quote:
+            out.append(c)
+            if c == "\\" and quote == '"' and i + 1 < len(text):
+                out.append(text[i + 1])
+                i += 2
+                continue
+            if c == quote:
+                quote = None
+        elif c == "\\" and i + 1 < len(text):
+            out.append(c)
+            out.append(text[i + 1])
+            i += 2
+            continue
+        elif c in "'\"":
+            quote = c
+            out.append(c)
+        elif c == "\n":
+            out.append(" ; ")
+        else:
+            out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def shell_segments(payload):
+    """The command as a list of token lists (one per command segment).
+
+    Returns None when the line cannot be tokenised (unbalanced quotes…); the
+    caller then falls back to string matching, one segment at a time.
+    Continuations are joined per shell: bash backslash-newline removes both
+    characters (`co\\<newline>mmit` is `commit`); PowerShell's backtick-newline
+    is whitespace.
+    """
+    tool = payload.get("tool_name")
+    command = (payload.get("tool_input") or {}).get("command") or ""
+    if tool == "PowerShell":
+        command = CONTINUATION_RE["PowerShell"].sub(" ", command).replace("\\", "/")
+    else:
+        command = CONTINUATION_RE["Bash"].sub("", command)
+    text = _newlines_to_separators(strip_message_bodies(command))
+    try:
+        lex = shlex.shlex(text, posix=True, punctuation_chars=True)
+        lex.whitespace_split = True
+        lex.commenters = ""
+        tokens = list(lex)
+    except ValueError as _q:
+        note_quiet("shell_segments", _q)
+        return None
+    segments, cur = [], []
+    for t in tokens:
+        if t and all(ch in _SEP_CHARS for ch in t):
+            segments.append(cur)
+            cur = []
+        else:
+            cur.append(t)
+    segments.append(cur)
+    return [seg for seg in segments if seg]
+
+
+def _basename(token):
+    base = token.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    return base[:-4] if base.endswith(".exe") else base
+
+
+def _skips_the_hook_tokens(args):
+    """Token version of `skips_the_hook`, for one commit call's own arguments.
+
+    A value-taking flag eats the *next token* (`-m -n` is a message, not a flag).
+    """
+    i = 0
+    while i < len(args):
+        t = args[i]
+        i += 1
+        if NO_VERIFY_LONG.match(t):
+            return True
+        if t == "--":
+            break
+        if t.startswith("--"):
+            if t in _COMMIT_VALUE_LONG:
+                i += 1
+            continue
+        if not t.startswith("-") or len(t) < 2:
+            continue
+        for k, ch in enumerate(t[1:]):
+            if ch == "n":
+                return True
+            if ch in VALUE_TAKING_SHORT_FLAGS:
+                if ch in "CcFmt" and k == len(t) - 2:
+                    i += 1
+                break
+    return False
+
+
+def _hooks_key(setting):
+    """True when a `key=value` config setting targets core.hooks* (case-insensitive)."""
+    return setting.split("=", 1)[0].strip().lower().startswith("core.hooks")
+
+
+def _segment_call(tokens):
+    """Describe the git call in one command segment, or None when it is not one.
+
+    Returns a dict: commit (a commit, or a same-line alias for one), unknown (a
+    shell alias — cannot be judged), skips, hookspath, target.
+    """
+    n, i, env, in_wrapper = len(tokens), 0, [], False
+    while i < n:
+        t = tokens[i]
+        if _ENV_TOKEN_RE.match(t):
+            env.append(t)
+        elif _basename(t) == "git":
+            break
+        elif _basename(t) in _CONTROL_WORDS:
+            in_wrapper = False
+        elif _basename(t) in _PREFIX_WRAPPERS:
+            in_wrapper = True
+        elif not (in_wrapper and _WRAP_ARG_TOKEN_RE.match(t)):
+            return None
+        i += 1
+    else:
+        return None
+    i += 1
+    settings, target = [], None
+    while i < n:
+        t = tokens[i]
+        if t in ("-C", "-c") and i + 1 < n:
+            if t == "-c":
+                settings.append(tokens[i + 1])
+            else:
+                target = os.path.join(target, tokens[i + 1]) if target else tokens[i + 1]
+            i += 2
+        elif t in _GIT_VALUE_GLOBALS and i + 1 < n:
+            if t == "--config-env":
+                settings.append(tokens[i + 1])
+            i += 2
+        elif t.startswith("--config-env="):
+            settings.append(t.split("=", 1)[1])
+            i += 1
+        elif t.startswith("--") or t in ("-p", "-P"):
+            i += 1
+        else:
+            break
+    if i >= n:
+        return None
+    sub, args = tokens[i], tokens[i + 1:]
+    aliases = {}
+    for st in settings:
+        key, _, val = st.partition("=")
+        if key.strip().lower().startswith("alias."):
+            aliases[key.strip().lower()[6:]] = val
+    commit = unknown = False
+    if sub == "commit":
+        commit = True
+    elif sub.lower() in aliases:
+        val = aliases[sub.lower()]
+        if val.startswith("!"):
+            unknown = True
+        else:
+            try:
+                parts = shlex.split(val)
+            except ValueError as _q:
+                note_quiet("_segment_call alias", _q)
+                parts = val.split()
+            if parts and parts[0] == "commit":
+                commit, args = True, parts[1:] + args
+    if not (commit or unknown):
+        return None
+    hookspath = any(_hooks_key(st) for st in settings) or any(
+        e.split("=", 1)[0].upper().startswith("GIT_CONFIG")
+        and "core.hooks" in e.split("=", 1)[1].lower().replace("'", "").replace('"', "")
+        for e in env)
+    return {"commit": commit, "unknown": unknown, "target": target,
+            "skips": _skips_the_hook_tokens(args), "hookspath": hookspath}
+
+
+def shell_commit_calls(payload):
+    """Every git commit call on the line, from shell tokens — None if untokenisable."""
+    segments = shell_segments(payload)
+    if segments is None:
+        return None
+    return [c for c in map(_segment_call, segments) if c]
+
+
+def unresolvable_target(target):
+    """A `-C` target the gate cannot resolve statically: a variable, a command
+    substitution, or a directory that does not exist."""
+    return any(ch in target for ch in "$`") or not os.path.isdir(target)
+
+
+def unparsed_commit_risk(payload, parsed=0):
+    """Return the risky commit calls the regex parser did not account for.
+
+    ``parsed`` is how many commit invocations the regex parser already handled;
+    shell tokens only add anything when they see more commits than that.
 
     這道閘的檔頭寫著「偵測不到就擋」，而 `unaccounted_hookspath` 這個 fail-closed
-    兜底掛在 `main` 的 SKIP 早退**下游**——也就是說「認不出來就擋」原本只適用於
-    「已經被認出來的那些」。實測兩條繞道（2026-09-06 抗辯）：
+    兜底掛在 `main` 的 SKIP 早退**下游**——「認不出來就擋」原本只適用於已經被認出來的。
+    實測兩條繞道（2026-09-06）：
 
       timeout 60 git commit -m x --no-verify        → 樣式比不中 → SKIP → 放行
       git -c core.hooksPath=$'/tmp/a b' commit -m x → 同上（`$'…'` 不在 VALUE 裡）
@@ -613,13 +858,21 @@ def unparsed_commit_risk(line):
     範圍刻意收窄成這道閘真正在保護的兩件事（跳過 hook 的旗標、hooksPath），
     不是「所有解析不出來的 commit 都擋」——後者會讓 `git log --grep commit`
     這種唯讀指令變成誤擋，而誤擋比漏擋更糟。
+
+    2026-10-14：由整行正則改為 shell 斷詞，旗標與 hooksPath 只看該呼叫自己的
+    設定與參數（清單 #1、#1b、#2、#3）。斷詞失敗才退回舊判定，且逐段。
+    shell 別名（`!…`）無法判定：帶旗標或 hooksPath 才擋，與無法解析的 `-C` 同。
     """
-    masked = mask_quoted(line)
-    if not _BARE_GIT_COMMIT_RE.search(masked):
-        return ""
-    if skips_the_hook(masked) or HOOKSPATH_MENTION_RE.search(masked):
-        return UNPARSED_REASON
-    return ""
+    calls = shell_commit_calls(payload)
+    if calls is None:
+        if parsed:
+            return []
+        return [{"target": None}
+                for seg in SEGMENT_END_RE.split(normalised(payload))
+                if _legacy_commit_risk(seg)]
+    if len(calls) <= parsed:
+        return []
+    return [c for c in calls if c["skips"] or c["hookspath"]]
 
 
 def classify(payload):
@@ -865,14 +1118,14 @@ def main(argv=None):
         if payload.get("tool_name") not in ("Bash", "PowerShell"):
             return 0
         line = normalised(payload)
-        if not commit_invocations(line):
-            # 解析不出任何一次呼叫。fail-closed 兜底在這裡，**不是**在下面——
-            # 掛在下游等於「認不出來就擋」只適用於認得出來的那些。
-            risk = unparsed_commit_risk(line)
-            if risk:
-                root = repo_root()
-                if root and os.path.isfile(os.path.join(root, DECL_REL)):
-                    deny(risk)
+        invocations = commit_invocations(line)
+        # 正則認不出來（或沒認全）的 commit。fail-closed 兜底在這裡，**不是**在下面——
+        # 掛在下游等於「認不出來就擋」只適用於認得出來的那些。
+        for call in unparsed_commit_risk(payload, len(invocations)):
+            if call_hits_declared_repo(call.get("target")):
+                deny(UNPARSED_REASON)
+                return 0
+        if not invocations:
             return 0
         # **每一個 commit 各自判定**，不是只判第一個。
         #
@@ -898,8 +1151,18 @@ def main(argv=None):
             # `git commit -m x ; GIT_CONFIG_GLOBAL=<乾淨的> true` 這種尾巴會覆蓋掉
             # 真正的前綴（漏擋），而 `git commit -m x && GIT_DIR=<別處> git log`
             # 這種無關的後段會讓 commit 被誤擋、還叫人去改另一個 repo 的 hooks。
-            root = repo_root(cwd=target_dir(options))
+            target = target_dir(options)
+            root = repo_root(cwd=target)
             if not root:
+                # `-C` 的目標解析不出來（變數、命令替換、不存在的路徑）：不能就此放行，
+                # 否則 `V=/x; git -C "$V" commit --no-verify` 只要路徑是變數就整個過去。
+                # 這次呼叫帶跳過 hook 的旗標或 hooksPath 設定才擋；其餘照舊放行。
+                if (target and unresolvable_target(target)
+                        and (skips_the_hook(segment)
+                             or suspicious_hooks_settings(options, line))
+                        and call_hits_declared_repo(None)):
+                    deny(UNPARSED_REASON)
+                    return 0
                 continue
             declared = os.path.isfile(os.path.join(root, DECL_REL))
             if root not in seen_roots:
