@@ -68,6 +68,12 @@ The current version is also kept in [VERSION](VERSION).
 
 ### Changed
 
+- **pre-commit 改為薄殼**：各 repo 的 pre-commit 不再是 `wiring_runner.sh` 的複本，而是一支薄殼
+  （`.claude/hooks/precommit_shell.sh`），每次 commit 讀 Fable `main` 上已 commit 的 runner 並執行，
+  commit 進 Fable `main` 即是部署，未 commit 的工作樹改動不會生效。新增安裝腳本
+  `scripts/install_precommit.sh <Fable 路徑>`：只取代本 kit 自己的舊 hook（先備份），遇到非本 kit 的
+  hook、`core.hooksPath`、非 git clone 的 Fable、含 `"` `$` 反引號的路徑一律拒絕且不寫檔。
+  INSTALL.md 步驟 10、接線閘擋下訊息與 session 開場提示都改指向安裝腳本。
 - **反方唯讀**：skeptic 與 red-team 不再修改任何檔案；需要改檔才能證明的反例，
   改為寫出重現步驟並標為未驗證，交回主迴圈驗證。
 

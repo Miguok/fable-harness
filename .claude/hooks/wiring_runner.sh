@@ -1,9 +1,9 @@
 #!/bin/sh
 # wiring_runner.sh — git pre-commit runner for FABLE-PROTOCOL component 4.
 #
-# Install as a repo's pre-commit hook (or append this block to an existing one):
-#     cp <fable-repo>/.claude/hooks/wiring_runner.sh .git/hooks/pre-commit
-#     chmod +x .git/hooks/pre-commit
+# Install per repo with scripts/install_precommit.sh — see INSTALL.md step 10.
+# That installs a thin pre-commit shell which runs THIS file as committed on
+# Fable's main branch, so this file is not copied into repos.
 #
 # It runs every command listed in `.claude/wiring-guards`, one per line.
 # A red guard aborts the commit. `ALLOW_UNWIRED=1 git commit ...` states the

@@ -808,9 +808,10 @@ def check_wiring(root, config_args=(), env_prefix=None):
             "The hooks directory is not version controlled, so it does not come back "
             "after a re-clone. Right now every guard file is present in the repo and not "
             "one of them will ever run — the exact failure this gate exists to catch.\n\n"
-            "Install the runner shipped with this kit at exactly that path:\n"
-            "  cp <fable-repo>/.claude/hooks/wiring_runner.sh %s\n"
-            "  chmod +x %s" % (DECL_REL, installed, installed, installed)
+            "Install the pre-commit shell shipped with this kit (INSTALL.md step 10):\n"
+            "  sh <fable-repo>/scripts/install_precommit.sh <fable-repo>\n"
+            "run from the root of this repo; it puts the hook at exactly that path."
+            % (DECL_REL, installed)
         )
 
     try:
@@ -834,9 +835,10 @@ def check_wiring(root, config_args=(), env_prefix=None):
             "  installed: %s (no reference to the declaration)\n\n"
             "The guards exist and pass, but nothing invokes them on commit. A guard that "
             "only runs when somebody remembers to run it is not a gate.\n\n"
-            "Either append the runner block from "
-            "<fable-repo>/.claude/hooks/wiring_runner.sh to your existing pre-commit, "
-            "or install that file as the hook if you have none of your own."
+            "Install the pre-commit shell with "
+            "<fable-repo>/scripts/install_precommit.sh (INSTALL.md step 10); if you "
+            "already have a pre-commit of your own, step 10 also lists how to "
+            "integrate by hand."
             % (DECL_REL, installed)
         )
     return None

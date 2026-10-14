@@ -313,13 +313,15 @@ def test_d9_every_hook_script_in_the_repo_is_watched():
 
     wiring_runner.sh 不在此列：它是安裝到 repo 的 .git/hooks/pre-commit 的
     git hook，不是註冊在 settings.json 裡的 Claude hook，doctor 管不到它。
+    precommit_shell.sh 同理：它和 wiring_runner.sh 一樣是安裝到 .git/hooks 的
+    git hook 範本（由 scripts/install_precommit.sh 安裝），不是 settings.json 註冊的 Claude hook。
     """
     sys.path.insert(0, str(REPO_ROOT / "scripts"))
     import fable_doctor  # noqa: PLC0415
 
     watched = {script for _, script in fable_doctor.HOOK_SCRIPTS}
     hooks_dir = REPO_ROOT / ".claude" / "hooks"
-    not_claude_hooks = {"wiring_runner.sh"}
+    not_claude_hooks = {"wiring_runner.sh", "precommit_shell.sh"}
     on_disk = {
         p.name for p in hooks_dir.iterdir()
         if p.is_file() and p.suffix in (".py", ".sh") and p.name not in not_claude_hooks
