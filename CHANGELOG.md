@@ -12,6 +12,8 @@ The current version is also kept in [VERSION](VERSION).
 
 ## [Unreleased]
 
+## [1.6.0] — 2026-10-17
+
 ### Fixed
 
 - **驗證關卡用同一個範圍判準判斷「改的是不是本專案的程式碼」**：以前 shell 寫入靠路徑子字串（`/temp/`、`scratchpad`、`appdata`）排除暫存區，Edit/Write 則完全沒有排除——寫到 scratchpad 的一次性腳本被擋、專案內名為 `src/temp/` 的目錄卻被放過，變數路徑（`$SP/a.py`）兩個方向都判錯。現在 Edit/Write 與 shell 寫入共用一個判準：該檔所在目錄的 `git rev-parse --git-common-dir` 與 session cwd 的相同才算（專案的 linked worktree 算；另外 `git init` 的測試 repo 與非 repo 目錄不算），相對路徑以 hook payload 的 cwd 解析，shell 目標裡的變數先以同一道指令內的賦值與環境變數展開，展不開、git 不可用、目錄不存在時一律算改碼（fail-closed）。
