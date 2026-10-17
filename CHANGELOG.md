@@ -16,16 +16,16 @@ The current version is also kept in [VERSION](VERSION).
 
 ### Fixed
 
-- **驗證關卡用同一個範圍判準判斷「改的是不是本專案的程式碼」**：以前 shell 寫入靠路徑子字串（`/temp/`、`scratchpad`、`appdata`）排除暫存區，Edit/Write 則完全沒有排除——寫到 scratchpad 的一次性腳本被擋、專案內名為 `src/temp/` 的目錄卻被放過，變數路徑（`$SP/a.py`）兩個方向都判錯。現在 Edit/Write 與 shell 寫入共用一個判準：該檔所在目錄的 `git rev-parse --git-common-dir` 與 session cwd 的相同才算（專案的 linked worktree 算；另外 `git init` 的測試 repo 與非 repo 目錄不算），相對路徑以 hook payload 的 cwd 解析，shell 目標裡的變數先以同一道指令內的賦值與環境變數展開，展不開、git 不可用、目錄不存在時一律算改碼（fail-closed）。
-- **「這是不是一次測試執行」只認指令位置**：驗證關卡與目標關卡以前對整條指令做子字串搜尋，`cat pytest.ini`、`grep -rn pytest docs/`、`git commit -m "add pytest"` 只是提到測試工具，卻被當成跑過測試（驗證關卡因此放行未驗證的改碼，目標關卡把它們的輸出計成紅或綠）。現在命中必須落在指令段的開頭，前面只允許環境變數賦值與 `env`、`timeout N`、`uv run`、`python -m`、`py -m`、`npx`、`bundle exec`、`bash -c` 等包裝，工具本身可帶路徑，執行器也可以是變數或加引號的路徑（`"$PY" -m pytest`）；兩支 hook 的辨識規則仍逐字相同。目標關卡另外修了兩處：`--collect-only`／`--version` 只看含測試指令的那一段（`pytest && python3 --version` 不再整筆不計），目標的鍵取自被判為測試執行的那一段。驗證關卡判斷「改了程式碼」時，先遮掉引號內文字：`echo "a > b.py"` 不再被當成寫入 b.py，被引號包住且含空白的寫入目標（`> "src/app code.py"`）與含分號的 `sed -i` 腳本則補上偵測。
-- **接線閘判斷「這是不是帶旗標的 commit」改用 shell 斷詞**：以前對整行做正則與子字串比對，`git log --grep commit -n 3`、`hooks/pre-commit`、檔名含 hookspath 會被當成 `git commit -n` 而誤擋；`git 'commit' --no-verify`、`c""ommit`、反斜線續行拆字、帶路徑的 `git.exe`、同一行用 `-c alias.<名>=commit` 定義的別名則漏擋。現在先斷詞並切成指令段，找出 git、跳過全域選項、取子命令，跳過 hook 的旗標與 `core.hooksPath` 只看該次 commit 呼叫自己的參數與設定。`-C` 目標是變數、命令替換或不存在的路徑，而該呼叫帶跳過 hook 的旗標或 hooksPath 時，改為擋下（以前直接放行）；引號不成對無法斷詞時退回舊判定，且只在該指令段內判斷。命令替換或變數當作子命令列入已知限制。
+- **驗證關卡用同一個範圍判準判斷「改的是不是本專案的程式碼」**：以前 shell 寫入靠路徑子字串（`/temp/`、`scratchpad`、`appdata`）排除暫存區，Edit/Write 則完全沒有排除——寫到 scratchpad 的一次性腳本被擋、專案內名為 `src/temp/` 的目錄卻被放過，變數路徑（`$SP/a.py`）兩個方向都判錯。現在 Edit/Write 與 shell 寫入共用一個判準：該檔所在目錄的 `git rev-parse --git-common-dir` 與 session cwd 的相同才算（專案的 linked worktree 算；另外 `git init` 的測試 repo 與非 repo 目錄不算；session cwd 本身不是 git repo 時，cwd 底下的檔一律算，不同磁碟的檔不算且不再讓整回合的檢查失效），相對路徑以 hook payload 的 cwd 解析，shell 目標裡的變數先以同一道指令內的賦值與環境變數展開，展不開、git 不可用、目錄不存在時一律算改碼（fail-closed）。
+- **「這是不是一次測試執行」只認指令位置**：驗證關卡與目標關卡以前對整條指令做子字串搜尋，`cat pytest.ini`、`grep -rn pytest docs/`、`git commit -m "add pytest"` 只是提到測試工具，卻被當成跑過測試（驗證關卡因此放行未驗證的改碼，目標關卡把它們的輸出計成紅或綠）。現在命中必須落在指令段的開頭，前面只允許環境變數賦值與 `env`、`timeout`、`nice`、`ionice`、`stdbuf`、`sudo`、`taskset`、`uv run`／`conda run`、`python -m`、`py -m`、`npx`、`bundle exec`、`bash -c` 等包裝（包裝的旗標可以帶值，例如 `timeout 110 nice -n 15 python -m pytest`、`timeout -k 5 110 pytest`），以及 `{ pytest; }`、`$(which python) -m pytest`，工具本身可帶路徑，執行器也可以是變數或加引號的路徑（`"$PY" -m pytest`）；兩支 hook 用同一條辨識正則，但目標關卡會先切掉 heredoc 內文，驗證關卡不切（heredoc 內文的 pytest 字樣在驗證關卡仍算測試執行，見已知限制）。目標關卡另外修了兩處：`--collect-only`／`--version` 只看含測試指令的那一段（`pytest && python3 --version` 不再整筆不計），目標的鍵取自被判為測試執行的那一段。驗證關卡判斷「改了程式碼」時，先遮掉引號內文字：`echo "a > b.py"` 不再被當成寫入 b.py，被引號包住且含空白的寫入目標（`> "src/app code.py"`）與含分號的 `sed -i` 腳本則補上偵測。
+- **接線閘判斷「這是不是帶旗標的 commit」改用 shell 斷詞**：以前對整行做正則與子字串比對，`git log --grep commit -n 3`、`hooks/pre-commit`、檔名含 hookspath 會被當成 `git commit -n` 而誤擋；`git 'commit' --no-verify`、`c""ommit`、反斜線續行拆字、帶路徑的 `git.exe`、同一行用 `-c alias.<名>=commit` 定義的別名則漏擋。現在先斷詞並切成指令段，找出 git、跳過全域選項、取子命令，跳過 hook 的旗標與 `core.hooksPath` 只看該次 commit 呼叫自己的參數與設定。`-C` 目標是變數、命令替換或不存在的路徑，而該呼叫帶跳過 hook 的旗標或 hooksPath 時，改為擋下（以前直接放行）；段首認不出的指令段（`if`／`while`／`until` 條件、`xargs`、`eval`、`watch`、`find -exec`、前置重導向等開頭）仍逐一檢查段內每個 git 呼叫；行內 `#` 之後當註解。引號不成對無法斷詞時退回舊判定，斷詞與舊判定的結果取聯集（任一邊判有風險就擋）。命令替換或變數當作子命令列入已知限制。
 - **目標關卡把同一次紅重複計數**：每次 Stop 都重讀整個回合，同一次紅的執行每次
   Stop 都再加 1；自主長跑時一個回合會 Stop 很多次，一次紅就被計成 3～4 次而擱置。
   改為以工具呼叫 id 去重複：計數單位是 Stop 劃界的工作段落，段落結束時仍紅才記一次，
   同一筆紅結果不會在之後的 Stop 被重算（協議 §4b-1 第 7 條）；權威驗證綠收束時
   綠之前的紅也記成已計（逐 context 判定，多個 context 各自收束；未收束 context 的紅照常計數，
   不再被權威綠的提早結束吞掉）；已計清單有軟性保留上限（`FABLE_GOAL_MAX_COUNTED`，預設 512），
-  只裁掉不在目前回合的舊 id，目前回合的 id 不受此限。
+  只裁掉舊 id；目前回合裡每個目標最後一筆結果的 id 不受此限。
 - **只差輸出格式旗標就被當成兩個目標**：`--tb=no` 的紅與 `--tb=short -rf` 的綠
   解不開。紅綠解除時改剝掉只改輸出長相的 pytest 旗標，解除順序依 §4b-1 第 3 條（已記過的紅之後出現過綠才解，綠在紅之前不解）
   （§4b-1 第 5 條；是不是 pytest 看鍵的第一個 token——`test_key` 已把起點切到 runner，參數位置的
@@ -40,36 +40,37 @@ The current version is also kept in [VERSION](VERSION).
   因此落在兩個 context。值不再吞 `;`／`&`／`|`；只有 `export` 的賦值與緊接命令的前綴賦值算 context。
 - **heredoc 內文的「pytest」字樣被當成測試指令**：鍵從內文起算，那筆執行的紅綠都對不上。判斷是不是
   測試指令、以及算鍵之前，先切掉 heredoc 內文；切掉後沒有 pytest 就不是測試指令。
-- 以上幾項以本機真實 transcript 重放確認誤擱置大幅下降；重放腳本與資料不在 repo，數字不列。
 
 ### Known limitations
 
-- **鍵以第一個 `pytest` 子字串定起點**：`uv run --with pytest==8 pytest …` 這類寫法，`pytest==8`
-  會成為 runner 位置而判不出是 pytest，格式旗標不被剝——結果是紅燈不被解掉（保守方向），
-  不會誤解紅燈。`-vvv`、`--quiet`、`--verbose`、合併短旗標（`-qx`）、`--tb no`、大寫的 `-Q`／`-V`
-  也都不剝，同屬保守方向。
+- **`uv run --with pytest==8 pytest …` 的 `pytest==8` 被當成環境變數賦值**：它會算進目標的 context，
+  所以這種寫法的綠只解得開同樣寫法的紅（保守方向，不會誤解紅燈）。
+- **部分格式旗標不剝**：`-vvv`、`--quiet`、`--verbose`、合併短旗標（`-qx`）、`--tb no`、大寫的 `-Q`／`-V`
+  不被當成只改輸出長相的旗標——紅燈不被解掉（保守方向）。
 - **綠只出現在別的 transcript 時看不到**：子代理（worker）在自己的對話裡把測試轉綠，主對話的閘門
   看不到那個綠；主對話只跑紅的話，測試先行的每一片仍會被算成連敗。規避：子代理回報轉綠後，
   主對話用同一條測試指令（選取相同、輸出旗標可不同）親自跑一次綠。
 - **計數單位是 Stop 劃界的段落**：同一段落內同鍵真的連紅三次（中間有改碼）也只計 1——假陰性，
-  落在 `_verdict` 明示偏好的方向；更準的「嘗試」訊號（兩次紅之間有 Edit／Write）另議。
+  保守方向（寧可少擋，不誤擋）。
 - **heredoc 內用腳本呼叫 pytest 的執行看不到**：判斷前先切掉 heredoc 內文，所以
   `python - <<'EOF' … subprocess.run(["pytest", …]) … EOF` 這類執行既不記紅也不記綠——假陰性，
   保守方向。
-- **引號字串裡出現「pytest」仍會被當成測試指令**：例如交給其他工具的長提示文字含「pytest」字樣。
-  鍵從那個字樣起算，紅綠都對不上真正的目標；與 heredoc 內文同一類，尚未處理。
+- **驗證關卡不切 heredoc 內文**：heredoc 內文裡的 `pytest` 字樣（以及 `pytest --collect-only`／`--version`）
+  在驗證關卡仍算測試執行，未驗證的改碼可能因此放行（放行方向，與舊版相同）。
+- **包裝程式帶值旗標的辨識是啟發式**：`sudo -E somecmd pytest f` 這類「無值旗標後接別的指令」可能被誤認成測試執行
+  （放行方向）；`--test` 離指令開頭超過 500 字元時不再被認出（防止病態長指令拖慢）。
+- **接線閘看不到引號裡的指令**：`eval "git commit -n"`、`sh -c 'git commit -n'` 這類把整條指令放在引號裡交給另一層執行的寫法，
+  接線閘看不到（與舊版相同）。所以 `eval "git commit --no-verify"` 能同時繞過接線閘與 git hook。
 - **連續的獨立賦值**：`X=1 Y=2 && cmd` 的 `X` 會因後面還有 token 而被算進 context；`set -a` 之後的
   獨立賦值實際上會 export，但不算 context。
-- **「不是真的執行」的判斷仍看原始指令**：heredoc 內文含 `--collect-only`／`--version` 等字樣時，
-  後面真跑的 pytest 整筆不記（紅綠都看不見）——假陰性；修法是對切過內文的指令判斷。
 - **context 的 `cd` 只取第一個 `<<` 之前**：`cd A && cat > f <<'EOF' … EOF … cd B && pytest …`
   記成 `cd=A`；狀態檔不分專案、只靠 `cd=` 分，這種形態下不同專案的紅綠可能互相解除（危險方向）。
 - **heredoc 邊界**：一般 `<<'EOF'` 的內文若有一行縮排的 `EOF` 會提前收尾（bash 不會）；
   `<<\EOF`、CRLF 行尾、未閉合的 heredoc 不切，回到舊行為；引號內的 `<<` 在極端排版下可能誤切。
 - **`TMPDIR=$SP` 這類引用變數的值不展開**：`SP` 本身是獨立賦值、不算 context，於是不同暫存目錄的
   執行被視為同一個 context——放寬方向，只影響「哪個綠能解哪個紅」。
-- **任一 context 被權威綠收束就把 `streak` 歸零**：其他 context 的已計紅仍在時這個鏡像欄失真；
-  計數與擋人看的是 `red`，不受影響，只影響訊息顯示。
+- **任一 context 被權威綠收束，訊息裡顯示的連敗數就歸零**：其他 context 的已計紅仍在時，這個顯示值會失真；
+  計數與是否擋人不受影響。
 
 ### Changed
 
