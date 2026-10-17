@@ -27,7 +27,9 @@ Stop hook 驗證 gate（verify_gate.py）行為驗收——對應 Fable Protocol
   cd <repo> && python -m pytest tests/test_verify_gate.py -v
 
 ══════════════════════════════════════
-驗收邊界說明 + 執行紀錄（2026-07-03 09:56 GMT+8）
+驗收邊界說明 + 執行紀錄（2026-10-17 22:32 GMT+8）
+最後執行：2026-10-17 22:32 → 77 passed ✅（v1.6.0 發佈審查 R1、R4、R5：T26／T26b 帶值旗標的測試執行端到端與配對、
+  T27／T27b cwd 不是 repo 時 cwd 底下的檔算本專案、T28／T28b 跨磁碟不丟例外也不讓整回合放行；修改前 T26、T27、T28、T28b 紅）
 ══════════════════════════════════════
 對應規劃書：Fable Protocol Kit 組件3（Stop hook 驗證 gate，soft 模式）
 執行命令：python -m pytest tests/test_verify_gate.py -v
@@ -748,3 +750,103 @@ def test_t25_when_git_cannot_answer_the_gate_fails_closed(tmp_path):
     assert _scoped_run(tmp_path, _edit_entries(plain / "scratch.py"), proj, env=env), \
         "git 不可用時應 fail-closed 算改碼"
     assert not _scoped_run(tmp_path, _edit_entries(plain / "scratch.py"), proj)
+
+
+# ── T26：包裝程式帶值旗標（處置票 R1）端到端 ─────────────────────────────────────
+# 辨識本身的類別守衛在 test_goal_gate.py 的 G113（兩支 hook 共用同一條正則）；這裡只釘
+# **後果**：一回合改了碼、再用 `timeout 110 nice -n 15 python -m pytest` 跑出綠，Stop 必須放行。
+# 修復前這條指令的 `nice -n 15` 讓正則整個失配，gate 擋掉一輪其實已驗證的改碼。
+def test_t26_a_real_run_through_nice_with_a_valued_flag_is_not_blocked(tmp_path):
+    """T26：Edit 一支 .py，再用 `timeout 110 nice -n 15 python -m pytest tests/x.py -q` 跑 → 放行。"""
+    cmd = "timeout 110 nice -n 15 python -m pytest tests/x.py -q"
+    assert not _blocked_after(tmp_path, cmd), f"{cmd!r} 是一次真的測試執行，卻被擋了"
+
+
+def test_t26b_the_same_wrapper_in_front_of_a_non_runner_still_blocks(tmp_path):
+    """T26b：配對——同樣的包裝後面接 `cat pytest.ini`，沒有跑測試，改碼仍要擋。"""
+    assert _blocked_after(tmp_path, "timeout 110 nice -n 15 cat pytest.ini")
+
+
+# ── T27～T28：範圍判準（處置票 R4、R5）──────────────────────────────────────────
+# R4：session cwd 本身不是 git repo 時，**位於 cwd 之下**的檔就是本專案——不論它剛好在
+#     cwd 底下的子 repo 裡。以前 nogit 對 repo 一律回 False，於是 cwd 底下 `git init`
+#     過的子專案改了碼，gate 一聲不吭。cwd 是 repo 時判準不變（同一個 common dir 才算）。
+# R5：`os.path.relpath` 在不同磁碟會丟 ValueError，被 main 的 except 吞掉 → 整回合 fail-open。
+def test_t27_files_under_a_non_repo_cwd_count_even_inside_a_nested_repo(tmp_path):
+    """T27（R4）：cwd 是非 repo 資料夾，其下子 repo 裡的檔案算本專案 → 擋。"""
+    sub = tmp_path / "plain" / "sub"
+    sub.mkdir(parents=True)
+    _git("init", "-q", cwd=sub)
+    plain = tmp_path / "plain"
+    assert _scoped_run(tmp_path, _edit_entries(sub / "app.py"), plain), "cwd 底下的子 repo 檔案沒被算進專案"
+    assert _scoped_run(tmp_path, _shell_entries(f'echo x > "{str(sub).replace(chr(92), "/")}/b.py"'), plain)
+
+
+def test_t27b_outside_a_non_repo_cwd_nothing_counts_and_a_repo_cwd_is_unchanged(tmp_path):
+    """T27b：T27 的配對——
+
+    1. cwd 是非 repo 資料夾，檔在 cwd 之外的 repo → 不算
+    2. cwd 是非 repo 資料夾，檔在 cwd 之外的非 repo 目錄 → 不算
+    3. cwd 是 repo，檔在另一個 repo（即使位於 cwd 底下）→ 仍不算（現行判準不變）
+    """
+    proj, wt, other, plain = _project(tmp_path)
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    assert not _scoped_run(tmp_path, _edit_entries(other / "t.py"), empty), "cwd 之外的 repo 被算進專案"
+    assert not _scoped_run(tmp_path, _edit_entries(plain / "t.py"), empty), "cwd 之外的目錄被算進專案"
+    nested = proj / "vendored"
+    nested.mkdir()
+    _git("init", "-q", cwd=nested)
+    assert not _scoped_run(tmp_path, _edit_entries(nested / "t.py"), proj), "repo cwd 底下的另一個 repo 被算進專案"
+    assert _scoped_run(tmp_path, _edit_entries(proj / "src" / "t.py"), proj)
+
+
+def _other_drive_root(cwd):
+    """另一顆磁碟的根目錄（需存在、且不在任何 git repo 內）；找不到就 None。"""
+    if os.name != "nt":
+        return None
+    mod = _verify_gate_module()
+    home = os.path.splitdrive(os.path.realpath(str(cwd)))[0].upper()
+    for letter in "CDEFGHIJKLMNOPQRSTUVWXYZ":
+        root = letter + ":\\"
+        if letter + ":" != home and os.path.isdir(root) and mod._common_dir(root)[0] == "nogit":
+            return root
+    return None
+
+
+def test_t28_a_path_on_another_drive_does_not_raise_in_scope(tmp_path):
+    """T28（R5）：cwd 非 repo 在 C:，檔在另一顆磁碟 → `Scope.contains` 不丟例外，回 False。"""
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    root = _other_drive_root(plain)
+    if root is None:
+        pytest.skip("本機沒有第二顆可用且非 repo 的磁碟")
+    scope = _verify_gate_module().Scope(str(plain))
+    assert scope.contains(root + "x.py") is False
+    assert scope.contains(str(plain / "x.py")) is True   # 配對：cwd 之下仍算
+
+
+@pytest.mark.parametrize("cross_first", [True, False])
+def test_t28b_a_cross_drive_edit_does_not_make_the_whole_turn_fail_open(tmp_path, cross_first):
+    """T28b（R5 端到端）：一回合 Edit 了跨磁碟的 .py **和**專案裡的 .py、沒跑測試 → 仍要擋。
+
+    修復前：跨磁碟那一筆的 ValueError 被 main 的 except 吞掉，整回合放行，專案裡那筆也跟著溜過。
+    """
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    root = _other_drive_root(plain)
+    if root is None:
+        pytest.skip("本機沒有第二顆可用且非 repo 的磁碟")
+    far = _user("改兩個檔"), _tool_use("Edit", {"file_path": root + "far.py"}), _tool_result()
+    near = _tool_use("Edit", {"file_path": str(plain / "near.py")}), _tool_result()
+    entries = [far[0], *(far[1:] + near if cross_first else near + far[1:])]
+    tp = tmp_path / "transcript.jsonl"
+    tp.write_text("\n".join(json.dumps(e, ensure_ascii=False) for e in entries), encoding="utf-8")
+    payload = json.dumps({"session_id": "t", "hook_event_name": "Stop", "stop_hook_active": False,
+                          "cwd": str(plain), "transcript_path": str(tp)})
+    proc = subprocess.run([sys.executable, str(_gate_copy(tmp_path))], input=payload,
+                          capture_output=True, text=True, encoding="utf-8", timeout=60)
+    assert proc.returncode == 0, proc.stderr
+    out = proc.stdout.strip()
+    assert out and json.loads(out)["decision"] == "block", "跨磁碟例外讓整回合 fail-open"
+    assert "near.py" in json.loads(out)["reason"] and "far.py" not in json.loads(out)["reason"]

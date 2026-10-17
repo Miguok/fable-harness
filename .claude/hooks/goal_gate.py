@@ -195,21 +195,42 @@ SHELL_TOOLS = {"Bash", "PowerShell"}
 # 然後是（可帶路徑的）測試工具本身。具名群組 `run` 是測試指令的起點，
 # 給 `goal_gate.test_key` 切鍵用；包裝與賦值留在 `run` 之外，才不會改變鍵的形狀。
 # ⚠ 這份文字與 goal_gate.py／verify_gate.py 的另一份**必須逐字相同**（G66 綁住）。
-_CMD_POS = (r"(?:^|[;&|(\r\n]|\bthen\b|\bdo\b|\belse\b|\belif\b|\bif\b|\bwhile\b|\buntil\b)"
+# 包裝程式的旗標可以**帶值**（2026-10-17，處置票 R1）：`nice -n 15`、`sudo -u bob`、
+# `ionice -c 3`、`stdbuf -o L`、`timeout -k 5 110`、`env -u FOO`。旗標的值是下一個 token，
+# 以前只認 `-\S+` 一個 token，於是 `timeout 110 nice -n 15 python -m pytest` 這種真的在跑
+# 測試的指令整個失配。`_CMD_FLAGS` 允許「旗標＋一個選擇性的值」，值由 `_CMD_VAL` 界定：
+#   · 不能以 `-`、`;`、`&`、`|` 開頭；
+#   · 不能是另一個包裝程式或常見的唯讀指令——兩個理由：①`sudo -E grep pytest f` 的
+#     `grep` 是指令不是值，把它當值就會把「提到 pytest」誤認成測試執行；
+#     ②值若同時是包裝程式名，`sudo -u sudo -u …` 這種鏈每一節有「值」與「下一層包裝」
+#     兩種剖析，回溯就是 2^N（見 tests 的 G113d，兩支 hook 同一條）。
+#   這張名單由 `_CMD_GENERIC` 與下面特例分支共用，不得各抄一份。
+_CMD_GENERIC = (r"sudo|nice|nohup|time|command|exec|winpty|setsid|xvfb-run|unbuffer|ionice"
+                r"|stdbuf|taskset|php|node|ruby")
+_CMD_VAL = (r"(?![-;&|])(?!(?:[^\s;&|\"']*[/\\])?(?:" + _CMD_GENERIC +
+            r"|env|timeout|chrt|conda|mamba|micromamba|py(?:thon)?[0-9.]*|(?:ba|z|da|k)?sh"
+            r"|cmd|powershell|pwsh|wsl"
+            r"|cat|grep|egrep|fgrep|rg|echo|printf|ls|head|tail|less|more|find|sed|awk|git"
+            r"|vi|vim|nano|cp|mv|rm|diff|wc|sort|tee|which|man|curl|wget)(?:\.exe)?(?![\w.-]))"
+            r"[^\s;&|]+")
+_CMD_FLAGS = r"(?:-\S+(?:[ \t]+" + _CMD_VAL + r")?[ \t]+)*"
+# 指令位置的執行器：變數、加引號的路徑，或命令／反引號替換（`$(which python) -m pytest`）。
+_CMD_EXE = r"(?:\"[^\"]+\"|\$\{\w+\}|\$\w+|\$\([^()\n]*\)|`[^`\n]*`)"
+# `{ pytest; }` 的 `{` 後面必須是空白，才不會把大括號展開 `{pytest,x}` 當成群組。
+_CMD_POS = (r"(?:^|[;&|(\r\n]|\{(?=[ \t])|\bthen\b|\bdo\b|\belse\b|\belif\b|\bif\b|\bwhile\b|\buntil\b)"
             r"[ \t]*")
 _CMD_ENV = r"[A-Za-z_][A-Za-z0-9_]*=(?:\"[^\"]*\"|'[^']*'|[^\s;&|]*)[ \t]+"
 _CMD_WRAP = (
-    r"(?:(?:sudo|nice|nohup|time|command|exec|winpty|setsid|xvfb-run|unbuffer|ionice"
-    r"|stdbuf|php|node|ruby)(?:[ \t]+-\S+)*[ \t]+"
-    r"|env(?:[ \t]+-\S+)*[ \t]+"
-    r"|timeout(?:[ \t]+-\S+)*[ \t]+[0-9][\w.]*[ \t]+"
-    r"|(?:uv|poetry|pipenv|pdm|hatch|rye)[ \t]+run[ \t]+"
+    r"(?:(?:" + _CMD_GENERIC + r")[ \t]+" + _CMD_FLAGS +
+    r"|env[ \t]+" + _CMD_FLAGS +
+    r"|(?:timeout|chrt)[ \t]+" + _CMD_FLAGS + r"[0-9][\w.]*[ \t]+"
+    r"|(?:uv|poetry|pipenv|pdm|hatch|rye|conda|mamba|micromamba)[ \t]+run[ \t]+"
     r"(?:-[\w-]+(?:[= ](?!-)[^\s;&|]+)?[ \t]+)*"
     r"|(?:npx|bunx|pnpx|pnpm[ \t]+(?:exec|dlx)|yarn[ \t]+exec|npm[ \t]+exec"
     r"|pipx[ \t]+run|bundle[ \t]+exec)[ \t]+(?:-\S+[ \t]+)*"
     r"|(?:[^\s;&|\"']*[/\\])?py(?:thon)?[0-9.]*(?:\.exe)?[ \t]+(?:-[XW][ \t]+[^\s-]\S*[ \t]+|-(?!m\b)[\w.]+[ \t]+)*-m[ \t]+"
     r"|coverage[ \t]+run[ \t]+(?:-\S+[ \t]+)*-m[ \t]+"
-    r"|(?:\"[^\"]+\"|\$\{\w+\}|\$\w+)[ \t]+(?:-[XW][ \t]+[^\s-]\S*[ \t]+|-(?!m\b)[\w.]+[ \t]+)*-m[ \t]+(?=pytest\b)"
+    r"|" + _CMD_EXE + r"[ \t]+(?:-[XW][ \t]+[^\s-]\S*[ \t]+|-(?!m\b)[\w.]+[ \t]+)*-m[ \t]+(?=pytest\b)"
     r"|(?:ba|z|da|k)?sh[ \t]+-\w*c[ \t]+[\"']?"
     r"|cmd(?:\.exe)?[ \t]+/[ck][ \t]+[\"']?"
     r"|(?:powershell|pwsh)(?:\.exe)?[ \t]+(?:-\w+[ \t]+)*-c(?:ommand)?[ \t]+[\"']?"
@@ -219,7 +240,7 @@ TEST_CMD_RE = re.compile(
     _CMD_POS + r"(?:" + _CMD_WRAP + r"|" + _CMD_ENV + r")*"
     r"(?:[^\s;&|\"']*[/\\])?"
     r"(?P<run>(pytest"
-    r"|(?:\"[^\"]+\"|\$\{\w+\}|\$\w+)[ \t]+(?:-[XW][ \t]+[^\s-]\S*[ \t]+|-(?!m\b)[\w.]+[ \t]+)*-m[ \t]+unittest"
+    r"|" + _CMD_EXE + r"[ \t]+(?:-[XW][ \t]+[^\s-]\S*[ \t]+|-(?!m\b)[\w.]+[ \t]+)*-m[ \t]+unittest"
     r"|\"[^\"]*[/\\]pytest(?:\.exe)?\""
     r"|\"[^\"]*[/\\]py(?:thon)?[0-9.]*(?:\.exe)?\"[ \t]+(?:\S*[/\\])?(?:test\S*\.py|\S*_test\.py)"
     r"|python[3]?(\.exe)?\s+(-m\s+unittest|(\S*[/\\])?(test\S*\.py|\S*_test\.py))"
@@ -237,7 +258,11 @@ TEST_CMD_RE = re.compile(
     # ⚠ 抓到它的不是我寫的 G66（那條只取樣 12 條手寫字串，五種都不在名單裡，
     # 是**假綠**），是簡潔性鏡頭讀出來的。G66 已改成比對兩個真正的 pattern 物件。
     r"|(tox|nox)\b|deno\s+test|rails\s+test"
-    r"|[^;&|\r\n]*?\s--test(\s|$)))"
+    # `{0,500}` 不是 `*`：包裝鏈（`nice -n 1 nice -n 1 …`）整條失配時，每個前綴長度都會
+    # 重掃一次這個分支，無界就是 O(n²)（處置票 R1 放寬帶值旗標後，nice 鏈 3000 節實測
+    # 1.7 秒；同一條 `timeout 1 ` 鏈修復前就是 0.6 秒）。500 是保守上限，沒有對真實
+    # transcript 量過「`--test` 離指令多遠」的分佈（UNVERIFIED）；兩支 hook 同一個數字。
+    r"|[^;&|\r\n]{0,500}?\s--test(\s|$)))"
     # 後面不得接 word 字元、`-` 或 `/`。少了這個尾界，**路徑裡的那個字**會被
     # 當成測試指令：`cd C:/…/pytest-of-user/… && python -m pytest tests/ -q`
     # 算出的鍵是 `cd=C:/…/Temp :: pytest-of-user/… && python -m pytest tests/ -q`

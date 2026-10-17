@@ -58,8 +58,11 @@
   cd <repo> && python -m pytest tests/test_goal_gate.py -v
 
 ══════════════════════════════════════
-執行紀錄（G82～G107，依時間由新到舊；最上面是最新一次）
+執行紀錄（G82～G113f，依時間由新到舊；最上面是最新一次）
 ══════════════════════════════════════
+最後執行：2026-10-17 22:32 → 303 passed（v1.6.0 發佈審查 R1：包裝程式帶值旗標、`{ pytest; }`、`$(…) -m pytest`、`conda run` 的測試辨識，
+  G113～G113f；修改前 17 failed、13 passed。ReDoS：`'a; '*5000` 0.010 秒、`'nice -n 1 '*3000` 0.071 秒、`'timeout 1 '*3000` 0.028 秒
+  ——最壞值由 0.600 降到 0.071；`--test` 只看指令開頭起 500 字元內）
 最後執行：2026-10-06 14:42 → 207 passed（G105～G107 實作完成：權威比對剝格式旗標、context 只認 export
   與緊接命令的賦值、判斷前切掉 heredoc 內文；暫存複本變異 MG-21～MG-26 六格各自翻紅）
 2026-10-06 14:11 → 6 failed, 201 passed（補 G105～G107 只寫測試、未改 goal_gate.py）
@@ -3084,3 +3087,124 @@ def test_g112c_every_line_of_this_repos_own_wiring_guards_is_a_test_run():
     for ln in lines:
         assert vg.TEST_CMD_RE.search(ln), f"verify_gate 認不出自家守衛：{ln!r}"
         assert gg.is_test_run(ln), f"goal_gate 認不出自家守衛：{ln!r}"
+
+
+# ── G113（處置票 R1）：包裝程式的「帶值旗標」──────────────────────────────────
+# 缺陷類別：包裝程式（nice／timeout／sudo／env／ionice／stdbuf…）後面的旗標只認 `-\S+`
+# 一個 token，而旗標的值是**另一個 token**（`nice -n 15`、`sudo -u bob`、`ionice -c 3`、
+# `timeout -k 5 110`）。結果 `timeout 110 nice -n 15 python -m pytest` 這種**真的在跑測試**
+# 的指令，兩支 hook 都認不出：verify_gate 擋掉一輪已驗證的改碼，goal_gate 不累加也不解除。
+# 另有三種「指令位置」寫法也認不出：`{ pytest; }`、`$(which python) -m pytest`、`chrt 10 pytest`。
+# 守衛盯的是**類別**（帶值旗標的形狀），不是這 11 條：_UNLISTED_FLAG_WRAPPERS 的形狀
+# 沒有出現在任何一行修法的清單裡。
+_WRAPPED_RUNS = [
+    "timeout 110 nice -n 15 python -m pytest tests/x.py -q",
+    "nice -n 15 python -m pytest",
+    "timeout -k 5 110 pytest",
+    "ionice -c 3 pytest",
+    "stdbuf -o L pytest",
+    "env -u FOO pytest",
+    "sudo -u bob pytest",
+    "chrt 10 pytest",
+    "{ pytest; }",
+    "$(which python) -m pytest",
+    "conda run -n env pytest",
+]
+_UNLISTED_FLAG_WRAPPERS = [
+    "taskset -c 0 pytest -q",                       # 名單外的包裝程式 + 帶值旗標
+    "sudo -u bob -E pytest",                        # 帶值旗標後面又接無值旗標
+    "nice -n 15 timeout -k 5 110 pytest -q",        # 兩層，各自帶值旗標
+    "env -u A -u B FOO=1 pytest",                   # 多個帶值旗標 + 賦值
+    "nohup nice -n 5 uv run pytest -q",
+    "cd p && timeout 60 ionice -c 2 -n 4 python3 -m pytest",
+]
+_WRAPPED_NON_RUNS = [
+    "cat pytest.ini",
+    "grep -rn pytest docs/",
+    'git commit -m "add pytest"',
+    "nice -n 15 cat pytest.ini",
+    "timeout 5 echo pytest",
+    "env -u X grep pytest f",
+    "sudo -E grep pytest f",                        # 旗標沒有值、接著就是別的指令
+    "taskset -c 0 cat pytest.ini",
+    "chrt 10 echo pytest",
+    "conda run -n env cat pytest.ini",
+    "echo {pytest,x}",                              # 大括號展開不是 `{ ` 群組
+    "$(which python) -m pip install pytest",
+]
+
+
+@pytest.mark.parametrize("cmd", _WRAPPED_RUNS + _UNLISTED_FLAG_WRAPPERS)
+def test_g113_a_wrapper_with_a_valued_flag_is_still_a_test_run(cmd):
+    """G113：包裝程式帶值旗標（含名單外的同形寫法）→ 兩支 hook 都判為測試執行。"""
+    import verify_gate as vg
+    assert vg.TEST_CMD_RE.search(cmd), f"verify 認不出：{cmd!r}"
+    assert gg.TEST_CMD_RE.search(cmd), f"goal 認不出：{cmd!r}"
+    assert gg.is_test_run(cmd), f"goal is_test_run 認不出：{cmd!r}"
+
+
+@pytest.mark.parametrize("cmd", _WRAPPED_NON_RUNS)
+def test_g113b_a_wrapper_in_front_of_a_non_runner_is_not_a_test_run(cmd):
+    """G113b：配對——放寬帶值旗標之後，只是「提到」pytest 的指令仍不算（不得退回子字串搜尋）。"""
+    import verify_gate as vg
+    assert not vg.TEST_CMD_RE.search(cmd), f"verify 誤認：{cmd!r}"
+    assert not gg.TEST_CMD_RE.search(cmd), f"goal 誤認：{cmd!r}"
+    assert not gg.is_test_run(cmd), f"goal is_test_run 誤認：{cmd!r}"
+
+
+@pytest.mark.parametrize("unit", [
+    "sudo -u sudo -u ", "nice -n python -m ", "env -i env -i ", "timeout -k timeout -k ",
+    "ionice -c nice -n ", "sudo -u /usr/bin/python -m ", "stdbuf -o env -i ",
+    "nice -n 1 ", "timeout 1 ", "chrt 1 chrt 1 ", "a; ",
+])
+def test_g113d_chains_of_wrappers_that_never_reach_a_runner_fail_in_bounded_time(unit):
+    """G113d：旗標的「值」若同時是包裝程式名，每一節有兩種剖析，回溯是 2^N（HOT-1 同類）。
+
+    這些單元重複 40 次、結尾**不是**測試指令，兩支 hook 的正則都必須在秒級失配。
+    在子行程裡跑並設逾時：真的指數爆炸時，這條測試要紅，而不是把整個 pytest 卡死。
+    """
+    code = ("import sys,time;sys.path.insert(0,%r);import goal_gate as g, verify_gate as v;"
+            "s=%r*40+'x';t=time.time();"
+            "r=(g.TEST_CMD_RE.search(s),v.TEST_CMD_RE.search(s));print(r,round(time.time()-t,2))"
+            % (_GATE_DIR, unit))
+    try:
+        proc = subprocess.run([sys.executable, "-B", "-c", code], capture_output=True, text=True,
+                              timeout=30)
+    except subprocess.TimeoutExpired:
+        pytest.fail(f"{unit!r}×40 在 30 秒內沒失配完：正則有指數回溯")
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.startswith("(None, None)"), proc.stdout
+    assert float(proc.stdout.split()[-1]) < 5, proc.stdout
+
+
+@pytest.mark.parametrize("unit", ["nice -n 1 ", "timeout 1 ", "sudo -u bob "])
+def test_g113e_a_long_wrapper_chain_is_not_quadratic(unit):
+    """G113e：3000 節的包裝鏈整條失配，兩支 hook 合計須在 1 秒內。
+
+    放寬帶值旗標讓 `nice -n 1 ` 鏈第一次「可被剖析」，於是失配時每個前綴長度都重掃
+    `--test` 分支：無界掃描實測 1.7 秒×2（修復前 `timeout 1 ` 鏈就有 0.6 秒）。
+    """
+    import verify_gate as vg
+    s = unit * 3000
+    t = time.perf_counter()
+    assert gg.TEST_CMD_RE.search(s) is None and vg.TEST_CMD_RE.search(s) is None
+    elapsed = time.perf_counter() - t
+    assert elapsed < 1.0, f"{unit!r}×3000 花了 {elapsed:.2f} 秒"
+
+
+def test_g113f_the_script_self_test_flag_is_still_recognised_within_the_bounded_scan():
+    """G113f：`--test` 掃描加上界之後，一般長度的指令段（約 200 字元）裡的 `--test` 仍認得。"""
+    import verify_gate as vg
+    cmd = "python3 tool.py " + "--opt value " * 15 + "--test"
+    assert 150 < len(cmd) < 500
+    assert vg.TEST_CMD_RE.search(cmd) and gg.is_test_run(cmd)
+    assert not vg.TEST_CMD_RE.search(cmd + "-pypi")        # 配對：形似旗標仍不算
+
+
+def test_g113c_the_two_copies_still_agree_on_every_wrapped_command():
+    """G113c：兩份 TEST_CMD_RE 文字逐字相同，且對本節所有指令給同一個答案。"""
+    import verify_gate as vg
+    assert gg.TEST_CMD_RE.pattern == vg.TEST_CMD_RE.pattern
+    assert gg.TEST_CMD_RE.flags == vg.TEST_CMD_RE.flags
+    for cmd in _WRAPPED_RUNS + _UNLISTED_FLAG_WRAPPERS + _WRAPPED_NON_RUNS:
+        assert bool(gg.TEST_CMD_RE.search(cmd)) == bool(vg.TEST_CMD_RE.search(cmd)), cmd
