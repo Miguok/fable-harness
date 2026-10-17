@@ -33,7 +33,7 @@
   cd <repo> && python -m pytest tests/test_wiring_gate.py -v
 
 ══════════════════════════════════════
-驗收邊界說明 + 執行紀錄（2026-09-05 11:35 GMT+8）
+驗收邊界說明 + 執行紀錄（2026-10-17 22:10 GMT+8）
 ══════════════════════════════════════
 對應：CHANGELOG 1.1.0「新增組件 4 接線閘門」。
 本組件的來源是 2026-09-05 一個真實 repo 一天內挖出的四個「做了沒接線」實例：
@@ -41,7 +41,9 @@
 租約守門只擋住兩條重啟路徑之一、rebuild primitive 零呼叫端。四者都通過了驗收。
 
 執行命令：python -m pytest tests/test_wiring_gate.py -v
-最後執行：2026-09-05 14:59（三輪抗辯修復後）→ 57 passed ✅
+最後執行：2026-10-17 22:10 → 211 passed ✅（v1.6.0 發佈審查後：W46～W47 共 54 條盯「認不出的段首」與「被引號、註解遮住的旗標」兩類，
+  修改前 33 failed、21 passed；對照 main 的 66＋168 個樣本，「main 擋、本版放」0 筆）
+歷史：2026-09-05 14:59（三輪抗辯修復後）→ 57 passed ✅
 
 併入本 repo 後的抽樣突變（在**這個** repo 實跑，不是引用來源 repo 的紀錄）：
   把 classify 裡的 strip_message_bodies(command) 改回 command
@@ -1539,3 +1541,103 @@ def test_w45_shlex_failure_falls_back_but_only_inside_its_own_segment(tmp_path):
     repo = _git_repo(tmp_path, declare=True, precommit=_PRECOMMIT_WIRED)
     assert not _is_deny(_run_gate(_bash('git log --grep commit; echo "unbalanced -n'), repo))
     assert _is_deny(_run_gate(_bash('timeout 5 git commit -m x --no-verify; echo "unbalanced'), repo))
+
+
+# ── W46～W47：斷詞版相對 v1.5.0 的退步（處置票 R2、R3）──────────────────────────
+# 缺陷類別 R2：斷詞成功、但某一指令段「認不出呼叫」（段首是沒列舉的字）時，那一段被當成
+#   「不是 commit」。fail-closed 的舊判定只在斷詞失敗時才跑，於是認不出來＝放行。
+# 缺陷類別 R3：正則與斷詞兩套解析器用「次數」黏合——正則先數到的 commit（例如引號裡的
+#   假 `; git commit x`）蓋掉斷詞看到的旗標。兩套的風險必須取聯集，不靠次數去重複。
+# 測試打在整支 gate（子行程、真 repo、已宣告且正確接線），所以只有旗標判定能讓它翻紅。
+_SEGMENT_HEAD_DENY = [
+    # 段首是 shell 文法關鍵字
+    "if git commit --no-verify -m x; then echo ok; fi",
+    "git add -A && if git commit -n -m x; then :; fi",
+    "while ! git commit -n -m x; do :; done",
+    "until git commit -n -m x; do :; done",
+    "if false; then :; elif git commit -n -m x; then :; fi",
+    # 段首是會執行其後參數的程式
+    "echo a | xargs git commit --no-verify -m",
+    "eval git commit -n -m x",
+    "watch git commit -n -m x",
+    r"find . -exec git commit -n -m x \;",
+    "coproc git commit -n -m x",
+    "time git commit -n -m x",
+    "nohup git commit -n -m x",
+    # 段首是重導向
+    ">/dev/null git commit -n -m x",
+    "git add . && >log.txt git commit --no-verify",
+    "2>&1 git commit -n -m x",
+]
+
+_MASKED_DENY = [
+    'git commit -m x --no-ver""ify',
+    """echo "x; git commit --amend" ; git 'commit' --no-verify -m b""",
+    "git 'commit' --no-verify -m x # don't",
+    "git commit -m a ; git 'commit' -n -m b # it's",
+    """git -c alias.ci=commit ci -n; echo "; git commit x\"""",
+    # `#` 不在字首就不是註解：把它當註解會把後面真正的 commit 一起吞掉
+    "echo a#b; git commit -n -m x",
+    "echo $#; git commit -n -m x",
+]
+
+
+@pytest.mark.parametrize("cmd", _SEGMENT_HEAD_DENY + _MASKED_DENY)
+def test_w46_a_bypass_flag_is_caught_whatever_the_segment_starts_with(tmp_path, cmd):
+    """W46（R2、R3 的實例）：帶 --no-verify／-n 的 commit，換成這些寫法一律要擋。"""
+    repo = _git_repo(tmp_path, declare=True, precommit=_PRECOMMIT_WIRED)
+    assert _is_deny(_run_gate(_bash(cmd), repo)), f"漏擋：{cmd}"
+
+
+# 這份清單**只是樣本**：每一個都不在 gate 的任何列舉裡，最後一個是憑空造的字。
+# 修法若是「把這幾個字補進控制字／包裝器清單」，前面的 W46 會全綠，這裡會翻紅。
+_UNLISTED_HEADS = ["chrt 10", "taskset 1", "flock /tmp/l", "faketime -f +1d", "ltrace",
+                   "firejail", "fable-unlisted-launcher"]
+# 擋住假的 `; git commit x`（讓正則多算一次）之後，再藏一個斷詞才看得到的真旗標
+_COUNT_INFLATORS = ['echo "; git commit x"', "echo '&& git commit y'"]
+_TOKEN_ONLY_HIDDEN = ["git 'commit' -n -m b", "git -c alias.ci=commit ci --no-verify",
+                      'git commit -m b --no-ver""ify', "timeout 5 git 'commit' -n"]
+
+
+@pytest.mark.parametrize("head", _UNLISTED_HEADS)
+def test_w46b_an_unlisted_segment_head_does_not_hide_a_bypass(tmp_path, head):
+    """W46b：類別守衛——段首是 gate 沒聽過的字，一樣擋（修的是類別，不是這幾個字）。"""
+    repo = _git_repo(tmp_path, declare=True, precommit=_PRECOMMIT_WIRED)
+    for cmd in ("%s git commit -n -m x" % head,
+                "git add . && %s git commit --no-verify -m x" % head):
+        assert _is_deny(_run_gate(_bash(cmd), repo)), f"漏擋：{cmd}"
+
+
+@pytest.mark.parametrize("fake", _COUNT_INFLATORS)
+@pytest.mark.parametrize("real", _TOKEN_ONLY_HIDDEN)
+def test_w46c_a_phantom_commit_does_not_cancel_the_real_one(tmp_path, fake, real):
+    """W46c：類別守衛——兩套解析器的風險取聯集，正則多數到的假 commit 不得蓋掉斷詞的旗標。"""
+    repo = _git_repo(tmp_path, declare=True, precommit=_PRECOMMIT_WIRED)
+    for cmd in ("%s ; %s" % (fake, real), "%s ; %s" % (real, fake)):
+        assert _is_deny(_run_gate(_bash(cmd), repo)), f"漏擋：{cmd}"
+
+
+@pytest.mark.parametrize("cmd", [
+    "git commit -m x",
+    "git log --grep commit -n 3",
+    'echo "git commit --no-verify"',
+    "grep -n pre-commit file",
+    "if git diff --quiet; then echo same; fi",
+    # 以下是 fallback 的邊界：會執行參數的段首才走舊判定，唯讀的不得誤擋
+    "echo git commit -n",
+    "echo hi # git commit -n",
+    "git commit -m x # it's fine",
+    "if grep -q commit f; then echo ok; fi",
+    "while read l; do echo \"$l\"; done < f",
+    ">/dev/null git log -n 3",
+    "2>&1 git status -n",
+    r"find . -name '*.py' -exec grep -n git {} \;",
+    "xargs grep -n commit",
+    "chrt 10 git log --grep commit -n 3",
+    "FOO=1 git log --grep commit -n 3",
+    'echo "x; git commit y" ; git log -n 3',
+])
+def test_w47_the_fallback_still_lets_ordinary_work_through(tmp_path, cmd):
+    """W47（W46 的配對）：必須仍然做得到——全擋的 fallback 也會讓 W46 全綠。"""
+    repo = _git_repo(tmp_path, declare=True, precommit=_PRECOMMIT_WIRED)
+    assert not _is_deny(_run_gate(_bash(cmd), repo)), f"誤擋：{cmd}"

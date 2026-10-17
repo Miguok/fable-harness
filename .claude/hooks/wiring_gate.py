@@ -637,7 +637,17 @@ def _legacy_commit_risk(line):
 # 在段內找 git、跳過 git 全域選項、取子命令，旗標只看該呼叫自己的參數。
 _SEP_CHARS = set(";&|()")
 _PREFIX_WRAPPERS = set(WRAPPER_NAME[3:-1].split("|"))
-_CONTROL_WORDS = {"then", "do", "else", "!", "{", "}", "exec"}
+_CONTROL_WORDS = {"then", "do", "else", "!", "{", "}", "exec",
+                  "if", "elif", "while", "until"}
+# 段首認不出來（不是環境變數、控制字、包裝器）時的回傳值。**與 None 不同**：None 是
+# 「這一段裡的 git 不是 commit」；它是「段首我不認得，不能就此說這一段不是 commit」
+# ——`xargs`／`eval`／`watch`／`find -exec`／`coproc`／前置重導向都會把後面的 git 跑起來。
+# 以前兩者都回 None，於是**認不出來＝放行**，比 v1.5.0 的 fail-closed 還寬（處置票 R2）。
+_UNRECOGNISED = object()
+# 段首是這些就確定它不會把後面的字當指令執行——`echo git commit -n` 只是印字。
+# 清單只影響誤擋（不在清單的唯讀指令會多掃一次 git），不會造成漏擋。
+_INERT_HEADS = {"echo", "printf", "grep", "egrep", "fgrep", "rg", "cat",
+                "write-host", "write-output"}
 _ENV_TOKEN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 _WRAP_ARG_TOKEN_RE = re.compile(r"^[-\w./=:+]+$")
 # git 全域選項裡吃下一個 token 當值的（`--exec-path` 只有 `=` 形式，不吃下一個）。
@@ -672,6 +682,14 @@ def _newlines_to_separators(text):
             out.append(c)
         elif c == "\n":
             out.append(" ; ")
+        elif c == "#" and (i == 0 or text[i - 1] in " \t\r\n;&|("):
+            # 註解：字首的 `#` 到行尾 shell 都不執行。留在裡面的話，註解裡的單引號
+            # （`# don't`）讓斷詞失敗，整條退回「引號遮蔽」的舊判定，而遮蔽恰好
+            # 把 `git 'commit' --no-verify` 的 `'commit'` 一起遮掉（漏擋）。
+            # 只認字首的 `#`：`a#b`、`$#` 不是註解，當註解會把後面真正的 commit 吞掉。
+            while i < len(text) and text[i] != "\n":
+                i += 1
+            continue
         else:
             out.append(c)
         i += 1
@@ -757,6 +775,8 @@ def _segment_call(tokens):
 
     Returns a dict: commit (a commit, or a same-line alias for one), unknown (a
     shell alias — cannot be judged), skips, hookspath, target.
+    Returns ``_UNRECOGNISED`` when something unlisted stands before any `git` —
+    the caller must still look behind it (`_calls_behind_unknown_head`).
     """
     n, i, env, in_wrapper = len(tokens), 0, [], False
     while i < n:
@@ -770,7 +790,7 @@ def _segment_call(tokens):
         elif _basename(t) in _PREFIX_WRAPPERS:
             in_wrapper = True
         elif not (in_wrapper and _WRAP_ARG_TOKEN_RE.match(t)):
-            return None
+            return _UNRECOGNISED
         i += 1
     else:
         return None
@@ -828,12 +848,42 @@ def _segment_call(tokens):
             "skips": _skips_the_hook_tokens(args), "hookspath": hookspath}
 
 
+def _calls_behind_unknown_head(tokens):
+    """Git commit calls in a segment whose head the gate does not know.
+
+    Fail-closed, the same way the old string match was: every `git` token in the
+    segment is analysed as if the unknown words before it were a wrapper. Not a
+    string match on the whole segment — that read `chrt 10 git log --grep commit
+    -n 3` as a `git commit -n`. Only a head known to merely print its arguments
+    (`echo`) ends the scan.
+    """
+    head = next((t for t in tokens if not _ENV_TOKEN_RE.match(t)
+                 and _basename(t) not in _CONTROL_WORDS), "")
+    if _basename(head) in _INERT_HEADS:
+        return []
+    out = []
+    for i, t in enumerate(tokens):
+        if _basename(t) == "git":
+            env = [e for e in tokens[:i] if _ENV_TOKEN_RE.match(e)]
+            call = _segment_call(env + tokens[i:])
+            if call:
+                out.append(call)
+    return out
+
+
 def shell_commit_calls(payload):
     """Every git commit call on the line, from shell tokens — None if untokenisable."""
     segments = shell_segments(payload)
     if segments is None:
         return None
-    return [c for c in map(_segment_call, segments) if c]
+    calls = []
+    for seg in segments:
+        call = _segment_call(seg)
+        if call is _UNRECOGNISED:
+            calls += _calls_behind_unknown_head(seg)
+        elif call:
+            calls.append(call)
+    return calls
 
 
 def unresolvable_target(target):
@@ -842,11 +892,14 @@ def unresolvable_target(target):
     return any(ch in target for ch in "$`") or not os.path.isdir(target)
 
 
-def unparsed_commit_risk(payload, parsed=0):
-    """Return the risky commit calls the regex parser did not account for.
+def unparsed_commit_risk(payload):
+    """Return every risky commit call the shell-token parser (or its fallback) sees.
 
-    ``parsed`` is how many commit invocations the regex parser already handled;
-    shell tokens only add anything when they see more commits than that.
+    The caller judges the regex parser's invocations separately; the two verdicts
+    are a **union**. 以前用「次數」黏合：正則先數到的 commit（引號裡的假
+    `; git commit x`）會蓋掉斷詞看到的旗標，`len(calls) <= parsed` 就整批丟掉
+    （處置票 R3）。這裡不收 ``parsed``——兩套各自判，任何一套判有風險就有風險；
+    同一個 commit 被兩套都看到只會多擋一次，不會放行。
 
     這道閘的檔頭寫著「偵測不到就擋」，而 `unaccounted_hookspath` 這個 fail-closed
     兜底掛在 `main` 的 SKIP 早退**下游**——「認不出來就擋」原本只適用於已經被認出來的。
@@ -865,13 +918,9 @@ def unparsed_commit_risk(payload, parsed=0):
     """
     calls = shell_commit_calls(payload)
     if calls is None:
-        if parsed:
-            return []
         return [{"target": None}
                 for seg in SEGMENT_END_RE.split(normalised(payload))
                 if _legacy_commit_risk(seg)]
-    if len(calls) <= parsed:
-        return []
     return [c for c in calls if c["skips"] or c["hookspath"]]
 
 
@@ -1118,15 +1167,10 @@ def main(argv=None):
         if payload.get("tool_name") not in ("Bash", "PowerShell"):
             return 0
         line = normalised(payload)
-        invocations = commit_invocations(line)
-        # 正則認不出來（或沒認全）的 commit。fail-closed 兜底在這裡，**不是**在下面——
-        # 掛在下游等於「認不出來就擋」只適用於認得出來的那些。
-        for call in unparsed_commit_risk(payload, len(invocations)):
-            if call_hits_declared_repo(call.get("target")):
-                deny(UNPARSED_REASON)
-                return 0
-        if not invocations:
-            return 0
+        # 正則的逐呼叫判定在下面；斷詞（與其 fail-closed 兜底）的判定在迴圈**之後**，
+        # 兩套取聯集，不再用「正則已處理幾次」去抵銷斷詞的結果（處置票 R3）。
+        # 順序是為了擋人時的說明：一般的 `--no-verify` 仍由 W1_REASON 說明，
+        # 只有正則沒看到的才落到 UNPARSED_REASON。
         # **每一個 commit 各自判定**，不是只判第一個。
         #
         # 這裡原本取 `invocations[0]` 決定 repo 與 opt-in，而 `classify` 是掃
@@ -1182,6 +1226,13 @@ def main(argv=None):
             reason = check_wiring(root, config_args, git_env_prefix(own_env, options))
             if reason:
                 deny(reason)
+                return 0
+        # 斷詞看到的風險。fail-closed 兜底掛在這裡，不論正則認得出幾個 commit
+        # （包含零個）都要走到——掛在上面任何一個早退之後，「認不出來就擋」就只
+        # 適用於認得出來的那些。
+        for call in unparsed_commit_risk(payload):
+            if call_hits_declared_repo(call.get("target")):
+                deny(UNPARSED_REASON)
                 return 0
     except Exception as _q:
         note_quiet("main", _q)
