@@ -15,7 +15,6 @@ T11 --test 自測入口、T12 fail-open 屍檢遙測且 sanitize 不倒 payload�
 import json
 import os
 import re
-import subprocess
 import sys
 from pathlib import Path, PurePath
 
@@ -25,76 +24,17 @@ CODE_EXTS = {
     ".go", ".rs", ".java", ".c", ".cpp", ".h", ".hpp", ".cs", ".rb", ".sql", ".php",
 }
 
-# 「這是不是一次測試執行」只認**指令位置**（2026-10-14，清單 #6／#9）。
-# 以前是對整條指令字串做子字串搜尋：`cat pytest.ini`、`grep -rn pytest docs/`、
-# `git commit -m "add pytest"` 都只是**提到**測試工具，卻被當成跑過測試。
-# 現在命中必須落在一個指令段的開頭：段首（行首、`;`、`&&`、`||`、`|`、`(`、換行、
-# `then`／`do`…）之後，只允許環境變數賦值，以及這幾種包裝——`env`、`timeout N`、
-# `uv run`、`python -m`、`py -m`、`npx`、`bundle exec`、`bash -c "…"` 等——
-# 然後是（可帶路徑的）測試工具本身。具名群組 `run` 是測試指令的起點，
-# 給 `goal_gate.test_key` 切鍵用；包裝與賦值留在 `run` 之外，才不會改變鍵的形狀。
-# ⚠ 這份文字與 goal_gate.py／verify_gate.py 的另一份**必須逐字相同**（G66 綁住）。
-# 包裝程式的旗標可以**帶值**（2026-10-17，處置票 R1）：`nice -n 15`、`sudo -u bob`、
-# `ionice -c 3`、`stdbuf -o L`、`timeout -k 5 110`、`env -u FOO`。旗標的值是下一個 token，
-# 以前只認 `-\S+` 一個 token，於是 `timeout 110 nice -n 15 python -m pytest` 這種真的在跑
-# 測試的指令整個失配。`_CMD_FLAGS` 允許「旗標＋一個選擇性的值」，值由 `_CMD_VAL` 界定：
-#   · 不能以 `-`、`;`、`&`、`|` 開頭；
-#   · 不能是另一個包裝程式或常見的唯讀指令——兩個理由：①`sudo -E grep pytest f` 的
-#     `grep` 是指令不是值，把它當值就會把「提到 pytest」誤認成測試執行；
-#     ②值若同時是包裝程式名，`sudo -u sudo -u …` 這種鏈每一節有「值」與「下一層包裝」
-#     兩種剖析，回溯就是 2^N（見 tests 的 G113d，兩支 hook 同一條）。
-#   這張名單由 `_CMD_GENERIC` 與下面特例分支共用，不得各抄一份。
-_CMD_GENERIC = (r"sudo|nice|nohup|time|command|exec|winpty|setsid|xvfb-run|unbuffer|ionice"
-                r"|stdbuf|taskset|php|node|ruby")
-_CMD_VAL = (r"(?![-;&|])(?!(?:[^\s;&|\"']*[/\\])?(?:" + _CMD_GENERIC +
-            r"|env|timeout|chrt|conda|mamba|micromamba|py(?:thon)?[0-9.]*|(?:ba|z|da|k)?sh"
-            r"|cmd|powershell|pwsh|wsl"
-            r"|cat|grep|egrep|fgrep|rg|echo|printf|ls|head|tail|less|more|find|sed|awk|git"
-            r"|vi|vim|nano|cp|mv|rm|diff|wc|sort|tee|which|man|curl|wget)(?:\.exe)?(?![\w.-]))"
-            r"[^\s;&|]+")
-_CMD_FLAGS = r"(?:-\S+(?:[ \t]+" + _CMD_VAL + r")?[ \t]+)*"
-# 指令位置的執行器：變數、加引號的路徑，或命令／反引號替換（`$(which python) -m pytest`）。
-_CMD_EXE = r"(?:\"[^\"]+\"|\$\{\w+\}|\$\w+|\$\([^()\n]*\)|`[^`\n]*`)"
-# `{ pytest; }` 的 `{` 後面必須是空白，才不會把大括號展開 `{pytest,x}` 當成群組。
-_CMD_POS = (r"(?:^|[;&|(\r\n]|\{(?=[ \t])|\bthen\b|\bdo\b|\belse\b|\belif\b|\bif\b|\bwhile\b|\buntil\b)"
-            r"[ \t]*")
-_CMD_ENV = r"[A-Za-z_][A-Za-z0-9_]*=(?:\"[^\"]*\"|'[^']*'|[^\s;&|]*)[ \t]+"
-_CMD_WRAP = (
-    r"(?:(?:" + _CMD_GENERIC + r")[ \t]+" + _CMD_FLAGS +
-    r"|env[ \t]+" + _CMD_FLAGS +
-    r"|(?:timeout|chrt)[ \t]+" + _CMD_FLAGS + r"[0-9][\w.]*[ \t]+"
-    r"|(?:uv|poetry|pipenv|pdm|hatch|rye|conda|mamba|micromamba)[ \t]+run[ \t]+"
-    r"(?:-[\w-]+(?:[= ](?!-)[^\s;&|]+)?[ \t]+)*"
-    r"|(?:npx|bunx|pnpx|pnpm[ \t]+(?:exec|dlx)|yarn[ \t]+exec|npm[ \t]+exec"
-    r"|pipx[ \t]+run|bundle[ \t]+exec)[ \t]+(?:-\S+[ \t]+)*"
-    r"|(?:[^\s;&|\"']*[/\\])?py(?:thon)?[0-9.]*(?:\.exe)?[ \t]+(?:-[XW][ \t]+[^\s-]\S*[ \t]+|-(?!m\b)[\w.]+[ \t]+)*-m[ \t]+"
-    r"|coverage[ \t]+run[ \t]+(?:-\S+[ \t]+)*-m[ \t]+"
-    r"|" + _CMD_EXE + r"[ \t]+(?:-[XW][ \t]+[^\s-]\S*[ \t]+|-(?!m\b)[\w.]+[ \t]+)*-m[ \t]+(?=pytest\b)"
-    r"|(?:ba|z|da|k)?sh[ \t]+-\w*c[ \t]+[\"']?"
-    r"|cmd(?:\.exe)?[ \t]+/[ck][ \t]+[\"']?"
-    r"|(?:powershell|pwsh)(?:\.exe)?[ \t]+(?:-\w+[ \t]+)*-c(?:ommand)?[ \t]+[\"']?"
-    r"|wsl(?:[ \t]+-\S+)*[ \t]+)"
-)
 TEST_CMD_RE = re.compile(
-    _CMD_POS + r"(?:" + _CMD_WRAP + r"|" + _CMD_ENV + r")*"
-    r"(?:[^\s;&|\"']*[/\\])?"
-    r"(?P<run>(pytest"
-    r"|" + _CMD_EXE + r"[ \t]+(?:-[XW][ \t]+[^\s-]\S*[ \t]+|-(?!m\b)[\w.]+[ \t]+)*-m[ \t]+unittest"
-    r"|\"[^\"]*[/\\]pytest(?:\.exe)?\""
-    r"|\"[^\"]*[/\\]py(?:thon)?[0-9.]*(?:\.exe)?\"[ \t]+(?:\S*[/\\])?(?:test\S*\.py|\S*_test\.py)"
+    r"(pytest"
     r"|python[3]?(\.exe)?\s+(-m\s+unittest|(\S*[/\\])?(test\S*\.py|\S*_test\.py))"
     r"|npm\s+(run\s+)?test(?:[:._-][\w:.-]*)?|yarn\s+test(?:[:._-][\w:.-]*)?|pnpm\s+(run\s+)?test(?:[:._-][\w:.-]*)?|bun\s+test\b|node\s+--test"
     r"|go\s+test|cargo\s+test|\bvitest\b|\bjest\b"
     r"|mvnw?(\.cmd)?\s+(\S+\s+)*test(\s|$)|gradlew?(\.bat)?\s+(\S+\s+)*test(\s|$)|dotnet\s+test(\s|$)"
     r"|\brspec\b|\bphpunit\b|\bctest\b|make\s+test\b|rake\s+(\S+\s+)*test\b|mix\s+test\b"
-    r"|(tox|nox)\b|deno\s+test|rails\s+test"
+    r"|(^|[;&|]\s*)(tox|nox)\b|deno\s+test|rails\s+test"
     # 腳本自帶 --test 自測入口（2026-07-05 T11：zh_convert_safe.py --test 真實
     # session 連續誤攔實證）；(\s|$) 錨定使 --tests/--testing/--test-pypi 不假放行
-    # `{0,500}` 不是 `*`：包裝鏈（`nice -n 1 nice -n 1 …`）整條失配時，每個前綴長度都會
-    # 重掃一次這個分支，無界就是 O(n²)（處置票 R1 放寬帶值旗標後，nice 鏈 3000 節實測
-    # 1.7 秒；同一條 `timeout 1 ` 鏈修復前就是 0.6 秒）。500 是保守上限，沒有對真實
-    # transcript 量過「`--test` 離指令多遠」的分佈（UNVERIFIED）；兩支 hook 同一個數字。
-    r"|[^;&|\r\n]{0,500}?\s--test(\s|$)))"
+    r"|\s--test(\s|$))"
     # 與 goal_gate 的同一條尾界：路徑裡的 `pytest`／`jest` 不得被當成測試指令。
     # 兩份必須同時改——2026-09-06 只改了一份，於是同一條 `./gradlew test --info`
     # 在兩支 hook 得到相反的答案，而 verify_gate 的測試還釘住了其中一個。
@@ -119,166 +59,24 @@ _SED_INPLACE_RE = re.compile(
     # 貪婪（非 lazy）是刻意的：sed 的檔名在最後，lazy 會停在 script 參數上（實測 's/a/b/' 被當成檔名）
     r"\bsed\b(?:\s+-[^\s]+)*\s+-i(?:\.\w+)?\b[^|;&\n]*\s+['\"]?([^\s'\";|&<>]+)"
 )
-# 「這個檔案屬不屬於本專案」不再用路徑裡的子字串猜（以前的 `_TEMP_MARKERS`：
-# `src/temp/a.py` 因為含 `/temp/` 被排除而漏擋，scratchpad 的檔案走 Edit/Write 卻
-# 照樣被擋）。判準只有一個，Edit/Write 與 shell 寫入共用：**該檔所在目錄的
-# `git rev-parse --git-common-dir` 與 session cwd 的相同才算**——Fable 的 linked
-# worktree 算；scratchpad 裡另外 `git init` 的測試 repo、非 repo 目錄不算。
-# git 不可用、逾時、出錯、或目錄已不存在 → 算（fail-closed）：寧可多擋一次，
-# 也不要因為認不出來就讓未驗證的改碼溜過去。
+# 暫存區不算專案程式碼：寫 scratchpad 的一次性腳本不該觸發 gate。
+_TEMP_MARKERS = ("/tmp/", "\\temp\\", "/temp/", "scratchpad", "appdata", "\\tmp\\")
 
 
-_QUOTED_SPAN_RE = re.compile(r"\$?'[^']*'|\"(?:[^\"\\]|\\.)*\"")
-
-
-def _mask_quoted(text):
-    """把引號內容（含引號本身，`$'…'` 也算）換成等長的底線，位置不變。"""
-    return _QUOTED_SPAN_RE.sub(lambda m: "_" * len(m.group(0)), text)
-
-
-def _msys_to_native(path):
-    """Git Bash 寫的 `/c/Users/…`、`/tmp/…` 換成 Windows 原生路徑（非 Windows 原樣）。"""
-    if os.name != "nt" or not path.startswith("/"):
-        return path
-    m = re.match(r"^/([A-Za-z])(?:/(.*))?$", path)
-    if m:
-        return m.group(1).upper() + ":/" + (m.group(2) or "")
-    if path == "/tmp" or path.startswith("/tmp/"):
-        import tempfile
-        return tempfile.gettempdir() + path[4:]
-    return path
-
-
-def _common_dir(directory):
-    """`("repo", 正規化的 common dir)`／`("nogit", None)`／`("error", None)`。"""
-    try:
-        out = subprocess.run(
-            ["git", "-C", directory, "rev-parse", "--git-common-dir"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=5, env=dict(os.environ, LC_ALL="C"))
-    except Exception as exc:
-        note_quiet("scope: git 不可用", exc)
-        return "error", None
-    if out.returncode != 0:
-        if "not a git repository" in (out.stderr or "").lower():
-            return "nogit", None
-        note_quiet("scope: git rev-parse 失敗")
-        return "error", None
-    path = (out.stdout or "").strip()
-    if not path:
-        return "error", None
-    if not os.path.isabs(path):
-        path = os.path.join(directory, path)
-    return "repo", os.path.normcase(os.path.realpath(path))
-
-
-def _is_under(path, root):
-    """`path` 是不是 `root` 本身或其底下（兩者都須是絕對路徑）。
-
-    不同磁碟＝不在底下（處置票 R5）：`os.path.relpath`／`commonpath` 在 Windows 上
-    對不同磁碟丟 ValueError，原本冒到 main 的 except，整回合 fail-open——
-    同一回合裡專案內的未驗證改碼也跟著溜過。
-    """
-    try:
-        base = os.path.normcase(os.path.normpath(root))
-        return os.path.commonpath([os.path.normcase(os.path.normpath(path)), base]) == base
-    except ValueError:  # quiet-ok: 不同磁碟是正常情況（不在底下），答案就是 False，不是失敗
-        return False
-
-
-class Scope:
-    """Does a path belong to the project of the session's cwd?  One answer per directory."""
-
-    def __init__(self, cwd=None):
-        self.cwd = os.path.realpath(cwd or os.getcwd())
-        self._by_dir = {}
-        self._session = None
-
-    def _kind(self, directory):
-        key = os.path.normcase(directory)
-        if key not in self._by_dir:
-            self._by_dir[key] = _common_dir(directory)
-        return self._by_dir[key]
-
-    def contains(self, path):
-        native = _msys_to_native(os.path.expanduser(path))
-        if not os.path.isabs(native):
-            native = os.path.join(self.cwd, native)
-        directory = os.path.dirname(native)
-        if not os.path.isdir(directory):
-            return True  # 目錄不存在：問不到 git，fail-closed
-        directory = os.path.realpath(directory)
-        if self._session is None:
-            self._session = self._kind(self.cwd)
-        kind, cdir = self._kind(directory)
-        skind, sdir = self._session
-        if "error" in (kind, skind):
-            return True
-        if skind == "nogit":
-            # session cwd 本身不是 git repo（處置票 R4）：cwd 之下的檔一律算本專案，
-            # 不論它剛好落在 cwd 底下的哪個子 repo——「同一個 common dir」在這裡沒有
-            # 可比的對象。以前 nogit 對 repo 一律回 False，cwd 底下 `git init` 過的子專案
-            # 改了碼，gate 一聲不吭。
-            return _is_under(directory, self.cwd)
-        if kind == "repo":
-            return cdir == sdir
-        return False
-
-
-# shell 目標裡的簡單賦值：`SP=/x`、`SP="/x y"`、`export SP=/x`。
-_ASSIGN_RE = re.compile(
-    r"(?:^|[;&|\n]|\bexport\s+)\s*([A-Za-z_]\w*)=(\"[^\"]*\"|'[^']*'|[^\s;&|]*)")
-_VAR_RE = re.compile(r"\$(?:\{(\w+)\}|(\w+))")
-
-
-def _expand(target, assigns):
-    """用同一道指令內的賦值，再用環境變數展開 `$VAR`／`${VAR}`；展不開的原樣留著。"""
-    def sub(m):
-        name = m.group(1) or m.group(2)
-        return assigns.get(name, m.group(0))
-    for _ in range(5):
-        new = _VAR_RE.sub(sub, target)
-        if new == target:
-            break
-        target = new
-    return os.path.expandvars(os.path.expanduser(target))
-
-
-def _is_code_write(raw_target, assigns, scope):
-    """這個 shell 寫入目標是不是專案程式碼；回傳要顯示的檔名或 None。"""
-    target = raw_target.replace('"', "").replace("'", "")
-    expanded = _expand(target, assigns)
-    suffix = PurePath(expanded).suffix.lower()
-    if "$" in expanded or "`" in expanded:
-        # 展不開：路徑未知。能確定副檔名不是程式碼才放過，其餘 fail-closed。
-        if suffix and "$" not in suffix and "`" not in suffix and suffix not in CODE_EXTS:
-            return None
-        return PurePath(target).name
-    if suffix in CODE_EXTS and scope.contains(expanded):
-        return PurePath(expanded).name
-    return None
-
-
-def shell_written_code_files(command, scope=None):
+def shell_written_code_files(command):
     """回傳這道 shell 命令寫入的程式碼檔名（沒有就空列表）。
 
     只看寫入目標的副檔名，不看命令裡出現過哪些檔——讀 .py 而寫 .txt 不算改碼。
     """
     written = []
-    scope = scope or Scope()
-    assigns = {name: value.strip("\"'") for name, value in _ASSIGN_RE.findall(command)}
-    # 引號內的 `>`、`tee` 不是寫入運算子：`echo "a > b.py"` 沒有改任何檔（清單 #8）。
-    # 比對在「引號內容換成底線」的版本上做，目標再從原字串同一個位置取回——
-    # 被引號包住的目標（`> "src/a b.py"`）因此仍抓得到，而且含空白也整段取到。
-    masked = _mask_quoted(command)
     for pattern in (_REDIRECT_OR_TEE_RE, _SED_INPLACE_RE):
-        for m in pattern.finditer(masked):
-            name = _is_code_write(command[m.start(1):m.end(1)], assigns, scope)
-            if name:
-                written.append(name)
+        for target in pattern.findall(command):
+            lowered = target.lower()
+            if any(marker in lowered for marker in _TEMP_MARKERS):
+                continue
+            if PurePath(target).suffix.lower() in CODE_EXTS:
+                written.append(PurePath(target).name)
     return written
-
-
 # harness 注入的東西。清單由本機 200 份真實 transcript 取樣得出，不是憑想像列的
 # ——尤其 `Stop hook feedback:` 是**閘自己的擋人訊息**，把它當成新回合的開始，
 # 等於閘一邊擋人一邊把自己的擋人讀成「使用者回來了」。
@@ -355,13 +153,8 @@ def iter_tool_uses(entries):
                 yield block.get("name", ""), block.get("input", {}) or {}
 
 
-def analyze(entries, cwd=None):
-    """回傳 (本輪修改的程式碼檔名列表, 是否偵測到測試執行)。
-
-    ``cwd`` 是 hook payload 的 session cwd；Edit/Write 與 shell 寫入用同一個 `Scope`
-    判斷「改的是不是本專案的程式碼」。
-    """
-    scope = Scope(cwd)
+def analyze(entries):
+    """回傳 (本輪修改的程式碼檔名列表, 是否偵測到測試執行)。"""
     last_prompt_idx = -1
     for i, entry in enumerate(entries):
         if is_real_user_prompt(entry):
@@ -372,13 +165,13 @@ def analyze(entries, cwd=None):
     for name, tool_input in iter_tool_uses(current_turn):
         if name in EDIT_TOOLS:
             path = tool_input.get("file_path") or tool_input.get("notebook_path") or ""
-            if PurePath(path).suffix.lower() in CODE_EXTS and scope.contains(path):
+            if PurePath(path).suffix.lower() in CODE_EXTS:
                 edited.append(PurePath(path).name)
         elif name in SHELL_TOOLS:
             command = tool_input.get("command", "")
             if TEST_CMD_RE.search(command):
                 test_seen = True
-            edited.extend(shell_written_code_files(command, scope))
+            edited.extend(shell_written_code_files(command))
     return edited, test_seen
 
 
@@ -545,7 +338,7 @@ def main():
             # 同一份只截斷那一行 blocked=True。方向是誤擋，而誤擋掛在一道硬閘上。
             # 記一次而不是逐行記：逐行會把屍檢灌爆，真正的失效反而寫不進去。
             note_quiet("transcript 有行讀不動，這一輪的判定可能不完整", count=torn)
-        edited, test_seen = analyze(entries, data.get("cwd"))
+        edited, test_seen = analyze(entries)
         if edited and not test_seen:
             files = "、".join(one_line(n, 80) for n in
                              list(dict.fromkeys(edited))[:MAX_LISTED_FILES])

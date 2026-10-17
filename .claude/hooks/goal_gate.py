@@ -186,63 +186,8 @@ SHELL_TOOLS = {"Bash", "PowerShell"}
 
 # 與 verify_gate 相同的測試指令辨識範圍（那裡是唯一正本；此處只需知道
 # 「這條指令是不是一次測試執行」，故取其交集的常見形態）。
-# 「這是不是一次測試執行」只認**指令位置**（2026-10-14，清單 #6／#9）。
-# 以前是對整條指令字串做子字串搜尋：`cat pytest.ini`、`grep -rn pytest docs/`、
-# `git commit -m "add pytest"` 都只是**提到**測試工具，卻被當成跑過測試。
-# 現在命中必須落在一個指令段的開頭：段首（行首、`;`、`&&`、`||`、`|`、`(`、換行、
-# `then`／`do`…）之後，只允許環境變數賦值，以及這幾種包裝——`env`、`timeout N`、
-# `uv run`、`python -m`、`py -m`、`npx`、`bundle exec`、`bash -c "…"` 等——
-# 然後是（可帶路徑的）測試工具本身。具名群組 `run` 是測試指令的起點，
-# 給 `goal_gate.test_key` 切鍵用；包裝與賦值留在 `run` 之外，才不會改變鍵的形狀。
-# ⚠ 這份文字與 goal_gate.py／verify_gate.py 的另一份**必須逐字相同**（G66 綁住）。
-# 包裝程式的旗標可以**帶值**（2026-10-17，處置票 R1）：`nice -n 15`、`sudo -u bob`、
-# `ionice -c 3`、`stdbuf -o L`、`timeout -k 5 110`、`env -u FOO`。旗標的值是下一個 token，
-# 以前只認 `-\S+` 一個 token，於是 `timeout 110 nice -n 15 python -m pytest` 這種真的在跑
-# 測試的指令整個失配。`_CMD_FLAGS` 允許「旗標＋一個選擇性的值」，值由 `_CMD_VAL` 界定：
-#   · 不能以 `-`、`;`、`&`、`|` 開頭；
-#   · 不能是另一個包裝程式或常見的唯讀指令——兩個理由：①`sudo -E grep pytest f` 的
-#     `grep` 是指令不是值，把它當值就會把「提到 pytest」誤認成測試執行；
-#     ②值若同時是包裝程式名，`sudo -u sudo -u …` 這種鏈每一節有「值」與「下一層包裝」
-#     兩種剖析，回溯就是 2^N（見 tests 的 G113d，兩支 hook 同一條）。
-#   這張名單由 `_CMD_GENERIC` 與下面特例分支共用，不得各抄一份。
-_CMD_GENERIC = (r"sudo|nice|nohup|time|command|exec|winpty|setsid|xvfb-run|unbuffer|ionice"
-                r"|stdbuf|taskset|php|node|ruby")
-_CMD_VAL = (r"(?![-;&|])(?!(?:[^\s;&|\"']*[/\\])?(?:" + _CMD_GENERIC +
-            r"|env|timeout|chrt|conda|mamba|micromamba|py(?:thon)?[0-9.]*|(?:ba|z|da|k)?sh"
-            r"|cmd|powershell|pwsh|wsl"
-            r"|cat|grep|egrep|fgrep|rg|echo|printf|ls|head|tail|less|more|find|sed|awk|git"
-            r"|vi|vim|nano|cp|mv|rm|diff|wc|sort|tee|which|man|curl|wget)(?:\.exe)?(?![\w.-]))"
-            r"[^\s;&|]+")
-_CMD_FLAGS = r"(?:-\S+(?:[ \t]+" + _CMD_VAL + r")?[ \t]+)*"
-# 指令位置的執行器：變數、加引號的路徑，或命令／反引號替換（`$(which python) -m pytest`）。
-_CMD_EXE = r"(?:\"[^\"]+\"|\$\{\w+\}|\$\w+|\$\([^()\n]*\)|`[^`\n]*`)"
-# `{ pytest; }` 的 `{` 後面必須是空白，才不會把大括號展開 `{pytest,x}` 當成群組。
-_CMD_POS = (r"(?:^|[;&|(\r\n]|\{(?=[ \t])|\bthen\b|\bdo\b|\belse\b|\belif\b|\bif\b|\bwhile\b|\buntil\b)"
-            r"[ \t]*")
-_CMD_ENV = r"[A-Za-z_][A-Za-z0-9_]*=(?:\"[^\"]*\"|'[^']*'|[^\s;&|]*)[ \t]+"
-_CMD_WRAP = (
-    r"(?:(?:" + _CMD_GENERIC + r")[ \t]+" + _CMD_FLAGS +
-    r"|env[ \t]+" + _CMD_FLAGS +
-    r"|(?:timeout|chrt)[ \t]+" + _CMD_FLAGS + r"[0-9][\w.]*[ \t]+"
-    r"|(?:uv|poetry|pipenv|pdm|hatch|rye|conda|mamba|micromamba)[ \t]+run[ \t]+"
-    r"(?:-[\w-]+(?:[= ](?!-)[^\s;&|]+)?[ \t]+)*"
-    r"|(?:npx|bunx|pnpx|pnpm[ \t]+(?:exec|dlx)|yarn[ \t]+exec|npm[ \t]+exec"
-    r"|pipx[ \t]+run|bundle[ \t]+exec)[ \t]+(?:-\S+[ \t]+)*"
-    r"|(?:[^\s;&|\"']*[/\\])?py(?:thon)?[0-9.]*(?:\.exe)?[ \t]+(?:-[XW][ \t]+[^\s-]\S*[ \t]+|-(?!m\b)[\w.]+[ \t]+)*-m[ \t]+"
-    r"|coverage[ \t]+run[ \t]+(?:-\S+[ \t]+)*-m[ \t]+"
-    r"|" + _CMD_EXE + r"[ \t]+(?:-[XW][ \t]+[^\s-]\S*[ \t]+|-(?!m\b)[\w.]+[ \t]+)*-m[ \t]+(?=pytest\b)"
-    r"|(?:ba|z|da|k)?sh[ \t]+-\w*c[ \t]+[\"']?"
-    r"|cmd(?:\.exe)?[ \t]+/[ck][ \t]+[\"']?"
-    r"|(?:powershell|pwsh)(?:\.exe)?[ \t]+(?:-\w+[ \t]+)*-c(?:ommand)?[ \t]+[\"']?"
-    r"|wsl(?:[ \t]+-\S+)*[ \t]+)"
-)
 TEST_CMD_RE = re.compile(
-    _CMD_POS + r"(?:" + _CMD_WRAP + r"|" + _CMD_ENV + r")*"
-    r"(?:[^\s;&|\"']*[/\\])?"
-    r"(?P<run>(pytest"
-    r"|" + _CMD_EXE + r"[ \t]+(?:-[XW][ \t]+[^\s-]\S*[ \t]+|-(?!m\b)[\w.]+[ \t]+)*-m[ \t]+unittest"
-    r"|\"[^\"]*[/\\]pytest(?:\.exe)?\""
-    r"|\"[^\"]*[/\\]py(?:thon)?[0-9.]*(?:\.exe)?\"[ \t]+(?:\S*[/\\])?(?:test\S*\.py|\S*_test\.py)"
+    r"(pytest"
     r"|python[3]?(\.exe)?\s+(-m\s+unittest|(\S*[/\\])?(test\S*\.py|\S*_test\.py))"
     r"|npm\s+(run\s+)?test(?:[:._-][\w:.-]*)?|yarn\s+test(?:[:._-][\w:.-]*)?|pnpm\s+(run\s+)?test(?:[:._-][\w:.-]*)?|bun\s+test\b|node\s+--test"
     r"|go\s+test|cargo\s+test|\bvitest\b|\bjest\b"
@@ -257,12 +202,8 @@ TEST_CMD_RE = re.compile(
     # `PYTEST -q` 五種：goal 全 False、verify 全 True。
     # ⚠ 抓到它的不是我寫的 G66（那條只取樣 12 條手寫字串，五種都不在名單裡，
     # 是**假綠**），是簡潔性鏡頭讀出來的。G66 已改成比對兩個真正的 pattern 物件。
-    r"|(tox|nox)\b|deno\s+test|rails\s+test"
-    # `{0,500}` 不是 `*`：包裝鏈（`nice -n 1 nice -n 1 …`）整條失配時，每個前綴長度都會
-    # 重掃一次這個分支，無界就是 O(n²)（處置票 R1 放寬帶值旗標後，nice 鏈 3000 節實測
-    # 1.7 秒；同一條 `timeout 1 ` 鏈修復前就是 0.6 秒）。500 是保守上限，沒有對真實
-    # transcript 量過「`--test` 離指令多遠」的分佈（UNVERIFIED）；兩支 hook 同一個數字。
-    r"|[^;&|\r\n]{0,500}?\s--test(\s|$)))"
+    r"|(^|[;&|]\s*)(tox|nox)\b|deno\s+test|rails\s+test"
+    r"|\s--test(\s|$))"
     # 後面不得接 word 字元、`-` 或 `/`。少了這個尾界，**路徑裡的那個字**會被
     # 當成測試指令：`cd C:/…/pytest-of-user/… && python -m pytest tests/ -q`
     # 算出的鍵是 `cd=C:/…/Temp :: pytest-of-user/… && python -m pytest tests/ -q`
@@ -514,46 +455,6 @@ NOT_A_RUN_RE = re.compile(r"--collect-only|--co\b|--version|--fixtures|--markers
 PIPELINE_TAIL_RE = re.compile(r"\s*[0-9]?\s*[|>].*$", re.S)
 
 
-def _segment_end(s, start):
-    """Where the command segment containing ``start`` ends — quote-aware.
-
-    A segment ends at `;`、newline、`|`、`||`、`&&` or a lone `&` outside quotes.
-    `2>&1` and `&>file` are redirections, not separators.
-    """
-    quote = None
-    for i in range(start, len(s)):
-        ch = s[i]
-        if quote:
-            if ch == quote:
-                quote = None
-        elif ch in "\"'":
-            quote = ch
-        elif ch in ";\n|":
-            return i
-        elif ch == "&" and not (s[i - 1:i] == ">" or s[i + 1:i + 2] == ">"):
-            return i
-    return len(s)
-
-
-def run_segments(command):
-    """`[(起點, 該指令段文字)]`——每個測試指令命中各自帶著**自己那一段**。
-
-    「這一段是不是在列出／數數」（`--collect-only`、`--version`）只能看含測試指令
-    的那一段：`pytest tests/ && python3 --version` 的 `--version` 屬於另一個指令
-    （清單 #11）；鍵也只該取自這一段（清單 #10）。
-    """
-    out = []
-    for m in TEST_CMD_RE.finditer(command):
-        start = m.start("run")
-        out.append((start, command[start:_segment_end(command, m.end())]))
-    return out
-
-
-def is_test_run(command):
-    """至少有一個測試指令的那一段不是 `NOT_A_RUN_RE` 所指的「只列出／只數數」。"""
-    return any(not NOT_A_RUN_RE.search(seg) for _, seg in run_segments(command))
-
-
 # 只改「輸出長相」的 pytest 旗標，不進目標**身分**（goal_identity）。
 # 根因：鍵原本把 `--tb=no`、`-q`、`-rf` 這類旗標也算進去，於是 `--tb=no` 的紅與
 # `--tb=short -rf` 的綠被當成兩個目標，紅永遠解不掉（2026-10-06 以真實
@@ -637,13 +538,10 @@ def test_key(command):
     # 兩者都變成 `go test -run 'A`，一邊的綠會清掉另一邊的紅。
     # G107：heredoc 內文的「pytest」字樣不得起算鍵——先切掉內文再找。
     command = strip_heredoc_bodies(command)
-    # 鍵取自**被判為測試執行的那一段**：先找第一個不是 `--collect-only` 之類的命中，
-    # 全都不是才退回第一個命中（清單 #10）。
-    runs = run_segments(command)
-    hit = next((r for r in runs if not NOT_A_RUN_RE.search(r[1])), runs[0] if runs else None)
-    stripped = hit[1] if hit else command
+    m = TEST_CMD_RE.search(command)
+    stripped = command[m.start():] if m else command
     run = " ".join(strip_pipeline_tail(stripped).split())
-    ctx = run_context(command[:hit[0]] if hit else "")
+    ctx = run_context(command[:m.start()] if m else "")
     return ("%s%s%s" % (ctx, CONTEXT_SEP, run)) if ctx else run
 
 
@@ -869,7 +767,7 @@ def analyze_turn(turn, last_ids=None, history=None):
             if b.get("name") not in SHELL_TOOLS:
                 continue
             cmd = (b.get("input") or {}).get("command", "")
-            if is_test_run(strip_heredoc_bodies(cmd)):
+            if TEST_CMD_RE.search(strip_heredoc_bodies(cmd)) and not NOT_A_RUN_RE.search(cmd):
                 test_ids[b.get("id")] = True
                 commands[b.get("id")] = cmd
 
