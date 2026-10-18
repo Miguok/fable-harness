@@ -78,7 +78,7 @@ The current version is also kept in [VERSION](VERSION).
 
 - **機密遮蔽不完整**：context 中被機密名稱規則命中的值會遮成 `***`，
   因此不同機密值可能不再區分；名稱未被規則辨識的機密不保證遮蔽。
-  測試指令本身的機密旗標可能以明碼保留在本機
+  測試指令本身（旗標、位置參數等）不經遮蔽，其中的機密會以明碼保留在本機
   `.fable/goal_state.json` 的 `red`／`red_seen` 鍵中。
   擱置紀錄與擋下訊息雖會經過遮蔽，仍可能殘留機密並進入對話，例如：
 
@@ -93,8 +93,9 @@ The current version is also kept in [VERSION](VERSION).
   閘只在 `.fable/.gitignore` 不存在時建立忽略規則；既有設定與已追蹤檔案
   不保證受到保護，不能一概宣稱這些資料不會進入版本控制。
 
-- **連敗顯示可能失真**：任一 context 被權威驗證的綠收束時，訊息顯示的
-  連敗數會歸零，即使其他 context 仍有已計紅；實際計數與是否阻擋不受影響。
+- **狀態檔的 `streak` 欄可能失真**：任一 context 被權威驗證的綠收束時，`.fable/goal_state.json`
+  的 `streak` 會歸零，即使其他 context 仍有已計紅；擋下訊息與擱置清單用各鍵自己的次數，
+  實際計數與是否阻擋不受影響。
 
 ### Changed
 
