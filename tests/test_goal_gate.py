@@ -49,67 +49,39 @@
   G101 同回合 tests-first「紅→綠→紅→綠→紅」三片不爬梯、不擱置，最後計數 1（fable 複審 C′）
   G102 沒有綠的真連敗仍爬梯：第二次 Stop 擋、第三次擱置；綠在已計的紅之前不得重置（G101 配對）
   G105 權威驗證比對先剝輸出格式旗標；配對：-k 不同不收束（fable 複審 2026-10-06）
-  G106 `export A=1;` 與 `&&` 同 context、獨立賦值敘述不進 context；配對：值不同／指令前綴賦值仍算
-  G107 heredoc 內文的 pytest 字樣不得起算鍵；配對：一般指令鍵不變、無測試指令的 heredoc 不是執行
   G104 權威綠門檻是「每個 context 自己的已計紅」，不是全域最大值（MG-14）；配對：權威綠在已計紅之前不收束
   G103 權威綠夾在「已計的紅」與「新紅」之間要收束（H2 同回合、H4 跨回合）；無權威綠／權威綠在已計紅之前仍爬梯（配對）
-  G108 env 前綴 `export V0=… Vn=…; …` 的 `test_key` 成本不隨賦值數指數成長（n＝10～80、單／雙／裸／混合四種值形）；
-       單引號、雙引號、裸值、空值、多賦值的鍵與修前逐字相同；混合引號／黏字元／未閉合／跳脫的值不合併、仍遮蔽機密
-  G109 沒收尾的 `<<`（`std::cout << x`、位移）不得讓 `test_key` 成本與 `<<` 個數成平方；重寫後與原本的 HEREDOC_RE 逐字相同
-  G110 「判不準」只作用在真正會被算進 context 的賦值、只雜湊那個賦值本身；引號參數／一般參數裡的 `k=v`
-       （echo、commit 訊息、`python -c`）不改變 context；同一條 pytest 連紅三段每段只改 echo 文字仍擋
-       （本條原寫「鍵與 main 相同」；G111 起引號裡的 `k=v` 不算賦值，main 會把 `echo "a k=1 b"` 的 `k=1` 算進去，此類與 main 不同）
-  G111 值的邊界判錯（第 5 輪審查）：(a) export 鏈第一個值是多段串接（`"$PWD"/src`、`a"b"`、`"x"y`、`'x'y`）
-       不得讓後面的賦值被丟掉（`MODE=legacy`／`MODE=new` 不同鍵、紅不被錯誤的綠解掉）；(b) 引號裡的 `k=v`
-       （`grep " timeout=30"`）不是賦值，後面接不同改碼指令鍵相同、連紅三段第 2 段起擋；引號在賦值之前已閉合時仍是賦值；
-       (c) 判不準的值仍不合併、不洩密，不含判不準值的 15 列鍵與 main 逐字相同；`_EXPORT_WORD` 計時 n＝10～80、四種值形
-       ⚠ 刻意與 main 不同：main 把 `echo "a k=1 b"` 裡的 `k=1` 算進 context，G111 起不算（鍵只剩指令本身）
+  G112 環境變數值不同 → 鍵不同，與 shell 寫法無關（註解含引號、`bash -c`、`ssh '…'`、`export` 含跳脫引號、
+       `$'…'`、獨立賦值）；配對：同指令鍵相同、`cd` 不同鍵不同、機密（含 Bearer）不進鍵、一般指令鍵形狀固定、
+       另一個值的綠不解這個值的紅；耗時：export 4000 個混合引號值、2 萬字元對抗輸入 `test_key` 各 < 1 秒
+  （G106～G111 隨「模擬 bash 斷字」一併移除；仍成立且與保留行為有關的斷言已搬進 G112 配對）
   （G98 S2 期望於 2026-10-06 fable 複審改為「綠→紅 計 1、不擋」）
 
 執行命令：
   cd <repo> && python -m pytest tests/test_goal_gate.py -v
 
 ══════════════════════════════════════
-執行紀錄（G82～G111，依時間由新到舊；最上面是最新一次）
+執行紀錄（G82～G112，依時間由新到舊；最上面是最新一次）
 ══════════════════════════════════════
-最後執行：2026-10-18 15:43 → 325 passed（G111 實作完成：goal_gate.py 新增 `_quoted_mask`（一次線性掃描、bash 引號規則）
-  讓名字落在引號裡的 `k=v` 不當賦值；判不準的值改回 `_word_end`（只用在引號外的真賦值），`_OLD_ENV_VALUE_RE` 刪除；
-  新增 `_EXPORT_WORD`（雙引號段／單引號段／反斜線加任一字元／其餘字元，四段開頭互斥）只用在 `_EXPORT_BEFORE_RE`）
-  量測（`test_key`，秒）：export n＝10／40／80 → `'on'` 0.0003／0.0007／0.0014，`"on"` 0.0002／0.0006／0.0014，
-    `a"b"` 0.0002／0.0008／0.0017，`"$X"/y` 0.0003／0.0010／0.0017（門檻 0.5）
-  突變（各自還原後全綠）：拿掉 mask 檢查 → 18 failed（G110 10 條、G111 (b) 2 條＋引號類別 6 條）；
-    `_EXPORT_BEFORE_RE` 改回 `_ENV_VALUE` → 12 failed（全是 G111 (a)）；
-    判不準的 `end` 換成 `m.end()` → 11 failed（G108 不合併 7 條、G110 配對 1 條、G111 3 條）
-  ⚠ 下面 11:53 那筆的「真實紀錄對照（1,620 條／83／33）」**UNVERIFIED**：本機 transcript 語料已變，
-    當時的重跑腳本不在 repo，無法在同一組輸入上重現；且 G111 起「引號裡的 `k=v` 不算 context」，
-    該對照的「33 條全是 main 算進 context 的黏字元賦值」結論已不涵蓋新行為。
-2026-10-18 15:39～15:42 先紅（G111，未改 goal_gate.py，HEAD 2a19354）：19 failed, 38 passed
-  （(a) 鍵 8＋後續賦值 2＋端到端 1、(b) 鍵 1＋端到端 1、引號類別 6；配對／15 列／計時／遮蔽／跳脫引號列為綠）
-2026-10-18 11:53 → 268 passed（G110 實作完成：goal_gate.py `_env_assignments` 先用 main 的規則
-  判斷賦值算不算進 context、只對算進去的才判「判不準」，`run_context` 只雜湊那一個賦值（`NAME=` 加原文），
-  不再雜湊整段前綴）
-  量測（同一組輸入，鍵）：`echo "try n=1" && pytest t.py -q`、`git commit -qam "wip: retry=1" ; pytest …`、
-    `python -c "f(a, k=1)" && pytest …`、`grep -n "x=1" f && pytest …` → 修前（cd883cb）3 筆是 `env#…`，修後 =
-    main 的 `pytest t.py -q`；`cd p && python -c "f(a, k=1)" && pytest …` 修前 `env#ae9ee8c48c56`，修後 `cd=p`
-    `A=a"b" pytest …` 前面多 `echo "n=1" && `：修前 `env#5626ce3d72e8`→`env#944c52f41877`（變），修後兩者皆 `env#5626ce3d72e8`
-  真實紀錄對照（本機 26 份 transcript、1,620 條測試執行）：cd883cb 對 main 不同 83 條；修後不同 33 條，
-    33 條全是 main 把「值後面黏著非分隔符的賦值」算進 context 的那種（新鍵含 env#），無其他原因
-2026-10-18 11:50 先紅：只寫 G110 測試、未改 goal_gate.py → 11 failed, 1 passed（紅 8 列鍵不變＋端到端 2＋配對 1；
-  綠的是 `grep -n "x=1"`，因 `x` 前面是引號）；同一批測試對 main 版跑 → 11 passed, 1 failed
-  （唯一紅的是「真的判不準賦值要雜湊」，main 沒有雜湊＝預期），證明 G110 期望值與 main 一致。
-最後執行：2026-10-18 11:11 → 256 passed（G108～G109 實作完成＋G91 改調模組常數；
-  goal_gate.py：`_ENV_VALUE` 三選項互斥、判不準的值走不透明 context（雜湊）、`strip_heredoc_bodies`
-  改一次掃描、`FABLE_GOAL_MAX_COUNTED` 改成常數 `MAX_COUNTED_IDS=512`）
-  量測（同一組輸入，修前 → 修後，單位秒，`test_key`）：
-    export 20 個賦值（單／雙引號）0.52／0.45 → 0.0005；40、80 個：修前 >5 秒不結束 → 0.0006／0.0013
-    `'x << shift\n'*1000`（11 KB）0.47 → 0.005；`std::cout << x;`×600（9.6 KB）0.047 → 0.003
-    本檔 G109 輸入（33、32、21 KB）：修前 5.7（repeat-shift）、0.77（repeat-cout）、2.63（distinct-words）→ 全 < 0.5
-2026-10-18 先紅：只寫測試、未改 goal_gate.py → 修前確認紅 11 條（G108 不合併 3 列、G108 環境變數上限 1 條、
-  G108 計時 single／double n=20 兩條與 single n=40／80 兩條各逾時 30 秒、G109 計時 3 列）；
-  G108 計時 double n=40／80 因單次 110 秒上限未逐條實跑（修前 bench 同為 >5 秒逾時）；
-  鍵不變 20 列與 G109 逐字比對（4000 筆、648 筆有作用）修前即綠＝行為對照，不是新行為。
-  G109 逐字比對第一次對修後碼翻紅：原正則的「\\w+」會退回較短的字（`<<EOF2` 被 `EOF` 一行收尾），已照原行為保留；
-  G108 機密遮蔽第一次翻紅：`redact` 對 `TOKEN=a"SECRET PAYLOAD"` 漏遮（`TOKEN=*** PAYLOAD"`），改用雜湊。
+最後執行：2026-10-18 22:06 → 256 passed（本檔）；全套 tests/ → 585 passed, 3 skipped
+  退回 goal_gate.py 在 1.5.0 之後新增的「模擬 bash 斷字」程式：環境變數 context（`_quoted_mask`、
+  `_env_assignments`、`_word_end`、`_ENV_VALUE`、`_EXPORT_WORD`、`_EXPORT_BEFORE_RE`、判不準雜湊）與 heredoc
+  切除（`HEREDOC_START_RE`、`strip_heredoc_bodies`）；`ENV_PREFIX_RE`、`run_context`、`test_key`、`analyze_turn`
+  對應段落回到 1.5.0 原文。保留：階梯邏輯、goal_identity、`strip_format_flags`、`MAX_COUNTED_IDS`／`_trim_counted`。
+  G112 量測（gg.test_key）：退版前 export 4000 個混合引號值 2.89 秒、` a=`×20000 10.77 秒；退版後 0.04／0.10 秒
+    （其餘 2 萬字元對抗輸入退版前 0.013／0.065 秒，本來就不慢）
+  G112 突變：把 0abe9cb 的 goal_gate.py 放回 → 8 failed, 48 passed（6 條鍵合併類＋export 4000 值耗時＋` a=`×20000 耗時），
+    還原後全綠
+  移除的測試：G106（`export ;`、獨立賦值各一組）、G107（heredoc 內文兩支）、G108（耗時、判不準、雜湊遮蔽）、G109（全部）、G110（全部）、
+    G111（引號內 k=v、export 邊界、`_EXPORT_WORD` 耗時）；搬進 G112 配對：一般指令鍵形狀（原 G106～G111 的 1.5.0 仍成立列）、
+    多段串接 export 值、混合引號值不同鍵、另一個值的綠不解紅（端到端）、連紅三段仍擋；`FABLE_GOAL_MAX_COUNTED` 常數測試原地保留。
+  ⚠ 已知退步（記在 CHANGELOG 已知限制）：heredoc 內文含 pytest 字樣會被當成測試執行；引號參數裡的 `k=v` 與獨立賦值
+    `P=1 &&` 算進 context；`A='x'y` 與 `A='x'z` 合成同一鍵。
+    （`TOKEN=a"SECRET PAYLOAD"` 經鍵的路徑遮成 `TOKEN=***`，不洩漏，主迴圈 22:10 實查；`redact` 直接套在整條原始指令上
+    只遮到 `TOKEN=*** PAYLOAD"`，那是 1.5.0 起就有、本次未改動的行為，不是退版造成的。）
+2026-10-18 21:55～22:01 之間先紅（G112，未改 goal_gate.py，HEAD 0abe9cb）：8 failed, 8 passed
+  （6 條鍵合併、export 4000 值耗時 2.9 秒、` a=`×20000 耗時 10.8 秒；配對與其餘對抗輸入為綠）
+（以下 2026-10-18 15:43 以前關於 G106～G111 的紀錄隨該行為移除，不再保留；2026-10-06 的 G105 紀錄見下）
 2026-10-06 14:42 → 207 passed（G105～G107 實作完成：權威比對剝格式旗標、context 只認 export
   與緊接命令的賦值、判斷前切掉 heredoc 內文；暫存複本變異 MG-21～MG-26 六格各自翻紅）
 2026-10-06 14:11 → 6 failed, 201 passed（補 G105～G107 只寫測試、未改 goal_gate.py）
@@ -271,8 +243,6 @@ import atexit
 import io
 import json
 import os
-import random
-import re
 import shutil
 import subprocess
 import sys
@@ -2899,90 +2869,7 @@ def test_g105_declared_verifier_green_with_format_flags_still_closes(
         assert st["red"] == {gg.test_key(narrow): 1}, "選取不同的綠不該收束：%r" % (st["red"],)
 
 
-def test_g106_export_with_semicolon_and_and_and_share_one_context():
-    """G106 ①：`export A=1; …` 與 `export A=1 && …` 的 context 相同。
-
-    根因：`ENV_PREFIX_RE` 的值原本是「任意非空白字元」，`A=1;` 把分號吃進值，context 變成 `A=1;`。
-    """
-    k1 = gg.test_key("export A=1; uv run pytest t.py -q")
-    k2 = gg.test_key("export A=1 && uv run pytest t.py -q")
-    assert gg.key_context(k1) == gg.key_context(k2), (k1, k2)
-    assert gg.key_context(k1) != "", "A=1 這個 context 不見了：%r" % (k1,)
-
-
-def test_g106_real_red_and_green_have_one_goal_identity_and_green_closes_red(tmp_path):
-    """G106 ②：實例的紅與綠是同一個目標身分，綠解掉紅。
-
-    紅 `export TMPDIR=… PYTHONDONTWRITEBYTECODE=1; uv run --no-sync pytest t.py -q --tb=no`；
-    綠前面多一段獨立賦值敘述 `P="…" && `（不是 pytest 的指令前綴），尾旗標 `--tb=short`。
-    """
-    red = ("export TMPDIR=/tmp/x PYTHONDONTWRITEBYTECODE=1; "
-           "uv run --no-sync pytest t.py -q --tb=no")
-    green = ('P="/a/b/patch.py" && export TMPDIR=/tmp/x PYTHONDONTWRITEBYTECODE=1; '
-             "uv run --no-sync pytest t.py -q --tb=short")
-    assert gg.goal_identity(gg.test_key(red)) == gg.goal_identity(gg.test_key(green)), (
-        gg.test_key(red), gg.test_key(green))
-    repo = _repo(tmp_path, {"streak": 0, "shelved": [], "red": {}})
-    _run(repo, _runs((red, FAIL_OUT)))
-    assert _state(repo)["red"], "前置不成立：紅沒被記下"
-    _run(repo, _runs((green, PASS_OUT)))
-    assert _state(repo)["red"] == {}, "同一目標的綠沒解掉紅：%r" % (_state(repo)["red"],)
-
-
-def test_g106_pair_different_env_values_and_command_prefix_still_count_as_context(
-        tmp_path):
-    """G106 配對：值不同仍是不同 context；指令前綴賦值 `A=1 pytest …` 仍算 context。
-
-    防「context 一律清空」的過度修正：`TMPDIR=x`／`TMPDIR=y` 是兩個目標，
-    `TMPDIR=y` 的綠不得解掉 `TMPDIR=x` 的紅。
-    """
-    kx = gg.test_key("TMPDIR=x pytest t.py -q")
-    ky = gg.test_key("TMPDIR=y pytest t.py -q")
-    assert gg.key_context(kx) != gg.key_context(ky), (kx, ky)
-    assert gg.key_context(gg.test_key("A=1 pytest t.py -q")) == "A=1"
-    repo = _repo(tmp_path, {"streak": 0, "shelved": [], "red": {}})
-    _run(repo, _runs(("TMPDIR=x pytest t.py -q", FAIL_OUT)))
-    _run(repo, _runs(("TMPDIR=y pytest t.py -q", PASS_OUT)))
-    assert list(_state(repo)["red"]) == [kx], "另一個 context 的綠解掉了紅"
-
-
-@pytest.mark.parametrize("body", ["print('只認 pytest 的綠')", "print('只認 綠')"])
-def test_g107_heredoc_body_does_not_start_the_test_command_key(body):
-    """G107：heredoc 內文含「pytest」字樣時，鍵不得從內文起算。
-
-    根因：`TEST_CMD_RE.search` 取第一個命中，heredoc 內文裡的 pytest 先命中，
-    鍵變成 `cd=/x :: pytest 的綠') EOF python -m pytest …`。兩種內文都要得到
-    `cd=/x :: pytest tests/ -q`（內文改不改字樣不影響鍵）。
-    """
-    cmd = "cd /x && cat > f.py <<'EOF'\n%s\nEOF\npython -m pytest tests/ -q" % body
-    assert gg.test_key(cmd) == "cd=/x :: pytest tests/ -q", gg.test_key(cmd)
-
-
-@pytest.mark.parametrize("cmd,expected", [
-    ("cd /x && pytest tests/ -q", "cd=/x :: pytest tests/ -q"),
-    ("pytest tests/test_x.py -q | tail -3", "pytest tests/test_x.py -q"),
-])
-def test_g107_pair_commands_without_heredoc_keep_their_keys(cmd, expected):
-    """G107 配對：沒有 heredoc 的一般指令，鍵不變。"""
-    assert gg.test_key(cmd) == expected, gg.test_key(cmd)
-
-
-def test_g107_pair_heredoc_mentioning_pytest_with_no_test_command_is_not_a_run(
-        tmp_path):
-    """G107 配對：heredoc 內文含 pytest、之後沒有任何測試指令 → 不是測試執行。
-
-    以帶 FAIL_OUT 的輸出餵進去：若被當成測試指令，會記一個紅鍵。斷言不產生任何鍵。
-    """
-    repo = _repo(tmp_path, {"streak": 0, "shelved": [], "red": {}})
-    cmd = "cd /x && cat > f.py <<'EOF'\nprint('只認 pytest 的綠')\nEOF"
-    out = _run(repo, _runs((cmd, FAIL_OUT)))
-    assert not _blocked(out)
-    st = _state(repo)
-    assert st.get("red", {}) == {}, "heredoc 內文被當成測試指令：%r" % (st.get("red"),)
-    assert st.get("streak", 0) == 0
-
-
-# ── G108～G110：正則的最壞情況成本，與鍵的相容性 ─────────────────────────────
+# ── 共用：在獨立子行程量 test_key 耗時（G112 用）、MAX_COUNTED 常數（G91 配對）──
 
 _KEY_TIMING_CHILD = (
     "import sys, time\n"
@@ -3007,100 +2894,8 @@ def _seconds_for_test_key(cmd):
     return float(r.stdout)
 
 
-@pytest.mark.parametrize("n", [10, 20, 40, 80])
-@pytest.mark.parametrize("value", ["'on'", '"on"', "on", 'a"b"'],
-                         ids=["single", "double", "bare", "mixed"])
-def test_g108_env_prefix_cost_does_not_grow_exponentially(n, value):
-    """G108：`export V0=… V{n}=…; PYTHONPATH=src python -m pytest …` 的 `test_key` < 0.5 秒。
-
-    根因：`_ENV_VALUE` 的三個選項互相重疊（`'on'` 可被單引號分支吃，也可被裸值分支吃），
-    `_EXPORT_BEFORE_RE` 在尾端不匹配時每多一個賦值就多一倍回溯。盯的是**類別**：
-    三種值形、n＝10～80 逐級增加；只測某一筆夠快抓不到指數成長。
-    """
-    body = " ".join("V%d=%s" % (i, value) for i in range(n + 1))
-    cmd = "export %s; PYTHONPATH=src python -m pytest tests -q" % body
-    elapsed = _seconds_for_test_key(cmd)
-    assert elapsed < 0.5, "n=%d %s：%.2f 秒" % (n, value, elapsed)
-
-
-@pytest.mark.parametrize("cmd,expected", [
-    ("A='x y' pytest tests -q", "A=x y :: pytest tests -q"),
-    ('A="x y" pytest tests -q', "A=x y :: pytest tests -q"),
-    ("A=x pytest tests -q", "A=x :: pytest tests -q"),
-    ("A= pytest tests -q", "A= :: pytest tests -q"),
-    ('A="" pytest tests -q', "A= :: pytest tests -q"),
-    ("A='' pytest tests -q", "A= :: pytest tests -q"),
-    ("A=1 B='two words' C=\"three words\" D= pytest tests -q",
-     "A=1 B=two words C=three words D= :: pytest tests -q"),
-    ("export A=1; pytest tests -q", "A=1 :: pytest tests -q"),
-    ("export A='1 2' B=\"3 4\" C=5; pytest tests -q",
-     "A=1 2 B=3 4 C=5 :: pytest tests -q"),
-    ("export A=1 && pytest tests -q", "A=1 :: pytest tests -q"),
-    ("P=x && pytest tests -q", "pytest tests -q"),
-    ("P='x y'; pytest tests -q", "pytest tests -q"),
-    ("cd pkg && A=1 pytest tests -q", "cd=pkg A=1 :: pytest tests -q"),
-    ("export V0='on' V1='on'; PYTHONPATH=src python -m pytest tests -q",
-     "V0=on V1=on PYTHONPATH=src :: pytest tests -q"),
-    ('export V0="on" V1="on"; PYTHONPATH=src python -m pytest tests -q',
-     "V0=on V1=on PYTHONPATH=src :: pytest tests -q"),
-    ("export V0=on V1=on; PYTHONPATH=src python -m pytest tests -q",
-     "V0=on V1=on PYTHONPATH=src :: pytest tests -q"),
-    ("MODE=legacy pytest x", "MODE=legacy :: pytest x"),
-    ("MODE=new pytest x", "MODE=new :: pytest x"),
-    ("TOKEN=abc pytest tests -q", "TOKEN=*** :: pytest tests -q"),
-    ('TOKEN="Bearer abc def" pytest tests -q', "TOKEN=*** :: pytest tests -q"),
-])
-def test_g108_keys_of_plain_env_values_are_unchanged(cmd, expected):
-    """G108 鍵不變：單引號、雙引號、裸值、空值、多個賦值、export 的鍵與修改前逐字相同。
-
-    期望值是在修改前的 goal_gate.py（main `7e8c7f4`）上跑 `test_key` 記下的。
-    """
-    assert gg.test_key(cmd) == expected, gg.test_key(cmd)
-
-
-@pytest.mark.parametrize("a,b", [
-    ('A=a"b" pytest tests -q', 'A=a"c" pytest tests -q'),
-    ("A='x'y pytest tests -q", "A='x'z pytest tests -q"),
-    ('A="u1 pytest tests -q', 'A="u2 pytest tests -q'),
-    ("A=a\\ b pytest tests -q", "A=a\\ c pytest tests -q"),
-    ('A="x"y pytest tests -q', 'A="x"z pytest tests -q'),
-    ('cd p && A=a"b" pytest tests -q', 'cd p && A=a"c" pytest tests -q'),
-])
-def test_g108_doubtful_env_values_are_not_merged(a, b):
-    """G108 不合併：混合引號、引號後黏字元、未閉合引號、反斜線跳脫 → 不同值不同鍵。
-
-    判不準的值（互斥後會被截短成 `A=a`）不截短，那一個賦值以雜湊當 context
-    （G110 起只雜湊該賦值，不是整段前綴），所以 `a"b"` 與 `a"c"` 不會落到同一個 context 而互相解紅。
-    """
-    ka, kb = gg.test_key(a), gg.test_key(b)
-    assert ka != kb, "不同的值被合併成同一個鍵：%r" % (ka,)
-    assert gg.key_context(ka) != gg.key_context(kb)
-    assert gg.strip_context(ka) == gg.strip_context(kb) == "pytest tests -q"
-
-
-def test_g108_doubtful_env_values_are_still_masked():
-    """G108：不透明 context 不含任何原文（鍵會落地到狀態檔、再注入回對話）。
-
-    `redact` 對混合引號 `TOKEN=a"SECRET PAYLOAD"` 會漏（只遮到 `TOKEN=*** PAYLOAD"`），
-    所以不透明 context 用雜湊，不放原文。
-    """
-    key = gg.test_key('TOKEN=a"SECRETPAYLOAD" pytest tests -q')
-    assert "SECRETPAYLOAD" not in key, key
-    key = gg.test_key('TOKEN=a"SECRET PAYLOAD" pytest tests -q')
-    assert "SECRET" not in key and "PAYLOAD" not in key, key
-
-
-def test_g108_doubtful_value_red_is_not_closed_by_a_different_value_green(tmp_path):
-    """G108 端到端：`A=a"b"` 的紅，不得被 `A=a"c"` 的綠解掉（實際走 Stop 流程）。"""
-    red, green = 'A=a"b" pytest t.py -q', 'A=a"c" pytest t.py -q'
-    repo = _repo(tmp_path, {"streak": 0, "shelved": [], "red": {}})
-    _run(repo, _runs((red, FAIL_OUT)))
-    _run(repo, _runs((green, PASS_OUT)))
-    assert list(_state(repo)["red"]) == [gg.test_key(red)], _state(repo)["red"]
-
-
 def test_g108_env_var_for_the_counted_cap_is_ignored(tmp_path):
-    """G108/G91 配對：`FABLE_GOAL_MAX_COUNTED` 不再被讀取，上限固定為模組常數（512）。
+    """G91 配對：`FABLE_GOAL_MAX_COUNTED` 不再被讀取，上限固定為模組常數（512）。
 
     種 5 個舊 id、跑 5 個新紅；舊碼讀環境變數 3 會把 5 個舊 id 裁掉（剩 5），
     常數 512 則全留（10）。
@@ -3113,266 +2908,105 @@ def test_g108_env_var_for_the_counted_cap_is_ignored(tmp_path):
     assert len(_state(repo)["counted"]) == 10, _state(repo)["counted"]
 
 
-@pytest.mark.parametrize("name,cmd", [
-    ("repeat-shift", "x << shift\n" * 3000 + "pytest -q"),
-    ("repeat-cout", "cat > a.cpp <<\\EOF\n" + "std::cout << x;\n" * 2000 + "pytest -q"),
-    ("distinct-words", "".join("x << w%d\n" % i for i in range(2000)) + "pytest -q"),
-], ids=["repeat-shift", "repeat-cout", "distinct-words"])
-def test_g109_unterminated_heredoc_markers_cost_is_not_quadratic(name, cmd):
-    """G109：很多個沒收尾的 `<<`（C++ 的 `std::cout << x`、位移運算）→ `test_key` < 0.5 秒。
+# ── G112：環境變數值不同 → 鍵不同，與 shell 寫法無關 ─────────────────────────
 
-    根因：`HEREDOC_RE` 對每個 `<<` 都用 `.*?` 掃到字串尾去找結束記號，k 個 `<<`
-    × n 個字元 → O(k·n)。修前量測：11 KB／1000 個 `<<` 約 0.47 秒，33 KB 約 4 秒。
-    三種形狀：同一個字、同一個字加 `\\EOF` 起手、每個 `<<` 後面字都不同。
-    """
-    elapsed = _seconds_for_test_key(cmd)
-    assert elapsed < 0.5, "%s（%d 字元）：%.2f 秒" % (name, len(cmd), elapsed)
-
-
-# 參照實作：修改前的 HEREDOC_RE 原文，只當黑箱比對的標準答案（不是被測對象）。
-_OLD_HEREDOC_RE = re.compile(
-    r"(<<-?[ \t]*(['\"]?)(\w+)\2[^\n]*\n)(.*?)(^[ \t]*\3[ \t]*$)",
-    re.DOTALL | re.MULTILINE)
-
-
-def test_g109_strip_heredoc_bodies_matches_the_original_regex():
-    """G109 行為不變：重寫後的 `strip_heredoc_bodies` 與原本的單一正則逐字相同。
-
-    隨機組合起始行（`<<`、`<<-`、`<<<`、引號、同一行多個 `<<`）、結束記號（縮排、尾端空白、
-    近似但不同的字）、內文與 `\\r\\n` 4000 筆（固定種子），同一輸入餵兩邊。
-    另斷言至少 500 筆真的有 heredoc 被切（標準答案不是空轉）。
-    """
-    rnd = random.Random(20261018)
-    lines = ["x << EOF", "cat <<'EOF'", "cat <<-EOF", 'cat << "EOF"', "cat <<EOF2",
-             "EOF", "  EOF", "EOF  ", "\tEOF", "EOFX", "EOF2", "body line", "pytest -q",
-             "<<<EOF", "a <<EOF <<EOF2", "y <<", "'EOF'", "", "std::cout << x;",
-             "cat <<'EO", 'cat <<"EOF']
-    changed = 0
-    for _ in range(4000):
-        eol = rnd.choice(["\n", "\n", "\r\n"])
-        s = eol.join(rnd.choice(lines) for _ in range(rnd.randint(1, 8)))
-        s += rnd.choice(["", eol])
-        want = _OLD_HEREDOC_RE.sub(lambda m: m.group(1) + m.group(5), s)
-        assert gg.strip_heredoc_bodies(s) == want, repr(s)
-        changed += want != s
-    assert changed >= 500, "標準答案只在 %d 筆有作用，比對沒有咬力" % changed
-
-
-# ── G110：判不準的值只雜湊那個賦值本身，其他文字裡的 `k=v` 不進 context ──────────
-
-@pytest.mark.parametrize("cmd,expected", [
-    ('echo "try n=1" && pytest t.py -q', "pytest t.py -q"),
-    ('echo "try n=2" && pytest t.py -q', "pytest t.py -q"),
-    ('git commit -qam "wip: retry=1" ; pytest t.py -q', "pytest t.py -q"),
-    ('python -c "f(a, k=1)" && pytest t.py -q', "pytest t.py -q"),
-    ('grep -n "x=1" f && pytest t.py -q', "pytest t.py -q"),
-    ('cd p && python -c "f(a, k=1)" && pytest t.py -q', "cd=p :: pytest t.py -q"),
-    ('cd p && echo "try n=1" && pytest t.py -q', "cd=p :: pytest t.py -q"),
-    ("echo 'a b k=1' && pytest t.py -q", "pytest t.py -q"),
-    ('export A=1; echo "say k=v"; pytest t.py -q', "A=1 :: pytest t.py -q"),
-])
-def test_g110_k_equals_v_outside_an_env_assignment_does_not_change_the_key(cmd, expected):
-    """G110：引號參數或一般指令參數裡的 `k=v` 不是 env 賦值，不得改變 context。
-
-    根因：`cd883cb` 的「判不準」檢查對前綴裡**任何**一個「空白＋`name=value`」都生效，
-    觸發後雜湊整段前綴，echo 文字、commit 訊息、`python -c` 的參數都進了 context。
-    盯的是**類別**（引號內／一般參數裡的 `k=v`，後面接 `;&|` 或字串尾），不是某一筆。
-    期望值是在修改前的 goal_gate.py（main `7e8c7f4`）上跑 `test_key` 記下的。
-    """
-    assert gg.test_key(cmd) == expected, gg.test_key(cmd)
-
-
-def test_g110_echo_text_between_red_segments_does_not_split_the_goal(tmp_path):
-    """G110 端到端：同一條 pytest 連紅三個段落，每段只改 echo 文字 → 第 2 段起擋（與 main 相同）。
-
-    實測（修前）：每段的 echo 文字不同 → 三個雜湊鍵 → 紅散開、各自停在第 1 格，0 次擋。
-    """
-    repo = _repo(tmp_path)
-    outs = []
-    for i in (1, 2, 3):
-        outs.append(_run(repo, _runs(('echo "try n=%d" && pytest t.py -q' % i, FAIL_OUT))))
-        if i == 2:
-            assert list(_state(repo)["red"].values()) == [2], (
-                "同一個目標被分成多個鍵：%r" % (_state(repo)["red"],))
-    assert not _blocked(outs[0]), outs[0]
-    assert _blocked(outs[1]), "第 2 段同一個目標的紅沒有被擋：%r" % (outs[1],)
-    assert _blocked(outs[2]), "第 3 段同一個目標的紅沒有被擋：%r" % (outs[2],)
-
-
-def test_g110_green_without_the_noise_closes_the_red_with_it(tmp_path):
-    """G110 端到端：`cd p && python -c "f(a, k=1)" && pytest` 的紅，被 `cd p && pytest` 的綠收束。
-
-    實測（修前）：前者的 context 是雜湊、後者是 `cd=p`，兩個鍵不同 → 紅不收束。
-    """
-    red = 'cd p && python -c "f(a, k=1)" && pytest t.py -q'
-    green = "cd p && pytest t.py -q"
-    repo = _repo(tmp_path, {"streak": 0, "shelved": [], "red": {}})
-    _run(repo, _runs((red, FAIL_OUT)))
-    assert list(_state(repo)["red"]) == [gg.test_key(red)], _state(repo)["red"]
-    _run(repo, _runs((green, PASS_OUT)))
-    assert not _state(repo)["red"], "綠沒有收束紅：%r" % (_state(repo)["red"],)
-
-
-def test_g110_a_real_doubtful_env_value_hashes_only_that_assignment():
-    """G110 配對：**真的** env 賦值判不準時仍雜湊（G108），而且只雜湊那個賦值。
-
-    同一個 `A=a"b"`，前面多一段 echo／`cd` 以外的文字、或 `export` 之後多一段 echo，
-    context 的雜湊部分不變；`cd` 目的地仍在鍵裡（不同專案不同鍵）；不同的值仍不同鍵；
-    機密原文不進鍵。
-    """
-    plain = gg.test_key('A=a"b" pytest t.py -q')
-    assert gg.key_context(plain).startswith("env#"), plain
-    assert gg.test_key('echo "n=1" && A=a"b" pytest t.py -q') == plain
-    assert gg.test_key('echo "n=2" ; A=a"b" pytest t.py -q') == plain
-
-    k1 = gg.test_key('export A=a"b"; echo "n=1"; pytest t.py -q')
-    k2 = gg.test_key('export A=a"b"; echo "n=2"; pytest t.py -q')
-    assert k1 == k2 and gg.key_context(k1).startswith("env#"), (k1, k2)
-
-    cd_p = gg.test_key('cd p && echo "n=1" && A=a"b" pytest t.py -q')
-    assert cd_p == gg.test_key('cd p && A=a"b" pytest t.py -q')
-    assert gg.key_context(cd_p).startswith("cd=p env#"), cd_p
-    assert cd_p != gg.test_key('cd q && A=a"b" pytest t.py -q')
-
-    assert gg.test_key('A=a"c" pytest t.py -q') != plain
-    assert gg.test_key('A=a"b c" pytest t.py -q') != gg.test_key('A=a"b d" pytest t.py -q')
-
-    key = gg.test_key('echo "SECRETPAYLOAD" && TOKEN=a"SECRET PAYLOAD" pytest t.py -q')
-    assert "SECRET" not in key and "PAYLOAD" not in key, key
-
-
-# ── G111：值的邊界判錯（同一個根因的兩個方向）─────────────────────────────────
-# 值太短：`export` 鏈裡第一個值是多段串接（`"$PWD"/src`），`_EXPORT_BEFORE_RE` 只吃到第一段，
-#         後面的賦值不被認成 export、被當成獨立賦值丟掉。
-# 值太長：判不準的值（`30"`，緊貼引號參數的收尾引號）取原文時把收尾引號當成開引號，
-#         一路吃進後面的指令，於是每換一個 sed 就換一個鍵。
-
-_G111_FIRST_VALUES = ['"$PWD"/src', 'a"b"', '"x"y', "'x'y"]
-
-
-@pytest.mark.parametrize("sep", ["&&", ";"])
-@pytest.mark.parametrize("first", _G111_FIRST_VALUES)
-def test_g111_a_multi_segment_first_export_value_keeps_later_assignments(first, sep):
-    """G111 (a)：export 鏈裡第一個值是多段串接，後面賦值的值不同 → 兩個鍵必須不同。
-
-    根因：`_EXPORT_BEFORE_RE` 用互斥版 `_ENV_VALUE`，`"$PWD"/src`、`a"b"`、`"x"y`、`'x'y`
-    只吃到第一段，後面的 `MODE=…` 不被認成 export 賦值而被丟掉，`legacy` 與 `new` 合併。
-    盯的是**類別**（第一個值是多段串接），四種形狀 × 兩種分隔符。
-    """
-    legacy = "export PYTHONPATH=%s MODE=legacy %s pytest t.py -q" % (first, sep)
-    new = "export PYTHONPATH=%s MODE=new %s pytest t.py -q" % (first, sep)
-    k1, k2 = gg.test_key(legacy), gg.test_key(new)
-    assert k1 != k2 and gg.key_context(k1) != gg.key_context(k2), (
-        "不同的 MODE 被合併成同一個目標：%r" % (k1,))
-    assert gg.strip_context(k1) == gg.strip_context(k2) == "pytest t.py -q"
-
-
-@pytest.mark.parametrize("a,b", [
-    ('export A=a"b" B=c"d" && pytest t.py -q', 'export A=a"b" B=c"e" && pytest t.py -q'),
-    ('export A=a"b" B=1 C="x"y && pytest t.py -q', 'export A=a"b" B=1 C="x"z && pytest t.py -q'),
-    ('cd p && export A="x"y B=1 && pytest t.py -q', 'cd p && export A="x"y B=2 && pytest t.py -q'),
-])
-def test_g111_a_every_assignment_after_a_doubtful_one_still_counts(a, b):
-    """G111 (a)：第一個之後的每個賦值（含第二個也是判不準的）都不得被丟掉。"""
-    ka, kb = gg.test_key(a), gg.test_key(b)
-    assert ka != kb and gg.key_context(ka) != gg.key_context(kb), ka
-
-
-def test_g111_a_end_to_end_legacy_red_is_not_closed_by_new_green(tmp_path):
-    """G111 (a) 端到端：`MODE=legacy` 的紅，不得被 `MODE=new` 的綠解掉（實際走 Stop 流程）。"""
-    red = 'export PYTHONPATH="$PWD"/src MODE=legacy && pytest t.py -q'
-    green = 'export PYTHONPATH="$PWD"/src MODE=new && pytest t.py -q'
-    repo = _repo(tmp_path, {"streak": 0, "shelved": [], "red": {}})
-    _run(repo, _runs((red, FAIL_OUT)))
-    _run(repo, _runs((green, PASS_OUT)))
-    assert list(_state(repo)["red"]) == [gg.test_key(red)], _state(repo)["red"]
-
-
-_G111_GREP = 'grep -rn " timeout=30" src/ && %s && pytest t.py -q'
-_G111_CHANGES = [
-    'sed -i "s/a/{b,c,d}/" x.py',
-    'sed -i "s/a/{e,f}/" x.py',
-    "sed -i 's/q/r/' y.py",
-    "python fix.py",
-    'python fix2.py --flag "q r"',
+_G112_PAIRS = [
+    ("comment-with-apostrophe",
+     "cd p\n# it's slow\nMODE=legacy pytest t.py", "cd p\n# it's slow\nMODE=new pytest t.py"),
+    ("bash-c",
+     'bash -c "cd p && MODE=legacy pytest t.py"', 'bash -c "cd p && MODE=new pytest t.py"'),
+    ("ssh-single-quote",
+     "ssh h 'cd /a && MODE=legacy pytest t.py'", "ssh h 'cd /a && MODE=new pytest t.py'"),
+    ("export-escaped-quote",
+     'export A="x\\"y" B=1 && pytest t.py', 'export A="x\\"y" B=2 && pytest t.py'),
+    ("ansi-c-quote",
+     "echo $'it\'s' && MODE=legacy pytest t.py", "echo $'it\'s' && MODE=new pytest t.py"),
+    ("standalone-assignment",
+     "P=1 && pytest t.py", "P=2 && pytest t.py"),
 ]
 
 
-def test_g111_b_doubtful_value_does_not_swallow_the_commands_after_it():
-    """G111 (b)：判不準的 `k=v"`（值緊貼引號參數的收尾引號），後面接不同的改碼指令 → 鍵必須相同。
+@pytest.mark.parametrize("a,b", [(a, b) for _, a, b in _G112_PAIRS],
+                         ids=[i for i, _, _ in _G112_PAIRS])
+def test_g112_different_env_values_give_different_keys_in_any_shell_spelling(a, b):
+    """G112 類別：環境變數值不同，不論 shell 怎麼寫（註解、`bash -c`、`ssh '…'`、export、`$'…'`、
+    獨立賦值），鍵都不同。
 
-    根因：引號裡的 `k=v` 根本不是賦值，但只看值本身分不出 `A=a"b c"` 與 `grep " timeout=30"`；
-    `_word_end` 從 `30"` 起算，把引號參數的**收尾**引號當開引號，一路吃進後面的指令；
-    每換一個 sed 就換一個鍵，同一目標的紅散掉。盯的是**類別**（五種不同的改碼指令）。
+    根因：任何「判斷這個 `k=v` 在不在引號裡」的程式都是在模擬 bash；模擬不全時
+    （註解裡的 `'`、`$'…'`、被包住的整段指令）會把真的賦值當成引號內文丟掉，
+    兩個不同的目標合成同一個鍵，一邊的綠清掉另一邊的紅。保守方向是多分一條鍵，不是少分。
     """
-    keys = {gg.test_key(_G111_GREP % c) for c in _G111_CHANGES}
-    assert len(keys) == 1, "同一個目標被分成 %d 個鍵：%r" % (len(keys), sorted(keys))
-    (key,) = keys
-    assert gg.strip_context(key) == "pytest t.py -q", key
+    assert gg.test_key(a) != gg.test_key(b), (gg.test_key(a), gg.test_key(b))
 
 
-def test_g111_b_end_to_end_three_red_segments_with_different_sed_still_block(tmp_path):
-    """G111 (b) 端到端：同一個目標連紅 3 段、每段 sed 不同 → 第 2 段起擋（與 main 相同）。"""
-    repo = _repo(tmp_path)
-    outs = []
-    for i in (1, 2, 3):
-        cmd = _G111_GREP % ('sed -i "s/a/{b,c,d%d}/" x.py' % i)
-        outs.append(_run(repo, _runs((cmd, FAIL_OUT))))
-        if i == 2:
-            assert list(_state(repo)["red"].values()) == [2], (
-                "同一個目標被分成多個鍵：%r" % (_state(repo)["red"],))
-    assert not _blocked(outs[0]), outs[0]
-    assert _blocked(outs[1]), "第 2 段同一個目標的紅沒有被擋：%r" % (outs[1],)
-    assert _blocked(outs[2]), "第 3 段同一個目標的紅沒有被擋：%r" % (outs[2],)
+def test_g112_pair_same_command_twice_gives_the_same_key():
+    """G112 配對：同一條指令兩次鍵相同（不是「什麼都分開」的過度修正）。"""
+    for _, a, _b in _G112_PAIRS:
+        assert gg.test_key(a) == gg.test_key(a), a
+
+
+def test_g112_pair_cd_destination_still_separates_keys():
+    """G112 配對：`cd` 目的地不同鍵不同，相同則相同。"""
+    assert gg.test_key("cd a && pytest t.py") != gg.test_key("cd b && pytest t.py")
+    assert gg.test_key("cd a && pytest t.py") == gg.test_key("cd a && pytest t.py")
 
 
 @pytest.mark.parametrize("cmd", [
-    'echo "a k=1 b" && pytest t.py -q',
-    "echo 'a k=1 b' && pytest t.py -q",
-    'grep -rn " timeout=30" src/ && pytest t.py -q',
-    "grep -n ' retries=3' f.py && pytest t.py -q",
-    'python -c "f(a, k=1)" > o.txt; pytest t.py -q',
-    'git commit -qam "wip: x retry=1 y" ; pytest t.py -q',
-    'echo "say \\"k=1 z\\"" && pytest t.py -q',
-])
-def test_g111_k_equals_v_inside_quotes_is_not_an_assignment(cmd):
-    """G111：引號裡的 `k=v` 不是賦值，鍵只剩指令本身（`pytest t.py -q`）。
-
-    ⚠ 與 main（`7e8c7f4`）不同：main 把 `echo "a k=1 b"` 裡的 `k=1` 算進 context
-    （鍵 `k=1 :: pytest t.py -q`），所以 echo 文字一換、同一個目標就換鍵。這是刻意的行為改善：
-    先從指令開頭掃一次引號狀態，名字落在引號內的 `k=v` 整個不看。盯的是**類別**（雙引號、單引號、
-    grep 模式、`python -c`、commit 訊息、跳脫引號）。
-    """
-    assert gg.test_key(cmd) == "pytest t.py -q", gg.test_key(cmd)
+    "TOKEN=secret pytest t.py",
+    "TOKEN='sec ret' pytest t.py",
+    'AUTH="Bearer abcd1234efgh" pytest t.py',
+    'curl -H "Authorization: Bearer abcd1234efgh" x && pytest t.py',
+], ids=["bare", "single-quoted", "bearer-env", "bearer-in-quoted-arg"])
+def test_g112_pair_secrets_do_not_reach_the_key(cmd):
+    """G112 配對：機密值（含引號包住的 Bearer）不進鍵。"""
+    key = gg.test_key(cmd)
+    for leaked in ("secret", "sec ret", "abcd1234"):
+        assert leaked not in key, key
 
 
-@pytest.mark.parametrize("cmd,expected", [
-    ('cd "my dir" && A=1 pytest t.py -q', "cd=my dir A=1 :: pytest t.py -q"),
-    ('echo "x" && A=1 pytest t.py -q', "A=1 :: pytest t.py -q"),
-    ("echo 'x' && export A=1 B=2 && pytest t.py -q", "A=1 B=2 :: pytest t.py -q"),
-    ('echo "a" ; MODE=new pytest t.py -q', "MODE=new :: pytest t.py -q"),
-])
-def test_g111_assignment_after_a_closed_quote_is_still_an_assignment(cmd, expected):
-    """G111 配對：引號在賦值**之前**已閉合時，賦值仍算 context（不是什麼 `k=v` 都不看）。"""
-    assert gg.test_key(cmd) == expected, gg.test_key(cmd)
+def test_g112_cost_of_a_command_exporting_4000_mixed_quote_values():
+    """G112 耗時：一條指令 export 4000 個混合引號值，`test_key` 要 < 1 秒。"""
+    vals = ['"a b"', "'c d'", 'a"b"', "x"]
+    cmd = ("export " + " ".join("V%d=%s" % (i, vals[i % 4]) for i in range(4000))
+           + "; pytest t.py")
+    elapsed = _seconds_for_test_key(cmd)
+    assert elapsed < 1.0, "%.2f 秒" % elapsed
 
 
-def test_g111_c_pair_doubtful_values_still_differ_and_stay_masked():
-    """G111 (c) 配對：判不準的值只要值本身不同就仍是不同的鍵，且機密原文不進鍵。"""
-    assert gg.test_key('A=a"b" pytest t.py -q') != gg.test_key('A=a"c" pytest t.py -q')
-    assert (gg.test_key('A="x"y pytest t.py -q')
-            != gg.test_key('A="x"z pytest t.py -q'))
-    key = gg.test_key('TOKEN=a"SECRET PAYLOAD" pytest t.py -q')
-    assert "SECRET" not in key and "PAYLOAD" not in key, key
-    key = gg.test_key('export X="a"b TOKEN=a"SECRET PAYLOAD" && pytest t.py -q')
-    assert "SECRET" not in key and "PAYLOAD" not in key, key
+@pytest.mark.parametrize("name,cmd", [
+    ("x-then-eq", "'x'" + "=x" * 20000 + " && pytest t.py"),
+    ("space-a-eq", " a=" * 20000 + " && pytest t.py"),
+    ("open-dquote", 'A="' + "b " * 20000 + " && pytest t.py"),
+], ids=["x-then-eq", "space-a-eq", "open-dquote"])
+def test_g112_cost_of_20000_char_adversarial_input(name, cmd):
+    """G112 耗時：2 萬字元的對抗輸入，`test_key` 各須 < 1 秒。"""
+    elapsed = _seconds_for_test_key(cmd)
+    assert elapsed < 1.0, "%s：%.2f 秒" % (name, elapsed)
 
+
+# ── G112 配對：由 G106～G111 搬來、退版後仍成立的斷言 ─────────────────────────
+# 退版（模擬 bash 斷字的程式移除）後，鍵的行為回到 1.5.0。下列斷言描述的是 1.5.0
+# 仍保留的行為（賦值值不同鍵不同、一般指令的鍵形狀、連紅仍爬梯），與被移除的行為無關。
 
 @pytest.mark.parametrize("cmd,expected", [
-    ("export A=1 B=2 && pytest t.py -q", "A=1 B=2 :: pytest t.py -q"),
+    ("A='x y' pytest tests -q", "A=x y :: pytest tests -q"),
+    ('A="x y" pytest tests -q', "A=x y :: pytest tests -q"),
+    ("A=x pytest tests -q", "A=x :: pytest tests -q"),
+    ("A= pytest tests -q", "A= :: pytest tests -q"),
+    ('A="" pytest tests -q', "A= :: pytest tests -q"),
+    ("A='' pytest tests -q", "A= :: pytest tests -q"),
+    ("A=1 B='two words' C=\"three words\" D= pytest tests -q",
+     "A=1 B=two words C=three words D= :: pytest tests -q"),
+    ("export A=1 && pytest tests -q", "A=1 :: pytest tests -q"),
+    ("cd pkg && A=1 pytest tests -q", "cd=pkg A=1 :: pytest tests -q"),
+    ("export V0='on' V1='on'; PYTHONPATH=src python -m pytest tests -q",
+     "V0=on V1=on PYTHONPATH=src :: pytest tests -q"),
+    ("MODE=legacy pytest x", "MODE=legacy :: pytest x"),
+    ("MODE=new pytest x", "MODE=new :: pytest x"),
+    ("TOKEN=abc pytest tests -q", "TOKEN=*** :: pytest tests -q"),
+    ('TOKEN="Bearer abc def" pytest tests -q', "TOKEN=*** :: pytest tests -q"),
     ("export PYTHONPATH=src MODE=legacy && pytest t.py -q",
      "PYTHONPATH=src MODE=legacy :: pytest t.py -q"),
-    ('export A="x y" B=2; pytest t.py -q', "A=x y B=2 :: pytest t.py -q"),
     ("cd p && export A=1 && pytest t.py -q", "cd=p A=1 :: pytest t.py -q"),
     ("A=1 B=2 pytest t.py -q", "A=1 B=2 :: pytest t.py -q"),
     ('cd p && A="x y" pytest t.py -q', "cd=p A=x y :: pytest t.py -q"),
@@ -3380,31 +3014,62 @@ def test_g111_c_pair_doubtful_values_still_differ_and_stay_masked():
     ('sed -i "s/a/b/" x.py && pytest t.py -q', "pytest t.py -q"),
     ("python fix.py && pytest t.py -q", "pytest t.py -q"),
     ("FOO=bar python -m pytest t.py -q -k a", "FOO=bar :: pytest t.py -q -k a"),
-    ("export A='x' B='y z' C=3 && pytest -x t.py", "A=x B=y z C=3 :: pytest -x t.py"),
-    ('echo "k=v" && sed -i "s/a/{b,c}/" x && pytest t.py', "pytest t.py"),
-    ("export A=1 B=2 C=3 D=4; MODE=new pytest t.py -q",
-     "A=1 B=2 C=3 D=4 MODE=new :: pytest t.py -q"),
     ("cd p && cd q && A=7 pytest t.py -q", "cd=q A=7 :: pytest t.py -q"),
-    ("export A= B='' C=\"\" && pytest t.py -q", "A= B= C= :: pytest t.py -q"),
+    ("cd /x && pytest tests/ -q", "cd=/x :: pytest tests/ -q"),
+    ("pytest tests/test_x.py -q | tail -3", "pytest tests/test_x.py -q"),
 ])
-def test_g111_c_keys_without_doubtful_values_are_identical_to_main(cmd, expected):
-    """G111 (c) 配對：不含判不準值的指令，鍵與 main（`7e8c7f4`）逐字相同（15 列）。
+def test_g112_pair_plain_command_keys_keep_their_shape(cmd, expected):
+    """G112 配對：一般指令（`cd`、指令前綴賦值、export、管線尾巴）的鍵形狀固定。
 
-    期望值是在 main 的 goal_gate.py 上跑 `test_key` 記下的。
+    期望值是 1.5.0 的 `test_key` 輸出；防「什麼都分開／什麼都合併」的過度修正。
     """
     assert gg.test_key(cmd) == expected, gg.test_key(cmd)
 
 
-@pytest.mark.parametrize("n", [10, 20, 40, 80])
-@pytest.mark.parametrize("value", ["'on'", '"on"', 'a"b"', '"$X"/y'],
-                         ids=["single", "double", "mixed", "concat"])
-def test_g111_export_word_cost_does_not_grow_exponentially(n, value):
-    """G111：`_EXPORT_WORD` 的成本不隨 export 賦值數指數成長（n＝10～80，尾端故意不匹配）。
+@pytest.mark.parametrize("first", ['"$PWD"/src', 'a"b"', '"x"y', "'x'y"])
+@pytest.mark.parametrize("sep", ["&&", ";"])
+def test_g112_pair_multi_segment_export_value_keeps_later_assignments(first, sep):
+    """G112 配對：export 鏈第一個值是多段串接，後面賦值的值不同 → 鍵不同。"""
+    legacy = "export PYTHONPATH=%s MODE=legacy %s pytest t.py -q" % (first, sep)
+    new = "export PYTHONPATH=%s MODE=new %s pytest t.py -q" % (first, sep)
+    assert gg.test_key(legacy) != gg.test_key(new)
 
-    `_EXPORT_WORD` 是互不重疊的段的串接（雙引號段、單引號段、不含引號與分隔符的段，
-    每段開頭字元不同），同一個值只有一種切法，尾端不匹配時沒有指數回溯。盯的是**類別**（四種值形）。
-    """
-    body = " ".join("V%d=%s" % (i, value) for i in range(n + 1))
-    cmd = "export %s; PYTHONPATH=src python -m pytest tests -q" % body
-    elapsed = _seconds_for_test_key(cmd)
-    assert elapsed < 0.5, "n=%d %s：%.2f 秒" % (n, value, elapsed)
+
+@pytest.mark.parametrize("a,b", [
+    ('A=a"b" pytest tests -q', 'A=a"c" pytest tests -q'),
+    ('cd p && A=a"b" pytest tests -q', 'cd p && A=a"c" pytest tests -q'),
+    ("TMPDIR=x pytest t.py -q", "TMPDIR=y pytest t.py -q"),
+])
+def test_g112_pair_mixed_quote_values_still_give_different_keys(a, b):
+    """G112 配對：混合引號、引號後黏字元的值不同 → 鍵不同（不截短成同一個）。"""
+    assert gg.test_key(a) != gg.test_key(b), gg.test_key(a)
+
+
+@pytest.mark.parametrize("red,green", [
+    ('A=a"b" pytest t.py -q', 'A=a"c" pytest t.py -q'),
+    ('export PYTHONPATH="$PWD"/src MODE=legacy && pytest t.py -q',
+     'export PYTHONPATH="$PWD"/src MODE=new && pytest t.py -q'),
+    ("TMPDIR=x pytest t.py -q", "TMPDIR=y pytest t.py -q"),
+])
+def test_g112_end_to_end_a_green_with_another_env_value_does_not_close_the_red(
+        tmp_path, red, green):
+    """G112 端到端：另一個環境變數值的綠，不得解掉這個值的紅（實際走 Stop 流程）。"""
+    repo = _repo(tmp_path, {"streak": 0, "shelved": [], "red": {}})
+    _run(repo, _runs((red, FAIL_OUT)))
+    _run(repo, _runs((green, PASS_OUT)))
+    assert list(_state(repo)["red"]) == [gg.test_key(red)], _state(repo)["red"]
+
+
+def test_g112_end_to_end_three_red_segments_with_different_sed_still_block(tmp_path):
+    """G112 端到端：同一個目標連紅 3 段、每段中間的改碼指令不同 → 第 2 段起擋。"""
+    repo = _repo(tmp_path)
+    outs = []
+    for i in (1, 2, 3):
+        cmd = 'grep -rn " timeout=30" src/ && sed -i "s/a/{b,c,d%d}/" x.py && pytest t.py -q' % i
+        outs.append(_run(repo, _runs((cmd, FAIL_OUT))))
+        if i == 2:
+            assert list(_state(repo)["red"].values()) == [2], (
+                "同一個目標被分成多個鍵：%r" % (_state(repo)["red"],))
+    assert not _blocked(outs[0]), outs[0]
+    assert _blocked(outs[1]), "第 2 段同一個目標的紅沒有被擋：%r" % (outs[1],)
+    assert _blocked(outs[2]), "第 3 段同一個目標的紅沒有被擋：%r" % (outs[2],)

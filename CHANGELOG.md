@@ -33,12 +33,6 @@ The current version is also kept in [VERSION](VERSION).
   那個紅就收束，之後的新紅從 1 計（§4b-1 第 3 條）；權威驗證綠同理（同一 context 內）。
 - **權威驗證指令只差輸出格式旗標就比對不到**：宣告 `python -m pytest tests/ -q`，實跑帶
   `-p no:cacheprovider` 或 `-rf --tb=no` 時宣告形同無效。比對兩邊都先剝格式旗標；選取旗標不同仍不相符。
-- **`export A=1;` 的 `;` 被吞進 context，獨立賦值 `P=… &&` 也被算進 context**：同一個目標的紅與綠
-  因此落在兩個 context。值不再吞 `;`／`&`／`|`；只有 `export` 的賦值與緊接命令的前綴賦值算 context。
-  值帶混合引號、反斜線跳脫或未閉合引號而判不準時，只把那一個賦值以雜湊當 context（不放原文），不截短，
-  不會讓不同的值被當成同一個目標。引號裡的 `k=v`（`echo "a k=1 b"`、`grep " timeout=30"`）不是賦值，不算 context。
-- **heredoc 內文的「pytest」字樣被當成測試指令**：鍵從內文起算，那筆執行的紅綠都對不上。判斷是不是
-  測試指令、以及算鍵之前，先切掉 heredoc 內文；切掉後沒有 pytest 就不是測試指令。
 
 ### Known limitations
 
@@ -51,28 +45,15 @@ The current version is also kept in [VERSION](VERSION).
   主對話用同一條測試指令（選取相同、輸出旗標可不同）親自跑一次綠。
 - **計數單位是 Stop 劃界的段落**：同一段落內同鍵真的連紅三次（中間有改碼）也只計 1——假陰性，
   保守方向（寧可少擋，不誤擋）。
-- **heredoc 內用腳本呼叫 pytest 的執行看不到**：判斷前先切掉 heredoc 內文，所以
-  `python - <<'EOF' … subprocess.run(["pytest", …]) … EOF` 這類執行既不記紅也不記綠——假陰性，
-  保守方向。
 - **引號字串裡出現「pytest」仍會被當成測試指令**：例如交給其他工具的長提示文字含「pytest」字樣。
   鍵從那個字樣起算，紅綠都對不上真正的目標；與 heredoc 內文同一類，尚未處理。
-- **連續的獨立賦值**：`X=1 Y=2 && cmd` 的 `X` 會因後面還有 token 而被算進 context；`set -a` 之後的
-  獨立賦值實際上會 export，但不算 context。`FOO=1; export FOO; pytest …` 與 `declare -x FOO=1; pytest …` 也不算 context，
-  所以沒有 FOO 的綠可以解掉帶 FOO 時的紅——放寬方向。
-- **判不準的賦值以雜湊當 context**：同一個值換一種寫法（例如 `A=a"b"` 與 `A="ab"`）會被當成兩個 context——
-  一邊的綠解不掉另一邊的紅（多擋），兩邊的紅也分開計數（少擋）。
-- **沒成對的引號之後的賦值不算 context**：`echo it's && A=1 pytest …` 從 `'` 起都被當成引號內，`A=1` 與 `A=2`
-  落在同一個 context——放寬方向；這種指令在 bash 裡本身會因引號沒收尾而失敗。
-- **極長的 `export` 鏈隨長度平方成長**：一條指令 export 2000 個值約 0.5～1.3 秒、4000 個約 4～6 秒。
-- **「不是真的執行」的判斷仍看原始指令**：heredoc 內文含 `--collect-only`／`--version` 等字樣時，
+- **heredoc 內文含 `pytest` 字樣會被當成測試執行**：鍵從內文裡的字樣起算，那筆執行的紅綠都對不上真正的目標。
+- **引號參數裡的 `k=v` 會算進 context**：`echo "a k=1 b"`、`grep " timeout=30"` 這類文字一換，同一個目標就換鍵——多擋的方向。
+- **獨立賦值 `P=1 && pytest …` 也算進 context**：值不同的兩次執行落在兩個 context，一邊的綠解不掉另一邊的紅；`export A=1;` 的分號也會被吞進值，與 `export A=1 &&` 落在兩個 context。
+- **「不是真的執行」的判斷看整條指令**：heredoc 內文含 `--collect-only`／`--version` 等字樣時，
   後面真跑的 pytest 整筆不記（紅綠都看不見）——假陰性。
 - **context 的 `cd` 只取第一個 `<<` 之前**：`cd A && cat > f <<'EOF' … EOF … cd B && pytest …`
   記成 `cd=A`；狀態檔不分專案、只靠 `cd=` 分，這種形態下不同專案的紅綠可能互相解除（危險方向）。
-- **heredoc 邊界**：一般 `<<'EOF'` 的內文若有一行縮排的 `EOF` 會提前收尾（bash 不會）；
-  `<<\EOF`、CRLF 行尾、未閉合的 heredoc 不切，回到舊行為；引號內的 `<<` 在極端排版下可能誤切；
-  `<<EOF2` 之後只有一行 `EOF` 時也會被當成收尾（bash 不會）。
-- **`TMPDIR=$SP` 這類引用變數的值不展開**：`SP` 本身是獨立賦值、不算 context，於是不同暫存目錄的
-  執行被視為同一個 context——放寬方向，只影響「哪個綠能解哪個紅」。
 - **任一 context 被權威綠收束，訊息裡顯示的連敗數就歸零**：其他 context 的已計紅仍在時，這個顯示值會失真；
   計數與是否擋人不受影響。
 

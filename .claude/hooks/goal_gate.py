@@ -39,8 +39,6 @@
       任何錯誤一律 fail-open（exit 0 無輸出）——gate 絕不可弄壞 session。
 測試：tests/test_goal_gate.py（fail-then-pass + 突變已驗證）。
 """
-import bisect
-import hashlib
 import json
 import os
 import re
@@ -502,54 +500,6 @@ def strip_format_flags(run):
     return " ".join(out)
 
 
-HEREDOC_START_RE = re.compile(r"(<<-?[ \t]*(['\"]?)(\w+)\2[^\n]*\n)")
-
-
-def strip_heredoc_bodies(command):
-    """切掉 heredoc 內文，保留起始行與結束記號（G107）。沒有 heredoc 則原樣回傳。
-
-    結束記號＝起始行之後第一個「去掉頭尾空白／tab 後等於該字」的整行。
-
-    ⚠ 原本是單一正則 `(起始行)(.*?)(^[ \\t]*字[ \\t]*$)`：每個沒收尾的 `<<`
-    （`std::cout << x`、位移運算）都用 `.*?` 掃到字串尾才放棄，k 個 `<<` ×
-    n 個字元＝O(k·n)。實測 11 KB／1000 個 `<<` 0.47 秒，33 KB 5.7 秒，而每個
-    Stop 對回合裡每一條指令都要算一次。改成先一次掃出「每個字出現在哪些行首」，
-    每個起始行用二分法查第一個在它之後的行首；找不到就照原本的行為往下個字元試。
-    結果與原正則逐字相同（G109 用原正則當標準答案比對）。
-    """
-    m = HEREDOC_START_RE.search(command)
-    if not m:
-        return command
-    line_starts = {}
-    pos = 0
-    for line in command.split("\n"):
-        line_starts.setdefault(line.strip(" \t"), []).append(pos)
-        pos += len(line) + 1
-    out, copied = [], 0
-    while m:
-        word = m.group(3)
-        # 沒加引號時，原正則的 `\w+` 在找不到結束記號時會退回較短的字（`[^\n]*` 吃掉
-        # 剩下的字元）：`<<EOF2` 之後只有 `EOF` 一行也算收尾。那不是 shell 的語意，
-        # 但為了與原行為逐字相同（G109）照樣保留，由長到短各試一次。
-        for w in ([word] if m.group(2) else
-                  [word[:n] for n in range(len(word), 0, -1)]):
-            starts = line_starts.get(w, ())
-            i = bisect.bisect_left(starts, m.end())
-            if i < len(starts):
-                break
-        else:
-            m = HEREDOC_START_RE.search(command, m.start() + 1)
-            continue
-        end = command.find("\n", starts[i])
-        end = len(command) if end < 0 else end
-        out.append(command[copied:m.end()])
-        out.append(command[starts[i]:end])
-        copied = end
-        m = HEREDOC_START_RE.search(command, end)
-    out.append(command[copied:])
-    return "".join(out)
-
-
 def test_key(command):
     """The identity of a test run, with the shell plumbing removed.
 
@@ -577,8 +527,6 @@ def test_key(command):
     # 讓每一個目標都變成鍵 `'cat'`——三個無關的目標會被串成一條強制擱置，
     # 正是逐鍵計數要根治的那個病。`go test -run 'A|B'` 與 `'A|Z'` 同理，
     # 兩者都變成 `go test -run 'A`，一邊的綠會清掉另一邊的紅。
-    # G107：heredoc 內文的「pytest」字樣不得起算鍵——先切掉內文再找。
-    command = strip_heredoc_bodies(command)
     m = TEST_CMD_RE.search(command)
     stripped = command[m.start():] if m else command
     run = " ".join(strip_pipeline_tail(stripped).split())
@@ -587,117 +535,8 @@ def test_key(command):
 
 
 CD_RE = re.compile(r"(?:^|[;&|]|\bthen\b|\bdo\b)\s*cd\s+(\"[^\"]*\"|'[^']*'|\S+)")
-# 三個選項**互斥**（第三個不吃引號字元）：值的第一個字元是 `"` 只能走第一支、
-# `'` 只能走第二支。原本第三支 `[^\s;&|]*` 也吃引號，`'on'` 有兩條路可走，
-# `_EXPORT_BEFORE_RE` 尾端不匹配時每多一個賦值就多一倍回溯（20 個賦值 0.5 秒、
-# 40 個以上不會結束，G108）。代價：`a"b"` 這類混合引號的值只取到 `a`，
-# 由 `_env_assignments` 判成「判不準」，不拿截短的值（見該函式）。
-_ENV_VALUE = r"(?:\"[^\"]*\"|'[^']*'|[^\s;&|\"']*)"
-ENV_PREFIX_RE = re.compile(r"(?:^|[;&|]|\s)([A-Za-z_][A-Za-z0-9_]*)=(" + _ENV_VALUE + ")")
-# `_EXPORT_BEFORE_RE` 專用的「一個完整的值」：四段互不重疊的串接（雙引號段、單引號段、
-# 反斜線加任一字元、不含引號／反斜線／分隔符的段，每段開頭字元不同，同一個值只有一種
-# 切法，沒有指數回溯）。不能用 `_ENV_VALUE`：它只吃到第一段，
-# `export PYTHONPATH="$PWD"/src MODE=legacy` 的 `MODE=legacy` 前面就不被認成 export
-# 賦值而被丟掉（G111）。`ENV_PREFIX_RE` 不用它——那裡要的是「截短就判不準」的行為。
-_EXPORT_WORD = r"(?:\"[^\"]*\"|'[^']*'|\\.|[^\s;&|\"'\\])*"
-_EXPORT_BEFORE_RE = re.compile(
-    r"(?:^|[;&|\n])\s*export\s+(?:[A-Za-z_]\w*=" + _EXPORT_WORD + r"\s+)*$")
-
-
-def _quoted_mask(text):
-    """每個字元是否落在單引號或雙引號裡（bash 規則，一次線性掃描）。
-
-    單引號內沒有跳脫；雙引號內 `\\` 跳脫下一個字元；引號外 `\\` 也跳脫下一個字元。
-    沒收尾的引號一路算到字串尾。
-
-    為什麼需要：名字落在引號裡的 `k=v`（`echo "a k=1 b"`、`grep " timeout=30"`、
-    `python -c "f(a, k=1)"`）根本不是賦值，但只看值本身分不出它和 `A=a"b c"`
-    （G111）。`_word_end` 對「起點在引號外」的真賦值是對的，錯只錯在被套到引號裡的位置——
-    從 `30"` 起算會把收尾引號當開引號，一路吃進後面的指令。
-    """
-    mask = [False] * len(text)
-    quote = None
-    i, n = 0, len(text)
-    while i < n:
-        ch = text[i]
-        if quote:
-            mask[i] = True
-            if ch == quote:
-                quote = None
-            elif ch == "\\" and quote == '"' and i + 1 < n:
-                mask[i + 1] = True
-                i += 1
-        elif ch in "\"'":
-            quote = ch
-        elif ch == "\\":
-            i += 1
-        i += 1
-    return mask
-
-
-def _env_assignments(prefix):
-    """context 用的環境變數賦值：`export` 的賦值，或緊接命令的前綴賦值。
-
-    獨立賦值敘述（`P=x &&`、`P=x;`，非 export）不改變測試語義，不算（G106）。
-
-    回傳 `(名稱, 值, 判不準)` 的清單。**先**排除名字落在引號裡的 `k=v`（`_quoted_mask`：
-    `echo "try n=1" &&`、`python -c "f(a, k=1)" &&`、`git commit -m "retry=1" ;`、
-    `grep " timeout=30"` 都不是賦值，G110、G111），**再**決定「這個賦值算不算進
-    context」（`export` 的賦值，或後面不是 `;&|` 換行的前綴賦值）。
-
-    判不準：值後面緊接著不是空白／`;&|`／字串尾的字元（混合引號 `a"b"`、`'x'y`、
-    未閉合的 `"u`），或值以反斜線結尾（`a\\ b`）。這時值被截短了，截短的值會讓不同的
-    context 合併（`a"b"`、`a"c"` 都變成 `a`），所以不猜、不寫更大的解析器——這時的
-    值改成「從值的開頭走到下一個沒被引住的空白或 `;&|`」那一段原文（`_word_end`），
-    呼叫端只雜湊**這一個賦值**，不碰前綴的其他部分。
-
-    ⚠ 「算不算進 context」看的是值**真正結束**的位置（判不準時是 `_word_end`，否則是
-    `m.end()`）：互斥版的 `_ENV_VALUE` 對 `A=a"b" &&` 只取到 `a`，用它的尾端判斷會誤看。
-    與 main 不同之處：引號裡的 `k=v` 在 main 會被算進 context，這裡不算（刻意的改善）。
-    """
-    mask = _quoted_mask(prefix)
-    out = []
-    for m in ENV_PREFIX_RE.finditer(prefix):
-        if mask[m.start(1)]:
-            continue
-        tail = prefix[m.end():m.end() + 1]
-        doubtful = bool((tail and not tail.isspace() and tail not in ";&|")
-                        or m.group(2).endswith("\\"))
-        end = _word_end(prefix, m.start(2)) if doubtful else m.end()
-        if not _EXPORT_BEFORE_RE.search(prefix[:m.start(1)]):
-            rest = prefix[end:].lstrip(" \t")
-            if rest and rest[0] in ";&|\n":
-                continue
-        if doubtful:
-            out.append((m.group(1), prefix[m.start(2):end], True))
-        else:
-            out.append((m.group(1), m.group(2), False))
-    return out
-
-
-def _word_end(text, i):
-    """從 `i` 起，到下一個沒被引住、沒被跳脫的空白或 `;&|` 為止的位置；引號沒閉合就走到字串尾。
-
-    只用來決定「判不準的賦值」要雜湊多長的原文：走過頭只會讓鍵多分一條（安全方向），
-    走不到才會讓不同的值合併，所以未閉合的引號寧可吃到尾。
-    """
-    quote = None
-    n = len(text)
-    while i < n:
-        ch = text[i]
-        if quote:
-            if ch == quote:
-                quote = None
-            elif ch == "\\" and quote == '"':
-                i += 1
-        elif ch in "\"'":
-            quote = ch
-        elif ch == "\\":
-            i += 1
-        elif ch.isspace() or ch in ";&|":
-            break
-        i += 1
-    return min(i, n)
+ENV_PREFIX_RE = re.compile(r"(?:^|[;&|]|\s)([A-Za-z_][A-Za-z0-9_]*)="
+                           r"(\"[^\"]*\"|'[^']*'|\S*)")
 
 
 CONTEXT_SEP = " :: "
@@ -767,16 +606,7 @@ def run_context(prefix):
     cds = CD_RE.findall(prefix)
     if cds:
         parts.append("cd=" + cds[-1].strip("\"'").replace("\\", "/").rstrip("/"))
-    for name, value, doubtful in _env_assignments(prefix):
-        if doubtful:
-            # 判不準的值（見 `_env_assignments`）：只雜湊**這一個賦值**（`NAME=` 加
-            # 原文），不截短、不合併，前綴的其他部分（echo、commit 訊息…）不進來。
-            # **用雜湊，不放原文**：`redact` 只認「值以引號開頭」或「無引號的值」，
-            # `TOKEN=a"SECRET PAYLOAD"` 這種混合引號它會漏（實測 `TOKEN=*** PAYLOAD"`），
-            # 而鍵會落地到狀態檔、再注入回對話。雜湊不同＝值不同，且不含任何原文。
-            digest = hashlib.sha256(("%s=%s" % (name, value)).encode("utf-8")).hexdigest()
-            parts.append("env#" + digest[:12])
-            continue
+    for name, value in ENV_PREFIX_RE.findall(prefix):
         masked = redact("%s=%s" % (name, value))
         head, _, shown = masked.partition("=")
         parts.append("%s=%s" % (head, shown.strip("\"'")))
@@ -907,7 +737,7 @@ def analyze_turn(turn, last_ids=None, history=None):
             if b.get("name") not in SHELL_TOOLS:
                 continue
             cmd = (b.get("input") or {}).get("command", "")
-            if TEST_CMD_RE.search(strip_heredoc_bodies(cmd)) and not NOT_A_RUN_RE.search(cmd):
+            if TEST_CMD_RE.search(cmd) and not NOT_A_RUN_RE.search(cmd):
                 test_ids[b.get("id")] = True
                 commands[b.get("id")] = cmd
 
