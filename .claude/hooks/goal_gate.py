@@ -593,12 +593,46 @@ CD_RE = re.compile(r"(?:^|[;&|]|\bthen\b|\bdo\b)\s*cd\s+(\"[^\"]*\"|'[^']*'|\S+)
 # 40 個以上不會結束，G108）。代價：`a"b"` 這類混合引號的值只取到 `a`，
 # 由 `_env_assignments` 判成「判不準」，不拿截短的值（見該函式）。
 _ENV_VALUE = r"(?:\"[^\"]*\"|'[^']*'|[^\s;&|\"']*)"
-# main 的值範圍（第三支也吃引號）：只拿來判斷「這個賦值後面接的是不是分隔符」（G110），
-# 單次 `match`、後面沒有東西可以失敗，沒有回溯問題。
-_OLD_ENV_VALUE_RE = re.compile(r"\"[^\"]*\"|'[^']*'|[^\s;&|]*")
 ENV_PREFIX_RE = re.compile(r"(?:^|[;&|]|\s)([A-Za-z_][A-Za-z0-9_]*)=(" + _ENV_VALUE + ")")
+# `_EXPORT_BEFORE_RE` 專用的「一個完整的值」：四段互不重疊的串接（雙引號段、單引號段、
+# 反斜線加任一字元、不含引號／反斜線／分隔符的段，每段開頭字元不同，同一個值只有一種
+# 切法，沒有指數回溯）。不能用 `_ENV_VALUE`：它只吃到第一段，
+# `export PYTHONPATH="$PWD"/src MODE=legacy` 的 `MODE=legacy` 前面就不被認成 export
+# 賦值而被丟掉（G111）。`ENV_PREFIX_RE` 不用它——那裡要的是「截短就判不準」的行為。
+_EXPORT_WORD = r"(?:\"[^\"]*\"|'[^']*'|\\.|[^\s;&|\"'\\])*"
 _EXPORT_BEFORE_RE = re.compile(
-    r"(?:^|[;&|\n])\s*export\s+(?:[A-Za-z_]\w*=" + _ENV_VALUE + r"\s+)*$")
+    r"(?:^|[;&|\n])\s*export\s+(?:[A-Za-z_]\w*=" + _EXPORT_WORD + r"\s+)*$")
+
+
+def _quoted_mask(text):
+    """每個字元是否落在單引號或雙引號裡（bash 規則，一次線性掃描）。
+
+    單引號內沒有跳脫；雙引號內 `\\` 跳脫下一個字元；引號外 `\\` 也跳脫下一個字元。
+    沒收尾的引號一路算到字串尾。
+
+    為什麼需要：名字落在引號裡的 `k=v`（`echo "a k=1 b"`、`grep " timeout=30"`、
+    `python -c "f(a, k=1)"`）根本不是賦值，但只看值本身分不出它和 `A=a"b c"`
+    （G111）。`_word_end` 對「起點在引號外」的真賦值是對的，錯只錯在被套到引號裡的位置——
+    從 `30"` 起算會把收尾引號當開引號，一路吃進後面的指令。
+    """
+    mask = [False] * len(text)
+    quote = None
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        if quote:
+            mask[i] = True
+            if ch == quote:
+                quote = None
+            elif ch == "\\" and quote == '"' and i + 1 < n:
+                mask[i + 1] = True
+                i += 1
+        elif ch in "\"'":
+            quote = ch
+        elif ch == "\\":
+            i += 1
+        i += 1
+    return mask
 
 
 def _env_assignments(prefix):
@@ -606,11 +640,10 @@ def _env_assignments(prefix):
 
     獨立賦值敘述（`P=x &&`、`P=x;`，非 export）不改變測試語義，不算（G106）。
 
-    回傳 `(名稱, 值, 判不準)` 的清單。**先**用 main 的規則決定「這個賦值算不算進
-    context」（`export` 的賦值，或後面不是 `;&|` 換行的前綴賦值），**只有算進去的**
-    才看判不準——`echo "try n=1" &&`、`python -c "f(a, k=1)" &&`、`git commit -m
-    "retry=1" ;` 裡的 `k=v` 後面接的是分隔符，不是賦值，不得因為值後面黏著引號就
-    被當成 context（G110）。
+    回傳 `(名稱, 值, 判不準)` 的清單。**先**排除名字落在引號裡的 `k=v`（`_quoted_mask`：
+    `echo "try n=1" &&`、`python -c "f(a, k=1)" &&`、`git commit -m "retry=1" ;`、
+    `grep " timeout=30"` 都不是賦值，G110、G111），**再**決定「這個賦值算不算進
+    context」（`export` 的賦值，或後面不是 `;&|` 換行的前綴賦值）。
 
     判不準：值後面緊接著不是空白／`;&|`／字串尾的字元（混合引號 `a"b"`、`'x'y`、
     未閉合的 `"u`），或值以反斜線結尾（`a\\ b`）。這時值被截短了，截短的值會讓不同的
@@ -618,22 +651,25 @@ def _env_assignments(prefix):
     值改成「從值的開頭走到下一個沒被引住的空白或 `;&|`」那一段原文（`_word_end`），
     呼叫端只雜湊**這一個賦值**，不碰前綴的其他部分。
 
-    ⚠ 「算不算進 context」的判斷一律用 main 的值範圍（`_OLD_ENV_VALUE_RE`，混合引號
-    的值也吃到空白為止）：互斥版的 `_ENV_VALUE` 在 `echo "x k=v" &&` 這種引號內文字
-    只會取到 `v`，後面是 `"` 而不是分隔符，拿它判斷會把 main 不算的賦值算進去。
+    ⚠ 「算不算進 context」看的是值**真正結束**的位置（判不準時是 `_word_end`，否則是
+    `m.end()`）：互斥版的 `_ENV_VALUE` 對 `A=a"b" &&` 只取到 `a`，用它的尾端判斷會誤看。
+    與 main 不同之處：引號裡的 `k=v` 在 main 會被算進 context，這裡不算（刻意的改善）。
     """
+    mask = _quoted_mask(prefix)
     out = []
     for m in ENV_PREFIX_RE.finditer(prefix):
+        if mask[m.start(1)]:
+            continue
         tail = prefix[m.end():m.end() + 1]
         doubtful = bool((tail and not tail.isspace() and tail not in ";&|")
                         or m.group(2).endswith("\\"))
-        end = _OLD_ENV_VALUE_RE.match(prefix, m.start(2)).end() if doubtful else m.end()
+        end = _word_end(prefix, m.start(2)) if doubtful else m.end()
         if not _EXPORT_BEFORE_RE.search(prefix[:m.start(1)]):
             rest = prefix[end:].lstrip(" \t")
             if rest and rest[0] in ";&|\n":
                 continue
         if doubtful:
-            out.append((m.group(1), prefix[m.start(2):_word_end(prefix, m.start(2))], True))
+            out.append((m.group(1), prefix[m.start(2):end], True))
         else:
             out.append((m.group(1), m.group(2), False))
     return out

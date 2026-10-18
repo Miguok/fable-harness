@@ -57,16 +57,35 @@
        單引號、雙引號、裸值、空值、多賦值的鍵與修前逐字相同；混合引號／黏字元／未閉合／跳脫的值不合併、仍遮蔽機密
   G109 沒收尾的 `<<`（`std::cout << x`、位移）不得讓 `test_key` 成本與 `<<` 個數成平方；重寫後與原本的 HEREDOC_RE 逐字相同
   G110 「判不準」只作用在真正會被算進 context 的賦值、只雜湊那個賦值本身；引號參數／一般參數裡的 `k=v`
-       （echo、commit 訊息、`python -c`）不改變 context，鍵與 main 相同；同一條 pytest 連紅三段每段只改 echo 文字仍擋
+       （echo、commit 訊息、`python -c`）不改變 context；同一條 pytest 連紅三段每段只改 echo 文字仍擋
+       （本條原寫「鍵與 main 相同」；G111 起引號裡的 `k=v` 不算賦值，main 會把 `echo "a k=1 b"` 的 `k=1` 算進去，此類與 main 不同）
+  G111 值的邊界判錯（第 5 輪審查）：(a) export 鏈第一個值是多段串接（`"$PWD"/src`、`a"b"`、`"x"y`、`'x'y`）
+       不得讓後面的賦值被丟掉（`MODE=legacy`／`MODE=new` 不同鍵、紅不被錯誤的綠解掉）；(b) 引號裡的 `k=v`
+       （`grep " timeout=30"`）不是賦值，後面接不同改碼指令鍵相同、連紅三段第 2 段起擋；引號在賦值之前已閉合時仍是賦值；
+       (c) 判不準的值仍不合併、不洩密，不含判不準值的 15 列鍵與 main 逐字相同；`_EXPORT_WORD` 計時 n＝10～80、四種值形
+       ⚠ 刻意與 main 不同：main 把 `echo "a k=1 b"` 裡的 `k=1` 算進 context，G111 起不算（鍵只剩指令本身）
   （G98 S2 期望於 2026-10-06 fable 複審改為「綠→紅 計 1、不擋」）
 
 執行命令：
   cd <repo> && python -m pytest tests/test_goal_gate.py -v
 
 ══════════════════════════════════════
-執行紀錄（G82～G110，依時間由新到舊；最上面是最新一次）
+執行紀錄（G82～G111，依時間由新到舊；最上面是最新一次）
 ══════════════════════════════════════
-最後執行：2026-10-18 11:53 → 268 passed（G110 實作完成：goal_gate.py `_env_assignments` 先用 main 的規則
+最後執行：2026-10-18 15:43 → 325 passed（G111 實作完成：goal_gate.py 新增 `_quoted_mask`（一次線性掃描、bash 引號規則）
+  讓名字落在引號裡的 `k=v` 不當賦值；判不準的值改回 `_word_end`（只用在引號外的真賦值），`_OLD_ENV_VALUE_RE` 刪除；
+  新增 `_EXPORT_WORD`（雙引號段／單引號段／反斜線加任一字元／其餘字元，四段開頭互斥）只用在 `_EXPORT_BEFORE_RE`）
+  量測（`test_key`，秒）：export n＝10／40／80 → `'on'` 0.0003／0.0007／0.0014，`"on"` 0.0002／0.0006／0.0014，
+    `a"b"` 0.0002／0.0008／0.0017，`"$X"/y` 0.0003／0.0010／0.0017（門檻 0.5）
+  突變（各自還原後全綠）：拿掉 mask 檢查 → 18 failed（G110 10 條、G111 (b) 2 條＋引號類別 6 條）；
+    `_EXPORT_BEFORE_RE` 改回 `_ENV_VALUE` → 12 failed（全是 G111 (a)）；
+    判不準的 `end` 換成 `m.end()` → 11 failed（G108 不合併 7 條、G110 配對 1 條、G111 3 條）
+  ⚠ 下面 11:53 那筆的「真實紀錄對照（1,620 條／83／33）」**UNVERIFIED**：本機 transcript 語料已變，
+    當時的重跑腳本不在 repo，無法在同一組輸入上重現；且 G111 起「引號裡的 `k=v` 不算 context」，
+    該對照的「33 條全是 main 算進 context 的黏字元賦值」結論已不涵蓋新行為。
+2026-10-18 15:39～15:42 先紅（G111，未改 goal_gate.py，HEAD 2a19354）：19 failed, 38 passed
+  （(a) 鍵 8＋後續賦值 2＋端到端 1、(b) 鍵 1＋端到端 1、引號類別 6；配對／15 列／計時／遮蔽／跳脫引號列為綠）
+2026-10-18 11:53 → 268 passed（G110 實作完成：goal_gate.py `_env_assignments` 先用 main 的規則
   判斷賦值算不算進 context、只對算進去的才判「判不準」，`run_context` 只雜湊那一個賦值（`NAME=` 加原文），
   不再雜湊整段前綴）
   量測（同一組輸入，鍵）：`echo "try n=1" && pytest t.py -q`、`git commit -qam "wip: retry=1" ; pytest …`、
@@ -3220,3 +3239,172 @@ def test_g110_a_real_doubtful_env_value_hashes_only_that_assignment():
 
     key = gg.test_key('echo "SECRETPAYLOAD" && TOKEN=a"SECRET PAYLOAD" pytest t.py -q')
     assert "SECRET" not in key and "PAYLOAD" not in key, key
+
+
+# ── G111：值的邊界判錯（同一個根因的兩個方向）─────────────────────────────────
+# 值太短：`export` 鏈裡第一個值是多段串接（`"$PWD"/src`），`_EXPORT_BEFORE_RE` 只吃到第一段，
+#         後面的賦值不被認成 export、被當成獨立賦值丟掉。
+# 值太長：判不準的值（`30"`，緊貼引號參數的收尾引號）取原文時把收尾引號當成開引號，
+#         一路吃進後面的指令，於是每換一個 sed 就換一個鍵。
+
+_G111_FIRST_VALUES = ['"$PWD"/src', 'a"b"', '"x"y', "'x'y"]
+
+
+@pytest.mark.parametrize("sep", ["&&", ";"])
+@pytest.mark.parametrize("first", _G111_FIRST_VALUES)
+def test_g111_a_multi_segment_first_export_value_keeps_later_assignments(first, sep):
+    """G111 (a)：export 鏈裡第一個值是多段串接，後面賦值的值不同 → 兩個鍵必須不同。
+
+    根因：`_EXPORT_BEFORE_RE` 用互斥版 `_ENV_VALUE`，`"$PWD"/src`、`a"b"`、`"x"y`、`'x'y`
+    只吃到第一段，後面的 `MODE=…` 不被認成 export 賦值而被丟掉，`legacy` 與 `new` 合併。
+    盯的是**類別**（第一個值是多段串接），四種形狀 × 兩種分隔符。
+    """
+    legacy = "export PYTHONPATH=%s MODE=legacy %s pytest t.py -q" % (first, sep)
+    new = "export PYTHONPATH=%s MODE=new %s pytest t.py -q" % (first, sep)
+    k1, k2 = gg.test_key(legacy), gg.test_key(new)
+    assert k1 != k2 and gg.key_context(k1) != gg.key_context(k2), (
+        "不同的 MODE 被合併成同一個目標：%r" % (k1,))
+    assert gg.strip_context(k1) == gg.strip_context(k2) == "pytest t.py -q"
+
+
+@pytest.mark.parametrize("a,b", [
+    ('export A=a"b" B=c"d" && pytest t.py -q', 'export A=a"b" B=c"e" && pytest t.py -q'),
+    ('export A=a"b" B=1 C="x"y && pytest t.py -q', 'export A=a"b" B=1 C="x"z && pytest t.py -q'),
+    ('cd p && export A="x"y B=1 && pytest t.py -q', 'cd p && export A="x"y B=2 && pytest t.py -q'),
+])
+def test_g111_a_every_assignment_after_a_doubtful_one_still_counts(a, b):
+    """G111 (a)：第一個之後的每個賦值（含第二個也是判不準的）都不得被丟掉。"""
+    ka, kb = gg.test_key(a), gg.test_key(b)
+    assert ka != kb and gg.key_context(ka) != gg.key_context(kb), ka
+
+
+def test_g111_a_end_to_end_legacy_red_is_not_closed_by_new_green(tmp_path):
+    """G111 (a) 端到端：`MODE=legacy` 的紅，不得被 `MODE=new` 的綠解掉（實際走 Stop 流程）。"""
+    red = 'export PYTHONPATH="$PWD"/src MODE=legacy && pytest t.py -q'
+    green = 'export PYTHONPATH="$PWD"/src MODE=new && pytest t.py -q'
+    repo = _repo(tmp_path, {"streak": 0, "shelved": [], "red": {}})
+    _run(repo, _runs((red, FAIL_OUT)))
+    _run(repo, _runs((green, PASS_OUT)))
+    assert list(_state(repo)["red"]) == [gg.test_key(red)], _state(repo)["red"]
+
+
+_G111_GREP = 'grep -rn " timeout=30" src/ && %s && pytest t.py -q'
+_G111_CHANGES = [
+    'sed -i "s/a/{b,c,d}/" x.py',
+    'sed -i "s/a/{e,f}/" x.py',
+    "sed -i 's/q/r/' y.py",
+    "python fix.py",
+    'python fix2.py --flag "q r"',
+]
+
+
+def test_g111_b_doubtful_value_does_not_swallow_the_commands_after_it():
+    """G111 (b)：判不準的 `k=v"`（值緊貼引號參數的收尾引號），後面接不同的改碼指令 → 鍵必須相同。
+
+    根因：引號裡的 `k=v` 根本不是賦值，但只看值本身分不出 `A=a"b c"` 與 `grep " timeout=30"`；
+    `_word_end` 從 `30"` 起算，把引號參數的**收尾**引號當開引號，一路吃進後面的指令；
+    每換一個 sed 就換一個鍵，同一目標的紅散掉。盯的是**類別**（五種不同的改碼指令）。
+    """
+    keys = {gg.test_key(_G111_GREP % c) for c in _G111_CHANGES}
+    assert len(keys) == 1, "同一個目標被分成 %d 個鍵：%r" % (len(keys), sorted(keys))
+    (key,) = keys
+    assert gg.strip_context(key) == "pytest t.py -q", key
+
+
+def test_g111_b_end_to_end_three_red_segments_with_different_sed_still_block(tmp_path):
+    """G111 (b) 端到端：同一個目標連紅 3 段、每段 sed 不同 → 第 2 段起擋（與 main 相同）。"""
+    repo = _repo(tmp_path)
+    outs = []
+    for i in (1, 2, 3):
+        cmd = _G111_GREP % ('sed -i "s/a/{b,c,d%d}/" x.py' % i)
+        outs.append(_run(repo, _runs((cmd, FAIL_OUT))))
+        if i == 2:
+            assert list(_state(repo)["red"].values()) == [2], (
+                "同一個目標被分成多個鍵：%r" % (_state(repo)["red"],))
+    assert not _blocked(outs[0]), outs[0]
+    assert _blocked(outs[1]), "第 2 段同一個目標的紅沒有被擋：%r" % (outs[1],)
+    assert _blocked(outs[2]), "第 3 段同一個目標的紅沒有被擋：%r" % (outs[2],)
+
+
+@pytest.mark.parametrize("cmd", [
+    'echo "a k=1 b" && pytest t.py -q',
+    "echo 'a k=1 b' && pytest t.py -q",
+    'grep -rn " timeout=30" src/ && pytest t.py -q',
+    "grep -n ' retries=3' f.py && pytest t.py -q",
+    'python -c "f(a, k=1)" > o.txt; pytest t.py -q',
+    'git commit -qam "wip: x retry=1 y" ; pytest t.py -q',
+    'echo "say \\"k=1 z\\"" && pytest t.py -q',
+])
+def test_g111_k_equals_v_inside_quotes_is_not_an_assignment(cmd):
+    """G111：引號裡的 `k=v` 不是賦值，鍵只剩指令本身（`pytest t.py -q`）。
+
+    ⚠ 與 main（`7e8c7f4`）不同：main 把 `echo "a k=1 b"` 裡的 `k=1` 算進 context
+    （鍵 `k=1 :: pytest t.py -q`），所以 echo 文字一換、同一個目標就換鍵。這是刻意的行為改善：
+    先從指令開頭掃一次引號狀態，名字落在引號內的 `k=v` 整個不看。盯的是**類別**（雙引號、單引號、
+    grep 模式、`python -c`、commit 訊息、跳脫引號）。
+    """
+    assert gg.test_key(cmd) == "pytest t.py -q", gg.test_key(cmd)
+
+
+@pytest.mark.parametrize("cmd,expected", [
+    ('cd "my dir" && A=1 pytest t.py -q', "cd=my dir A=1 :: pytest t.py -q"),
+    ('echo "x" && A=1 pytest t.py -q', "A=1 :: pytest t.py -q"),
+    ("echo 'x' && export A=1 B=2 && pytest t.py -q", "A=1 B=2 :: pytest t.py -q"),
+    ('echo "a" ; MODE=new pytest t.py -q', "MODE=new :: pytest t.py -q"),
+])
+def test_g111_assignment_after_a_closed_quote_is_still_an_assignment(cmd, expected):
+    """G111 配對：引號在賦值**之前**已閉合時，賦值仍算 context（不是什麼 `k=v` 都不看）。"""
+    assert gg.test_key(cmd) == expected, gg.test_key(cmd)
+
+
+def test_g111_c_pair_doubtful_values_still_differ_and_stay_masked():
+    """G111 (c) 配對：判不準的值只要值本身不同就仍是不同的鍵，且機密原文不進鍵。"""
+    assert gg.test_key('A=a"b" pytest t.py -q') != gg.test_key('A=a"c" pytest t.py -q')
+    assert (gg.test_key('A="x"y pytest t.py -q')
+            != gg.test_key('A="x"z pytest t.py -q'))
+    key = gg.test_key('TOKEN=a"SECRET PAYLOAD" pytest t.py -q')
+    assert "SECRET" not in key and "PAYLOAD" not in key, key
+    key = gg.test_key('export X="a"b TOKEN=a"SECRET PAYLOAD" && pytest t.py -q')
+    assert "SECRET" not in key and "PAYLOAD" not in key, key
+
+
+@pytest.mark.parametrize("cmd,expected", [
+    ("export A=1 B=2 && pytest t.py -q", "A=1 B=2 :: pytest t.py -q"),
+    ("export PYTHONPATH=src MODE=legacy && pytest t.py -q",
+     "PYTHONPATH=src MODE=legacy :: pytest t.py -q"),
+    ('export A="x y" B=2; pytest t.py -q', "A=x y B=2 :: pytest t.py -q"),
+    ("cd p && export A=1 && pytest t.py -q", "cd=p A=1 :: pytest t.py -q"),
+    ("A=1 B=2 pytest t.py -q", "A=1 B=2 :: pytest t.py -q"),
+    ('cd p && A="x y" pytest t.py -q', "cd=p A=x y :: pytest t.py -q"),
+    ("export A=1\npytest t.py -q", "A=1 :: pytest t.py -q"),
+    ('sed -i "s/a/b/" x.py && pytest t.py -q', "pytest t.py -q"),
+    ("python fix.py && pytest t.py -q", "pytest t.py -q"),
+    ("FOO=bar python -m pytest t.py -q -k a", "FOO=bar :: pytest t.py -q -k a"),
+    ("export A='x' B='y z' C=3 && pytest -x t.py", "A=x B=y z C=3 :: pytest -x t.py"),
+    ('echo "k=v" && sed -i "s/a/{b,c}/" x && pytest t.py', "pytest t.py"),
+    ("export A=1 B=2 C=3 D=4; MODE=new pytest t.py -q",
+     "A=1 B=2 C=3 D=4 MODE=new :: pytest t.py -q"),
+    ("cd p && cd q && A=7 pytest t.py -q", "cd=q A=7 :: pytest t.py -q"),
+    ("export A= B='' C=\"\" && pytest t.py -q", "A= B= C= :: pytest t.py -q"),
+])
+def test_g111_c_keys_without_doubtful_values_are_identical_to_main(cmd, expected):
+    """G111 (c) 配對：不含判不準值的指令，鍵與 main（`7e8c7f4`）逐字相同（15 列）。
+
+    期望值是在 main 的 goal_gate.py 上跑 `test_key` 記下的。
+    """
+    assert gg.test_key(cmd) == expected, gg.test_key(cmd)
+
+
+@pytest.mark.parametrize("n", [10, 20, 40, 80])
+@pytest.mark.parametrize("value", ["'on'", '"on"', 'a"b"', '"$X"/y'],
+                         ids=["single", "double", "mixed", "concat"])
+def test_g111_export_word_cost_does_not_grow_exponentially(n, value):
+    """G111：`_EXPORT_WORD` 的成本不隨 export 賦值數指數成長（n＝10～80，尾端故意不匹配）。
+
+    `_EXPORT_WORD` 是互不重疊的段的串接（雙引號段、單引號段、不含引號與分隔符的段，
+    每段開頭字元不同），同一個值只有一種切法，尾端不匹配時沒有指數回溯。盯的是**類別**（四種值形）。
+    """
+    body = " ".join("V%d=%s" % (i, value) for i in range(n + 1))
+    cmd = "export %s; PYTHONPATH=src python -m pytest tests -q" % body
+    elapsed = _seconds_for_test_key(cmd)
+    assert elapsed < 0.5, "n=%d %s：%.2f 秒" % (n, value, elapsed)
