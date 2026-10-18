@@ -58,7 +58,9 @@ while [ -r "$DECL" ] && IFS= read -r line || [ -n "$line" ]; do
     # `</dev/null`: without it `eval` inherits this loop's stdin — the
     # declaration file itself — so one guard that reads stdin swallows every
     # remaining line and those guards never run, silently and green.
-    if ! out=$(eval "$cmd" </dev/null 2>&1); then
+    # `3>&-`: fd 3 carries the --receipt below; a guard must not be able to
+    # write to it, or its output could pass for the runner's own report.
+    if ! out=$(eval "$cmd" </dev/null 3>&- 2>&1); then
         wiring_failed="1"
         echo "[wiring] RED: $cmd" >&2
         printf '%s\n' "$out" | tail -20 >&2
@@ -95,5 +97,15 @@ if [ -n "$wiring_failed" ]; then
     else
         exit 1
     fi
+fi
+# Optional second argument `--receipt` (the thin pre-commit shell passes it):
+# a runner that was emptied out, or reduced to `exit 0`, also returns 0 and the
+# shell cannot tell it from a pass. So the shell asks for proof on fd 3 — written
+# only here, at the normal end, and only after at least one guard actually ran.
+# Without the argument nothing changes, so a runner copy installed by 1.5.0
+# keeps working. The proof proves the runner reached its end; it cannot prove
+# the runner is honest — that is what review of Fable's main is for.
+if [ "${2:-}" = "--receipt" ] && [ "$guards_run" -gt 0 ]; then
+    printf '%s\n' FABLE_WIRING_V1_RAN >&3 || exit 1
 fi
 exit 0

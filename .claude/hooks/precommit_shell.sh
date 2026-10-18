@@ -28,4 +28,8 @@ fg() {
 # and a bare `main` would also match a tag.
 c=$(fg rev-parse --verify -q 'refs/heads/main^{commit}') || red "no main branch in $F" "$fix_f"
 s=$(fg cat-file blob "$c:.claude/hooks/wiring_runner.sh") || red "runner unreadable on $F main" "$fix_f"
-sh -c "$s" wiring_runner .claude/wiring-guards || red "the runner on $F main reported red or failed" "see the output above"
+# A runner emptied out or reduced to `exit 0` also returns 0, so rc alone proves
+# nothing. The runner reports on fd 3 only after it ran at least one guard; its
+# own stdout goes to stderr so the user still sees every line.
+proof=$(sh -c "$s" wiring_runner .claude/wiring-guards --receipt 3>&1 1>&2) || red "the runner on $F main reported red or failed" "see the output above"
+[ "$proof" = "FABLE_WIRING_V1_RAN" ] || red "runner did not confirm guard execution" "check .claude/hooks/wiring_runner.sh on $F main (it must report FABLE_WIRING_V1_RAN on fd 3)"

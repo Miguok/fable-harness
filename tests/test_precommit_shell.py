@@ -17,11 +17,20 @@ Fable main 就是部署；安裝腳本 `scripts/install_precommit.sh` 負責把�
   R14 F 指向被保護 repo 內一個沒有 .git 的目錄：不得退而讀到被保護 repo 的 runner
   R15 沒有宣告檔且 Fable 不存在：照樣放行（opt-in 規則）
   R16 紅訊息點名 INSTALL.md step 10 與 ALLOW_UNWIRED；R17 真正的紅守衛不得被說成 F 設錯
+  B01/B02 Fable main 上的 runner 被改成「什麼都沒做也回 0」（空檔／空白／只有 shebang 加註解／
+    `:`／`exit 0`／只有標記註解／標記加 exit 0／只往一般 stdout 印回報字串）：守衛 false 與 true
+    各一次，commit 必須被擋（rc=1，訊息 "runner did not confirm guard execution"）；
+    ALLOW_UNWIRED=1 時 rc=0 且留下 "[wiring] RED" 與 "ALLOW_UNWIRED=1" 訊息
+  B03-B08 配對（正常 runner 下必須仍然做得到）：B03 全綠可 commit；B04 多條守衛中後段紅會擋；
+    B05 讀 stdin 的守衛不卡住、後面的守衛照跑；B06 宣告檔最後一行沒有換行照跑；
+    B07 零守衛＝runner 既有規定的紅（"declares no guards"），ALLOW_UNWIRED=1 放行且薄殼留下
+    "runner did not confirm" 紅；B08 守衛往 fd 3 偽造回報寫不進去（runner 對守衛關 fd 3）
   I01 取代本 kit 舊複本（runner 複本／舊薄殼），守衛只跑一次、舊檔備份
   I02 連裝兩次不覆蓋第一份備份，備份檔名 .bak.YYYYMMDD-HHMMSS
   I10 路徑含 " $ ` 拒絕且不寫任何檔；I03 非本 kit 的 hook 拒絕且不動；I04 使用者 hook 內嵌
   舊 runner 也拒絕；I05/I06/I16 core.hooksPath（相對／絕對／空字串）拒絕；I08 備份失敗不取代
-  I09 訊息點名備份路徑；I07 路徑（含 & 與反斜線）原樣寫入 F=；I11 相對路徑存成絕對路徑
+  I09 訊息點名備份路徑；I07 路徑（含 &；Windows 反斜線路徑經安裝腳本轉成 `/`，測試比的是
+  posix 形態）寫入 F=；I11 相對路徑存成絕對路徑
   I12 非 git clone（ZIP）拒絕；I13 repo 外執行拒絕；I14 pre-commit 是目錄拒絕
   I15 沒有 hooks 目錄的 repo 可裝且紅守衛擋得住；I17 pre-commit 是 symlink 拒絕
   M18 範本取自 Fable main，不取工作樹未 commit 的改動；M19 Fable 在別的分支，仍取 main
@@ -34,13 +43,30 @@ Fable main 就是部署；安裝腳本 `scripts/install_precommit.sh` 負責把�
 不 clone、不讀寫任何真實 Fable／Finzo 目錄。
 
 ══════════════════════════════════════
-驗收邊界說明 + 執行紀錄（2026-10-14 23:04 GMT+8）
+驗收邊界說明 + 執行紀錄（2026-10-18 11:20 GMT+8）
 ══════════════════════════════════════
-對應規劃書：INSTALL.md 步驟 10；CHANGELOG [Unreleased] 的 pre-commit 薄殼條目
+對應規劃書：INSTALL.md 步驟 10；CHANGELOG [1.6.0] 的 pre-commit 薄殼條目
 執行命令：python -m pytest tests/test_precommit_shell.py -q -p no:cacheprovider
-最後執行：2026-10-14 23:04 → 42 passed ✅
+最後執行：2026-10-18 11:20 → 80 passed ✅（約 59 秒）
 
 [關鍵量測]
+  TDD 紅燈（薄殼尚未要求 runner 回報）：B01/B02 共 32 failed（16 種 runner×守衛組合各兩條：
+    B01 例 `exit0: rc=0 want=1`；B02 例 `assert ('ALLOW_UNWIRED=1' in '')`），B03-B08 的 6 條
+    配對在舊薄殼本來就綠（passed）——它們守的是「新規則不得把正常流程也擋掉」
+  綠燈：80 passed（42 + B01 16 + B02 16 + B03-B08 6）
+  突變（逐一改壞後跑對應測試，必須紅；改回後綠）：
+    runner 守衛執行處拿掉 `3>&-` → B08 failed；
+    runner 拿掉 `guards_run -gt 0` → B07 failed；
+    薄殼刪掉 `[ "$proof" = ... ]` 那行 → B01 failed（3 條 exit0／echo_receipt_stdout 變體）；
+    runner 不出具回報（printf 換成 `:`）→ B03 failed
+  升級實跑（拋棄式 repo，已清除）：v1.5.0 的 runner 複本當 pre-commit → 紅擋 rc=1／綠過 rc=0、
+    守衛跑 1 次；以 scripts/install_precommit.sh 升級 → 舊複本備份為 pre-commit.bak.<時間>、
+    紅擋 rc=1／綠過 rc=0（守衛跑 1 次）；之後在假 Fable main 改 runner 立即生效；
+    把假 Fable main 的 runner 掏空 → 綠守衛也被擋（"runner did not confirm guard execution"）
+
+【歷史紀錄】以下為 2026-10-14 23:04 的舊紀錄（42 passed），保留原文不改：
+
+[關鍵量測·歷史]
   TDD 紅燈（薄殼與安裝腳本尚未建立）：2 failed, 1 passed, 39 errors（fixture 讀不到 precommit_shell.sh）
   綠燈：42 passed（R17 + I21 + M2 + X2；I01/I07 各參數化 2 格、I10 參數化 3 格）；原生 symlink 可建，I17 未 skip
   突變（舊讀法 `git -C "$F" ... main:<path>` 的薄殼）：9 failed, 33 passed
@@ -49,12 +75,17 @@ Fable main 就是部署；安裝腳本 `scripts/install_precommit.sh` 負責把�
   全套 tests/：498 passed, 3 skipped（基準 456 passed, 3 skipped，+42）
 
 ✅ 已驗收（本檔涵蓋）
+  B01-B08 → 8 種被掏空的 runner×守衛 false／true：rc=1 且訊息含 "runner did not confirm guard
+    execution"；ALLOW_UNWIRED=1 rc=0 且留下訊息；正常 runner 下 B03-B06 rc 與 .runs 計數如預期
   R01-R17 → 紅 rc=1／綠 rc=0／ALLOW_UNWIRED rc=0，且 DECOY-RAN 從未出現在輸出
   I01-I17 → 拒絕案例 rc≠0 且 hook 內容或目錄零變動；允許案例 F= 行與預期路徑逐字相等（忽略大小寫）
   M18/M19 → 範本取自 main：工作樹的 WIP-MARK、另一分支的 SIDE-MARK 都不會被裝進 hook
 ⏳ 待驗收（本檔未涵蓋）
-  真實 Fable／真實已裝 repo 的升級路徑：本檔刻意只用假 Fable，不碰真實目錄；
-    解鎖條件＝本分支合併進 Fable main 並經使用者點頭後，在一個拋棄式 repo 上實跑安裝腳本一次
+  真實 Fable 的升級路徑：本檔與 2026-10-18 的升級實跑都只用假 Fable（從本分支 clone），
+    不碰真實目錄；解鎖條件＝本分支合併進 Fable main 並經使用者點頭後，對真實 Fable 的
+    clone 再實跑安裝腳本一次（升級實跑本身已在拋棄式 repo 完成，見上方 2026-10-18 紀錄）
+  BROKEN_RUNNERS 之外的蓄意造假：runner 本身可以直接往 fd 3 寫回報——回報只證明 runner 走到
+    結尾並跑過至少一條守衛，信任的是經審查進入 Fable main 的程式；解鎖條件＝無（設計上的界線）
   macOS／Linux：只在 Windows Git Bash 驗過；解鎖條件＝有該平台環境可跑本檔
   I07 路徑大小寫以 casefold 比較（Windows 路徑不分大小寫）；大小寫敏感檔案系統上的行為未驗
 """
@@ -116,11 +147,11 @@ class Box:
     def commit(self, cwd, env=None, git_args=()):
         return self.git(cwd, *git_args, "commit", "-qm", "x", env=env, check=False)
 
-    def attempt(self, cwd, guard, env=None):
-        """寫入宣告、改一個檔、commit；回 (rc, 輸出)。"""
+    def attempt(self, cwd, guard, env=None, eol="\n"):
+        """寫入宣告、改一個檔、commit；回 (rc, 輸出)。eol="" 即最後一行沒有換行。"""
         cwd = Path(cwd)
         (cwd / ".claude").mkdir(exist_ok=True)
-        (cwd / ".claude" / "wiring-guards").write_bytes((guard + "\n").encode())
+        (cwd / ".claude" / "wiring-guards").write_bytes((guard + eol).encode())
         with open(cwd / "f", "ab") as fh:
             fh.write(b"x\n")
         self.git(cwd, "add", "-A")
@@ -316,6 +347,82 @@ def test_r16_red_message_names_the_fix_and_the_escape(box, prot):
 def test_r17_real_red_guard_does_not_blame_f(box, prot):
     out = _expect(box, prot.p, "false", 1)
     assert "set F=" not in out, out
+
+
+# ─────────── B：Fable main 上的 runner 被改成「什麼都沒做也回 0」 ───────────
+#
+# 薄殼只看 runner 的退出碼時，這些形態全部靜默放行。薄殼現在要求 runner 在正常
+# 走到結尾、且至少跑過一條守衛時，把 FABLE_WIRING_V1_RAN 寫到 fd 3；沒收到就是紅。
+
+_MARKER = b"# wiring_runner.sh \xe2\x80\x94 git pre-commit runner\n"
+BROKEN_RUNNERS = {
+    "empty": b"",
+    "blank": b"   \n\n  \t\n",
+    "shebang_comment": b"#!/bin/sh\n# anything here\n",
+    "colon": b":\n",
+    "exit0": b"exit 0\n",
+    "marker_only": b"#!/bin/sh\n" + _MARKER,
+    "marker_exit0": b"#!/bin/sh\n" + _MARKER + b"exit 0\n",
+    # 回報字串印到一般 stdout，不是 fd 3：不得被當成回報
+    "echo_receipt_stdout": b"#!/bin/sh\necho FABLE_WIRING_V1_RAN\nexit 0\n",
+}
+
+
+def _set_runner_on_main(box, fab, data):
+    (fab / ".claude" / "hooks" / "wiring_runner.sh").write_bytes(data)
+    box.git(fab, "commit", "-qam", "swap runner")
+
+
+@pytest.mark.parametrize("guard", ["false", "true"])
+@pytest.mark.parametrize("name", sorted(BROKEN_RUNNERS))
+def test_b01_broken_runner_blocks_commit(box, prot, name, guard):
+    _set_runner_on_main(box, prot.fab, BROKEN_RUNNERS[name])
+    out = _expect(box, prot.p, guard, 1, label=name)
+    assert "runner did not confirm guard execution" in out, out
+
+
+@pytest.mark.parametrize("guard", ["false", "true"])
+@pytest.mark.parametrize("name", sorted(BROKEN_RUNNERS))
+def test_b02_broken_runner_allow_unwired_passes_with_message(box, prot, name, guard):
+    _set_runner_on_main(box, prot.fab, BROKEN_RUNNERS[name])
+    out = _expect(box, prot.p, guard, 0, env={"ALLOW_UNWIRED": "1"}, label=name)
+    assert "ALLOW_UNWIRED=1" in out and "[wiring] RED" in out, out
+
+
+# 配對：同一道薄殼，正常 runner 下「必須仍然做得到」。
+
+def test_b03_normal_runner_all_green_commits(box, prot):
+    _expect(box, prot.p, "true\ntrue", 0)
+
+
+def test_b04_normal_runner_late_red_among_many_blocks(box, prot):
+    out = _expect(box, prot.p, "true\ntrue\nfalse\ntrue", 1)
+    assert "RED: false" in out, out
+
+
+def test_b05_stdin_reading_guard_does_not_hang_or_eat_the_rest(box, prot):
+    _expect(box, prot.p, "cat >/dev/null\necho x >> .runs", 0)
+    assert _runs(prot.p) == 1
+
+
+def test_b06_last_guard_without_trailing_newline_still_runs(box, prot):
+    rc, out = box.attempt(prot.p, "true\nfalse", eol="")
+    assert rc == 1 and "RED: false" in out, out
+
+
+def test_b07_zero_guards_follows_the_runners_own_rule(box, prot):
+    # runner 既有規定：宣告檔存在卻沒有任何守衛是紅（opted in but nothing to run）
+    out = _expect(box, prot.p, "# nothing here", 1)
+    assert "declares no guards" in out, out
+    out = _expect(box, prot.p, "# nothing here", 0, env={"ALLOW_UNWIRED": "1"})
+    # 零守衛時 runner 不得出具回報：薄殼要留下「沒收到回報」的紅，再由 ALLOW 放行
+    assert "ALLOW_UNWIRED=1" in out and "runner did not confirm" in out, out
+
+
+def test_b08_guard_cannot_forge_the_receipt_on_fd3(box, prot):
+    # 守衛往 fd 3 寫回報字串：runner 執行守衛時把 fd 3 關掉，所以寫不進去；
+    # 若沒關，薄殼收到兩行回報，與預期不相等而擋下這個本應綠的 commit。
+    _expect(box, prot.p, "{ echo FABLE_WIRING_V1_RAN >&3; } 2>/dev/null; true", 0)
 
 
 # ──────────────────────────── I：安裝腳本 ────────────────────────────

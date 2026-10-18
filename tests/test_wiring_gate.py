@@ -723,7 +723,7 @@ def test_w4_precommit_exists_but_never_runs_the_declaration(tmp_path):
     repo = _git_repo(tmp_path, precommit="#!/bin/sh\nnpm run lint\n")
     out = _run_gate(_bash('git commit -m "x"'), repo)
     assert _is_deny(out)
-    assert "never runs the wiring guards" in out
+    assert "no direct reference to .claude/wiring-guards" in out
 
 
 def test_w5_properly_wired_passes(tmp_path):

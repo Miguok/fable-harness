@@ -21,3 +21,8 @@ PY=$(command -v python3 || command -v python); "$PY" -m pytest tests/test_fable_
 # scripts/release.py，而且那支腳本要真的跑得起來。少了這條，發佈閘可以寫得
 # 很完整卻從來沒有人走過它——那正是這道閘存在的理由。
 PY=$(command -v python3 || command -v python); "$PY" -m pytest tests/test_release_gate.py -q -k "rg12 or rg13"
+# 薄殼不得再信一支「什麼都沒做也回 0」的 runner（約 2.5 秒）：薄殼擋得住被掏空的
+# runner（B01，任何綠守衛都不得靠它放行），正常 runner 仍出具回報而能 commit（B03）。
+# 少了前者，把 main 上的 runner 改成 `exit 0` 的 commit 會讓所有裝了薄殼的 repo 靜默失守；
+# 少了後者，守衛會因為 runner 不出具回報而把全部 commit 擋死。
+PY=$(command -v python3 || command -v python); "$PY" -m pytest tests/test_precommit_shell.py -q -k "(test_b01 and (exit0 or echo_receipt_stdout) and true) or test_b03"

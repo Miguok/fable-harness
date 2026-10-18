@@ -38,7 +38,8 @@ W2 刻意不去比對「版控裡的模板副本」：那需要猜每個 repo �
 指令字串，而「這條指令會不會跳過 hook」無法只靠讀字串完全判定。經 `eval`／`sh -c`／
 `xargs`／`Start-Process`／git alias 送出的 commit，本層看不到；在字串裡引用
 `git commit --no-verify` 當說明文字則會被誤擋。真正擋得住每一個提交者的是
-`wiring_runner.sh`——那是 git 自己執行的 pre-commit。
+薄殼 `precommit_shell.sh`——git 自己執行的 pre-commit；它再讀 Fable main 上的
+`wiring_runner.sh` 去執行。
 
 ⚠ **但「繞不過」是過度宣稱，2026-09-06 外部審查實測推翻。** git 的 `core.hooksPath`
 可以指到別處，而它至少有四條 transient config 通道可設：`-c`、
@@ -829,12 +830,13 @@ def check_wiring(root, config_args=(), env_prefix=None):
     executable_body = re.sub(r"#[^\n]*", "", body)
     if "wiring-guards" not in executable_body:
         return (
-            "The installed pre-commit hook never runs the wiring guards "
-            "(fable wiring_gate).\n\n"
+            "The installed pre-commit hook has no direct reference to "
+            ".claude/wiring-guards (fable wiring_gate); check the manual "
+            "integration (INSTALL.md step 10).\n\n"
             "  declared: %s\n"
             "  installed: %s (no reference to the declaration)\n\n"
-            "The guards exist and pass, but nothing invokes them on commit. A guard that "
-            "only runs when somebody remembers to run it is not a gate.\n\n"
+            "The guards are declared, but this check cannot see anything that runs them "
+            "on commit. A guard that only runs when somebody remembers to run it is not a gate.\n\n"
             "Install the pre-commit shell with "
             "<fable-repo>/scripts/install_precommit.sh (INSTALL.md step 10); if you "
             "already have a pre-commit of your own, step 10 also lists how to "
