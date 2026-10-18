@@ -21,8 +21,11 @@ The current version is also kept in [VERSION](VERSION).
   改為以工具呼叫 id 去重複：計數單位是 Stop 劃界的工作段落，段落結束時仍紅才記一次，
   同一筆紅結果不會在之後的 Stop 被重算（協議 §4b-1 第 7 條）；權威驗證綠收束時
   綠之前的紅也記成已計（逐 context 判定，多個 context 各自收束；未收束 context 的紅照常計數，
-  不再被權威綠的提早結束吞掉）；已計清單有軟性保留上限（`FABLE_GOAL_MAX_COUNTED`，預設 512），
+  不再被權威綠的提早結束吞掉）；已計清單有保留上限（512 筆），
   只裁掉舊 id；目前回合裡每個目標最後一筆結果的 id 不受此限。
+- **目標關卡在某些長指令上會卡住**：`export` 一次帶很多個加引號的值、或內含大量沒收尾的 `<<`（例如 C++ 的 `cout <<`）時，
+  判斷要花數秒到數十秒。現在兩者都在毫秒內判完；判不準的賦值（混合引號、反斜線跳脫、未閉合引號）不再被截短，
+  整段以雜湊當成 context，不會讓不同的值被當成同一個目標。
 - **只差輸出格式旗標就被當成兩個目標**：`--tb=no` 的紅與 `--tb=short -rf` 的綠
   解不開。紅綠解除時改剝掉只改輸出長相的 pytest 旗標，解除順序依 §4b-1 第 3 條（已記過的紅之後出現過綠才解，綠在紅之前不解）
   （§4b-1 第 5 條；是不是 pytest 看鍵的第一個 token——鍵已從測試工具本身起算，參數位置的
@@ -55,13 +58,16 @@ The current version is also kept in [VERSION](VERSION).
 - **引號字串裡出現「pytest」仍會被當成測試指令**：例如交給其他工具的長提示文字含「pytest」字樣。
   鍵從那個字樣起算，紅綠都對不上真正的目標；與 heredoc 內文同一類，尚未處理。
 - **連續的獨立賦值**：`X=1 Y=2 && cmd` 的 `X` 會因後面還有 token 而被算進 context；`set -a` 之後的
-  獨立賦值實際上會 export，但不算 context。
+  獨立賦值實際上會 export，但不算 context。`FOO=1; export FOO; pytest …` 與 `declare -x FOO=1; pytest …` 也不算 context，
+  所以沒有 FOO 的綠可以解掉帶 FOO 時的紅——放寬方向。
+- **判不準的賦值以雜湊當 context**：同一個目標若換一種寫法（例如改了引號），兩次的 context 對不上，先紅後綠可能解不掉紅（多擋，不會漏擋）。
 - **「不是真的執行」的判斷仍看原始指令**：heredoc 內文含 `--collect-only`／`--version` 等字樣時，
   後面真跑的 pytest 整筆不記（紅綠都看不見）——假陰性；修法是對切過內文的指令判斷。
 - **context 的 `cd` 只取第一個 `<<` 之前**：`cd A && cat > f <<'EOF' … EOF … cd B && pytest …`
   記成 `cd=A`；狀態檔不分專案、只靠 `cd=` 分，這種形態下不同專案的紅綠可能互相解除（危險方向）。
 - **heredoc 邊界**：一般 `<<'EOF'` 的內文若有一行縮排的 `EOF` 會提前收尾（bash 不會）；
-  `<<\EOF`、CRLF 行尾、未閉合的 heredoc 不切，回到舊行為；引號內的 `<<` 在極端排版下可能誤切。
+  `<<\EOF`、CRLF 行尾、未閉合的 heredoc 不切，回到舊行為；引號內的 `<<` 在極端排版下可能誤切；
+  `<<EOF2` 之後只有一行 `EOF` 時也會被當成收尾（bash 不會）。
 - **`TMPDIR=$SP` 這類引用變數的值不展開**：`SP` 本身是獨立賦值、不算 context，於是不同暫存目錄的
   執行被視為同一個 context——放寬方向，只影響「哪個綠能解哪個紅」。
 - **任一 context 被權威綠收束，訊息裡顯示的連敗數就歸零**：其他 context 的已計紅仍在時，這個顯示值會失真；
@@ -75,6 +81,8 @@ The current version is also kept in [VERSION](VERSION).
   `scripts/install_precommit.sh <Fable 路徑>`：只取代本 kit 自己的舊 hook（先備份），遇到非本 kit 的
   hook、`core.hooksPath`、非 git clone 的 Fable、含 `"` `$` 反引號的路徑一律拒絕且不寫檔。
   INSTALL.md 步驟 10、接線閘擋下訊息與 session 開場提示都改指向安裝腳本。
+  **從 1.5.0 升級**：先前已 opt-in 的 repo 仍是舊的 runner 複本，更新 Fable clone 不會換掉它；每個這樣的 repo 要重跑一次安裝腳本
+  （舊複本會備份），自己整合過的 hook 要照 INSTALL 步驟 10 重新整合。
 - **反方唯讀**：skeptic 與 red-team 不再修改任何檔案；需要改檔才能證明的反例，
   改為寫出重現步驟並標為未驗證，交回主迴圈驗證。
 
