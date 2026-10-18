@@ -48,24 +48,53 @@ The current version is also kept in [VERSION](VERSION).
 - **引號字串裡出現「pytest」仍會被當成測試指令**：例如交給其他工具的長提示文字含「pytest」字樣。
   鍵從那個字樣起算，紅綠都對不上真正的目標；與 heredoc 內文同一類，尚未處理。
 - **heredoc 內文含 `pytest` 字樣會被當成測試執行**：鍵從內文裡的字樣起算，那筆執行的紅綠都對不上真正的目標。
-- **引號參數裡的 `k=v` 會算進 context**：`echo "a k=1 b"`、`grep " timeout=30"` 這類文字一換，同一個目標就換鍵：一邊的綠解不掉另一邊的紅（多擋），連紅也散在不同鍵而不爬梯（少擋）。
-- **獨立賦值 `P=1 && pytest …` 也算進 context**：值不同的兩次執行落在兩個 context，一邊的綠解不掉另一邊的紅，連紅也不爬梯；`export A=1;` 的分號也會被吞進值，與 `export A=1 &&` 落在兩個 context。
-- **值的引號段之後的部分不算進 context**：`A='x'y` 與 `A='x'z` 落在同一個 context，一邊的綠會解掉另一邊的紅（危險方向）。
-- **機密名稱的值遮成 `***` 後不再區分**：`TOKEN=a pytest …` 與 `TOKEN=b pytest …` 落在同一個 context，一邊的綠會解掉另一邊的紅（危險方向）。
-- **`cd` 目的地裡以反斜線跳脫的空白會被截斷**：`cd a\ b` 記成 `cd=a`，與 `cd a` 同一個 context（危險方向）。
-- **指令本身的機密旗標不遮**：`pytest … --api-key=X` 這類旗標以明碼留在本機狀態檔 `.fable/goal_state.json` 的鍵裡
-  （`.fable/.gitignore` 由閘自己建立時該目錄不進版控；鍵本身不注入對話）。擱置紀錄與擋下訊息會遮，但值是引號段與其他字元
-  串接時（`--api-key=a"b c"`、`TOKEN=a"b c"`）只遮到第一個空白，後半段會留在擱置紀錄與擋下訊息裡、被注入對話。
 - **「不是真的執行」的判斷看整條指令**：heredoc 內文含 `--collect-only`／`--version` 等字樣時，
   後面真跑的 pytest 整筆不記（紅綠都看不見）——假陰性。
-- **context 只認兩種固定寫法，其他都看不見**：只取第一個 `<<` 之前、位於指令開頭或 `;`／`&`／`|`／`then`／`do` 之後的
-  最後一個 `cd 目標`（目標取到第一個空白），以及第一個 `<<` 之前每個 `名稱=值`（上面幾條是它的例子）。
-  第一個 `<<`（heredoc、here-string、算術位移、引號裡的 `<<` 都算）之後的 `cd` 與 `名稱=值`、子 shell 的 `(cd a && …)`、
-  `pushd`、`cd -- 目錄`、`git -C` 都不算：值不同的兩次執行會被當成同一個目標，一邊的綠會解掉另一邊的紅（危險方向）。
-  例如 `cd A && cat > f <<'EOF' … EOF … cd B && pytest …` 記成 `cd=A`；狀態檔不分專案、只靠 `cd=` 分，
-  這種形態下不同專案的紅綠可能互相解除。反過來，字面不同但意思相同的寫法（`cd a;pytest` 與 `cd a; pytest`）會分成兩個目標。
-- **任一 context 被權威綠收束，訊息裡顯示的連敗數就歸零**：其他 context 的已計紅仍在時，這個顯示值會失真；
-  計數與是否擋人不受影響。
+- **context 是字面擷取結果，不是實際 shell 環境**：本版沿用 v1.5.0 的
+  context 擷取與機密遮蔽行為。目標閘以固定正規表示式擷取測試指令前段的
+  `cd` 與 `名稱=值`，再做字串整理與遮蔽；不解析 shell，也不保證辨識實際的
+  工作目錄、環境變數或作用域。合法寫法也可能漏認、截斷，或把參數文字誤算
+  進 context。前段從第一個字面 `<<` 起全部不參與 context 擷取，包括其後
+  真正執行的 `cd` 與賦值；不判斷該記號是否真的是 heredoc。
+
+  不同目錄或環境可能被合併成同一個目標，讓一邊的綠解除另一邊的紅，或混算
+  失敗次數；同一目標也可能因字面寫法不同而拆成不同鍵，造成綠解不掉舊紅，
+  或連紅分散、達不到阻擋門檻。權威驗證的「同一 context」也受此限制，
+  不能視為實際環境相同的保證。
+
+  以下是代表例，不是完整支援清單；表中 context 不含測試指令本身：
+
+  <!-- G113:context -->
+  | 指令 A | 指令 B | A 的 context | B 的 context | 鍵 |
+  |---|---|---|---|---|
+  | `A='x'y pytest t.py` | `A='x'z pytest t.py` | `A=x` | `A=x` | `同鍵` |
+  | `cd "$HOME"/projA && pytest t.py` | `cd "$HOME"/projB && pytest t.py` | `cd=$HOME` | `cd=$HOME` | `同鍵` |
+  | `cd a; pytest t.py` | `cd a && pytest t.py` | `cd=a;` | `cd=a` | `不同鍵` |
+  | `TOKEN=a pytest t.py` | `TOKEN=b pytest t.py` | `TOKEN=***` | `TOKEN=***` | `同鍵` |
+  <!-- /G113:context -->
+
+  精確行為以 `.claude/hooks/goal_gate.py` 的 `test_key`、`CD_RE`、
+  `ENV_PREFIX_RE`、`run_context` 與 `redact` 為準。
+
+- **機密遮蔽不完整**：context 中被機密名稱規則命中的值會遮成 `***`，
+  因此不同機密值可能不再區分；名稱未被規則辨識的機密不保證遮蔽。
+  測試指令本身的機密旗標可能以明碼保留在本機
+  `.fable/goal_state.json` 的 `red`／`red_seen` 鍵中。
+  擱置紀錄與擋下訊息雖會經過遮蔽，仍可能殘留機密並進入對話，例如：
+
+  <!-- G113:redact -->
+  | 輸入 | 遮蔽後 |
+  |---|---|
+  | `TOKEN=a"b c" pytest t.py` | `TOKEN=*** c" pytest t.py` |
+  | `pytest t.py --api-key=a"b c"` | `pytest t.py --api-key=*** c"` |
+  <!-- /G113:redact -->
+
+  不應把出現 `***` 視為整段機密已清除的保證。
+  閘只在 `.fable/.gitignore` 不存在時建立忽略規則；既有設定與已追蹤檔案
+  不保證受到保護，不能一概宣稱這些資料不會進入版本控制。
+
+- **連敗顯示可能失真**：任一 context 被權威驗證的綠收束時，訊息顯示的
+  連敗數會歸零，即使其他 context 仍有已計紅；實際計數與是否阻擋不受影響。
 
 ### Changed
 

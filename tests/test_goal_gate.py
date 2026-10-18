@@ -53,9 +53,11 @@
   G103 權威綠夾在「已計的紅」與「新紅」之間要收束（H2 同回合、H4 跨回合）；無權威綠／權威綠在已計紅之前仍爬梯（配對）
   G112 環境變數值不同 → 鍵不同，不受 shell 寫法影響（註解含引號、`bash -c`、`ssh '…'`、`export` 含跳脫引號、
        `$'…'`、獨立賦值；例外：`A='x'y`／`A='x'z`、機密名稱遮成 `***`、第一個 `<<` 之後與子 shell／pushd 等
-       context 只認的兩種寫法以外，都會同鍵，見 CHANGELOG 已知限制「context 只認兩種固定寫法」）；
+       context 擷取不認的寫法以外，都會同鍵，見 CHANGELOG 已知限制「context 是字面擷取結果，不是實際 shell 環境」）；
        配對：同目標只差管線尾巴鍵相同、`cd` 不同鍵不同、context 裡的機密（含 Bearer）不進鍵、一般指令鍵形狀固定、
        另一個值的綠不解這個值的紅；耗時：export 4000 個混合引號值、2 萬字元對抗輸入 `test_key` 各 < 1 秒
+  G113 CHANGELOG 已知限制的 context 例子表（A／B 的 context 與同鍵／不同鍵）與機密遮蔽例子表，逐列對真正的
+       `key_context(test_key(…))`、`test_key` 相等性與 `redact`；標記／資料列／欄數不對一律 fail、不 skip
   （G106～G111 隨「模擬 bash 斷字」一併移除；仍成立且與保留行為有關的斷言已搬進 G112 配對）
   （G98 S2 期望於 2026-10-06 fable 複審改為「綠→紅 計 1、不擋」）
 
@@ -63,9 +65,13 @@
   cd <repo> && python -m pytest tests/test_goal_gate.py -v
 
 ══════════════════════════════════════
-執行紀錄（G82～G112，依時間由新到舊；最上面是最新一次）
+執行紀錄（G82～G113，依時間由新到舊；最上面是最新一次）
 ══════════════════════════════════════
-最後執行：2026-10-18 22:35 → 256 passed（本檔；第 8 輪後只改 docstring 與 CHANGELOG）；全套 tests/ → 585 passed, 3 skipped
+最後執行：2026-10-18 23:18 → 258 passed（本檔；G113 新增 2 條，原 256）
+  2026-10-18 23:18 G113 新增（只讀 CHANGELOG、未改 goal_gate.py）：先紅——CHANGELOG 尚無 `<!-- G113:… -->` 標記，2 failed, 256 deselected
+    （Failed: CHANGELOG.md 缺少標記）；改 CHANGELOG 後 2 passed（context 表 4 列、遮蔽表 2 列，例子實跑皆與表相符）
+    突變 1：把 `cd=a;` 改成 `cd=a` → 1 failed（context 測試）；突變 2：把 TOKEN 那列「同鍵」改「不同鍵」→ 1 failed；皆已還原
+  前一次：2026-10-18 22:35 → 256 passed（本檔；第 8 輪後只改 docstring 與 CHANGELOG）；全套 tests/ → 585 passed, 3 skipped
   2026-10-18 22:27 第 7 輪審查後：同義反覆的 G112 配對（test_key(a)==test_key(a)、cd a==cd a）改成「只差管線尾巴鍵相同」
   與「只差結尾斜線鍵相同」；副本突變：拿掉 strip_pipeline_tail → 1 failed、拿掉 cd 的 rstrip("/") → 1 failed（各自轉紅）
   退回 goal_gate.py 在 1.5.0 之後新增的「模擬 bash 斷字」程式：環境變數 context（`_quoted_mask`、
@@ -2943,7 +2949,7 @@ def test_g112_different_env_values_give_different_keys_in_any_shell_spelling(a, 
     同一個目標的連紅會散在不同鍵而不爬梯。
     例外（1.5.0 行為，見 CHANGELOG 已知限制）：值的引號段之後的部分不算（`A='x'y` 與 `A='x'z`）、
     機密名稱的值遮成 `***`（`TOKEN=a` 與 `TOKEN=b`）、第一個 `<<` 之後的賦值——這些會同鍵，本測試不涵蓋；
-    context 能認得哪些寫法的完整規則見 CHANGELOG 已知限制「context 只認兩種固定寫法」。
+    context 能認得哪些寫法的完整規則見 CHANGELOG 已知限制「context 是字面擷取結果，不是實際 shell 環境」。
     """
     assert gg.test_key(a) != gg.test_key(b), (gg.test_key(a), gg.test_key(b))
 
@@ -3087,3 +3093,47 @@ def test_g112_end_to_end_three_red_segments_with_different_sed_still_block(tmp_p
     assert not _blocked(outs[0]), outs[0]
     assert _blocked(outs[1]), "第 2 段同一個目標的紅沒有被擋：%r" % (outs[1],)
     assert _blocked(outs[2]), "第 3 段同一個目標的紅沒有被擋：%r" % (outs[2],)
+
+
+def _g113_table_rows(block, ncols):
+    """G113 輔助：取 CHANGELOG 兩個標記之間的表格資料列（去表頭與分隔列、去儲存格外層反引號）。
+
+    標記不存在、沒有資料列、欄數不對都 `pytest.fail`（不得 skip，否則文件改壞了守衛靜默變綠）。
+    """
+    text = open(os.path.join(ROOT, "CHANGELOG.md"), encoding="utf-8").read()
+    start, end = "<!-- G113:%s -->" % block, "<!-- /G113:%s -->" % block
+    if start not in text or end not in text:
+        pytest.fail("CHANGELOG.md 缺少標記 %s ／ %s" % (start, end))
+    body = text.split(start, 1)[1].split(end, 1)[0]
+    lines = [ln.strip() for ln in body.splitlines() if ln.strip().startswith("|")]
+    data = [ln for ln in lines[2:]]  # 第 0 列表頭、第 1 列分隔
+    if not data:
+        pytest.fail("CHANGELOG.md 標記 %s 之間沒有資料列" % start)
+    rows = []
+    for ln in data:
+        cells = [c.strip() for c in ln.strip().strip("|").split("|")]
+        if len(cells) != ncols:
+            pytest.fail("欄數 %d != %d：%r" % (len(cells), ncols, ln))
+        rows.append([c[1:-1] if len(c) >= 2 and c[0] == "`" and c[-1] == "`" else c
+                     for c in cells])
+    return rows
+
+
+def test_g113_changelog_context_examples_match_the_real_functions():
+    """G113：CHANGELOG 已知限制的 context 例子表，逐列對真正的 `key_context(test_key(…))` 與鍵相等性。"""
+    rows = _g113_table_rows("context", 5)
+    for a, b, ctx_a, ctx_b, same in rows:
+        if same not in ("同鍵", "不同鍵"):
+            pytest.fail("「鍵」欄只能是 同鍵／不同鍵：%r" % (same,))
+        assert gg.key_context(gg.test_key(a)) == ctx_a, (a, gg.key_context(gg.test_key(a)))
+        assert gg.key_context(gg.test_key(b)) == ctx_b, (b, gg.key_context(gg.test_key(b)))
+        if same == "同鍵":
+            assert gg.test_key(a) == gg.test_key(b), (a, b)
+        else:
+            assert gg.test_key(a) != gg.test_key(b), (a, b)
+
+
+def test_g113_changelog_redaction_examples_match_the_real_function():
+    """G113：CHANGELOG 已知限制的機密遮蔽例子表，逐列對真正的 `redact`。"""
+    for raw, redacted in _g113_table_rows("redact", 2):
+        assert gg.redact(raw) == redacted, (raw, gg.redact(raw))
