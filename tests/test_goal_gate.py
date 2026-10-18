@@ -52,7 +52,8 @@
   G104 權威綠門檻是「每個 context 自己的已計紅」，不是全域最大值（MG-14）；配對：權威綠在已計紅之前不收束
   G103 權威綠夾在「已計的紅」與「新紅」之間要收束（H2 同回合、H4 跨回合）；無權威綠／權威綠在已計紅之前仍爬梯（配對）
   G112 環境變數值不同 → 鍵不同，不受 shell 寫法影響（註解含引號、`bash -c`、`ssh '…'`、`export` 含跳脫引號、
-       `$'…'`、獨立賦值；例外：`A='x'y`／`A='x'z` 與機密名稱遮成 `***` 會同鍵，見 CHANGELOG 已知限制）；
+       `$'…'`、獨立賦值；例外：`A='x'y`／`A='x'z`、機密名稱遮成 `***`、第一個 `<<` 之後與子 shell／pushd 等
+       context 只認的兩種寫法以外，都會同鍵，見 CHANGELOG 已知限制「context 只認兩種固定寫法」）；
        配對：同目標只差管線尾巴鍵相同、`cd` 不同鍵不同、context 裡的機密（含 Bearer）不進鍵、一般指令鍵形狀固定、
        另一個值的綠不解這個值的紅；耗時：export 4000 個混合引號值、2 萬字元對抗輸入 `test_key` 各 < 1 秒
   （G106～G111 隨「模擬 bash 斷字」一併移除；仍成立且與保留行為有關的斷言已搬進 G112 配對）
@@ -64,7 +65,7 @@
 ══════════════════════════════════════
 執行紀錄（G82～G112，依時間由新到舊；最上面是最新一次）
 ══════════════════════════════════════
-最後執行：2026-10-18 22:27 → 256 passed（本檔）；全套 tests/ → 585 passed, 3 skipped
+最後執行：2026-10-18 22:35 → 256 passed（本檔；第 8 輪後只改 docstring 與 CHANGELOG）；全套 tests/ → 585 passed, 3 skipped
   2026-10-18 22:27 第 7 輪審查後：同義反覆的 G112 配對（test_key(a)==test_key(a)、cd a==cd a）改成「只差管線尾巴鍵相同」
   與「只差結尾斜線鍵相同」；副本突變：拿掉 strip_pipeline_tail → 1 failed、拿掉 cd 的 rstrip("/") → 1 failed（各自轉紅）
   退回 goal_gate.py 在 1.5.0 之後新增的「模擬 bash 斷字」程式：環境變數 context（`_quoted_mask`、
@@ -2912,7 +2913,7 @@ def test_g91_pair_env_var_for_the_counted_cap_is_ignored(tmp_path):
     assert len(_state(repo)["counted"]) == 10, _state(repo)["counted"]
 
 
-# ── G112：環境變數值不同 → 鍵不同，不受 shell 寫法影響（兩個例外見類別測試 docstring）─────────────────────────
+# ── G112：環境變數值不同 → 鍵不同，不受 shell 寫法影響（例外見類別測試 docstring）─────────────────────────
 
 _G112_PAIRS = [
     ("comment-with-apostrophe",
@@ -2933,15 +2934,16 @@ _G112_PAIRS = [
 @pytest.mark.parametrize("a,b", [(a, b) for _, a, b in _G112_PAIRS],
                          ids=[i for i, _, _ in _G112_PAIRS])
 def test_g112_different_env_values_give_different_keys_in_any_shell_spelling(a, b):
-    """G112 類別：環境變數值不同，不論 shell 怎麼寫（註解、`bash -c`、`ssh '…'`、export、`$'…'`、
-    獨立賦值），鍵都不同。
+    """G112 類別：環境變數值不同，在下列 shell 寫法（註解、`bash -c`、`ssh '…'`、export、`$'…'`、
+    獨立賦值）下鍵都不同——前提是賦值落在第一個 `<<` 之前（見下方例外）。
 
     根因：任何「判斷這個 `k=v` 在不在引號裡」的程式都是在模擬 bash；模擬不全時
     （註解裡的 `'`、`$'…'`、被包住的整段指令）會把真的賦值當成引號內文丟掉，
     兩個不同的目標合成同一個鍵，一邊的綠清掉另一邊的紅。多分一條鍵也不是保守方向：
     同一個目標的連紅會散在不同鍵而不爬梯。
     例外（1.5.0 行為，見 CHANGELOG 已知限制）：值的引號段之後的部分不算（`A='x'y` 與 `A='x'z`）、
-    機密名稱的值遮成 `***`（`TOKEN=a` 與 `TOKEN=b`）——這兩種會同鍵，本測試不涵蓋。
+    機密名稱的值遮成 `***`（`TOKEN=a` 與 `TOKEN=b`）、第一個 `<<` 之後的賦值——這些會同鍵，本測試不涵蓋；
+    context 能認得哪些寫法的完整規則見 CHANGELOG 已知限制「context 只認兩種固定寫法」。
     """
     assert gg.test_key(a) != gg.test_key(b), (gg.test_key(a), gg.test_key(b))
 
