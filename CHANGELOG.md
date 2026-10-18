@@ -48,8 +48,13 @@ The current version is also kept in [VERSION](VERSION).
 - **引號字串裡出現「pytest」仍會被當成測試指令**：例如交給其他工具的長提示文字含「pytest」字樣。
   鍵從那個字樣起算，紅綠都對不上真正的目標；與 heredoc 內文同一類，尚未處理。
 - **heredoc 內文含 `pytest` 字樣會被當成測試執行**：鍵從內文裡的字樣起算，那筆執行的紅綠都對不上真正的目標。
-- **引號參數裡的 `k=v` 會算進 context**：`echo "a k=1 b"`、`grep " timeout=30"` 這類文字一換，同一個目標就換鍵——多擋的方向。
-- **獨立賦值 `P=1 && pytest …` 也算進 context**：值不同的兩次執行落在兩個 context，一邊的綠解不掉另一邊的紅；`export A=1;` 的分號也會被吞進值，與 `export A=1 &&` 落在兩個 context。
+- **引號參數裡的 `k=v` 會算進 context**：`echo "a k=1 b"`、`grep " timeout=30"` 這類文字一換，同一個目標就換鍵：一邊的綠解不掉另一邊的紅（多擋），連紅也散在不同鍵而不爬梯（少擋）。
+- **獨立賦值 `P=1 && pytest …` 也算進 context**：值不同的兩次執行落在兩個 context，一邊的綠解不掉另一邊的紅，連紅也不爬梯；`export A=1;` 的分號也會被吞進值，與 `export A=1 &&` 落在兩個 context。
+- **值的引號段之後的部分不算進 context**：`A='x'y` 與 `A='x'z` 落在同一個 context，一邊的綠會解掉另一邊的紅（危險方向）。
+- **機密名稱的值遮成 `***` 後不再區分**：`TOKEN=a pytest …` 與 `TOKEN=b pytest …` 落在同一個 context，一邊的綠會解掉另一邊的紅（危險方向）。
+- **`cd` 目的地裡以反斜線跳脫的空白會被截斷**：`cd a\ b` 記成 `cd=a`，與 `cd a` 同一個 context（危險方向）。
+- **指令本身的機密旗標不遮**：`pytest … --api-key=X` 這類旗標以明碼留在本機狀態檔 `.fable/goal_state.json` 的鍵裡
+  （該目錄不進版控，也不注入對話；擱置紀錄與擋下訊息有遮）。
 - **「不是真的執行」的判斷看整條指令**：heredoc 內文含 `--collect-only`／`--version` 等字樣時，
   後面真跑的 pytest 整筆不記（紅綠都看不見）——假陰性。
 - **context 的 `cd` 只取第一個 `<<` 之前**：`cd A && cat > f <<'EOF' … EOF … cd B && pytest …`

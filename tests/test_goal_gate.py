@@ -51,8 +51,9 @@
   G105 權威驗證比對先剝輸出格式旗標；配對：-k 不同不收束（fable 複審 2026-10-06）
   G104 權威綠門檻是「每個 context 自己的已計紅」，不是全域最大值（MG-14）；配對：權威綠在已計紅之前不收束
   G103 權威綠夾在「已計的紅」與「新紅」之間要收束（H2 同回合、H4 跨回合）；無權威綠／權威綠在已計紅之前仍爬梯（配對）
-  G112 環境變數值不同 → 鍵不同，與 shell 寫法無關（註解含引號、`bash -c`、`ssh '…'`、`export` 含跳脫引號、
-       `$'…'`、獨立賦值）；配對：同指令鍵相同、`cd` 不同鍵不同、機密（含 Bearer）不進鍵、一般指令鍵形狀固定、
+  G112 環境變數值不同 → 鍵不同，不受 shell 寫法影響（註解含引號、`bash -c`、`ssh '…'`、`export` 含跳脫引號、
+       `$'…'`、獨立賦值；例外：`A='x'y`／`A='x'z` 與機密名稱遮成 `***` 會同鍵，見 CHANGELOG 已知限制）；
+       配對：同目標只差管線尾巴鍵相同、`cd` 不同鍵不同、context 裡的機密（含 Bearer）不進鍵、一般指令鍵形狀固定、
        另一個值的綠不解這個值的紅；耗時：export 4000 個混合引號值、2 萬字元對抗輸入 `test_key` 各 < 1 秒
   （G106～G111 隨「模擬 bash 斷字」一併移除；仍成立且與保留行為有關的斷言已搬進 G112 配對）
   （G98 S2 期望於 2026-10-06 fable 複審改為「綠→紅 計 1、不擋」）
@@ -63,7 +64,9 @@
 ══════════════════════════════════════
 執行紀錄（G82～G112，依時間由新到舊；最上面是最新一次）
 ══════════════════════════════════════
-最後執行：2026-10-18 22:06 → 256 passed（本檔）；全套 tests/ → 585 passed, 3 skipped
+最後執行：2026-10-18 22:27 → 256 passed（本檔）；全套 tests/ → 585 passed, 3 skipped
+  2026-10-18 22:27 第 7 輪審查後：同義反覆的 G112 配對（test_key(a)==test_key(a)、cd a==cd a）改成「只差管線尾巴鍵相同」
+  與「只差結尾斜線鍵相同」；副本突變：拿掉 strip_pipeline_tail → 1 failed、拿掉 cd 的 rstrip("/") → 1 failed（各自轉紅）
   退回 goal_gate.py 在 1.5.0 之後新增的「模擬 bash 斷字」程式：環境變數 context（`_quoted_mask`、
   `_env_assignments`、`_word_end`、`_ENV_VALUE`、`_EXPORT_WORD`、`_EXPORT_BEFORE_RE`、判不準雜湊）與 heredoc
   切除（`HEREDOC_START_RE`、`strip_heredoc_bodies`）；`ENV_PREFIX_RE`、`run_context`、`test_key`、`analyze_turn`
@@ -84,6 +87,7 @@
 （以下 2026-10-18 15:43 以前關於 G106～G111 的紀錄隨該行為移除，不再保留；2026-10-06 的 G105 紀錄見下）
 2026-10-06 14:42 → 207 passed（G105～G107 實作完成：權威比對剝格式旗標、context 只認 export
   與緊接命令的賦值、判斷前切掉 heredoc 內文；暫存複本變異 MG-21～MG-26 六格各自翻紅）
+  （G106／G107 的行為已於 2026-10-18 退回 1.5.0，見最上方；本筆只留作 G105 的歷史）
 2026-10-06 14:11 → 6 failed, 201 passed（補 G105～G107 只寫測試、未改 goal_gate.py）
 2026-10-06 14:11 補 G105～G107（fable 複審三個誤擋缺陷）：預期紅 6 條（G105 兩列、G106 兩條、
   G107 含 pytest 內文一列與無測試指令 heredoc 一條）；配對列（-k、值不同、一般指令、內文無 pytest）綠。
@@ -2894,7 +2898,7 @@ def _seconds_for_test_key(cmd):
     return float(r.stdout)
 
 
-def test_g108_env_var_for_the_counted_cap_is_ignored(tmp_path):
+def test_g91_pair_env_var_for_the_counted_cap_is_ignored(tmp_path):
     """G91 配對：`FABLE_GOAL_MAX_COUNTED` 不再被讀取，上限固定為模組常數（512）。
 
     種 5 個舊 id、跑 5 個新紅；舊碼讀環境變數 3 會把 5 個舊 id 裁掉（剩 5），
@@ -2908,7 +2912,7 @@ def test_g108_env_var_for_the_counted_cap_is_ignored(tmp_path):
     assert len(_state(repo)["counted"]) == 10, _state(repo)["counted"]
 
 
-# ── G112：環境變數值不同 → 鍵不同，與 shell 寫法無關 ─────────────────────────
+# ── G112：環境變數值不同 → 鍵不同，不受 shell 寫法影響（兩個例外見類別測試 docstring）─────────────────────────
 
 _G112_PAIRS = [
     ("comment-with-apostrophe",
@@ -2934,21 +2938,24 @@ def test_g112_different_env_values_give_different_keys_in_any_shell_spelling(a, 
 
     根因：任何「判斷這個 `k=v` 在不在引號裡」的程式都是在模擬 bash；模擬不全時
     （註解裡的 `'`、`$'…'`、被包住的整段指令）會把真的賦值當成引號內文丟掉，
-    兩個不同的目標合成同一個鍵，一邊的綠清掉另一邊的紅。保守方向是多分一條鍵，不是少分。
+    兩個不同的目標合成同一個鍵，一邊的綠清掉另一邊的紅。多分一條鍵也不是保守方向：
+    同一個目標的連紅會散在不同鍵而不爬梯。
+    例外（1.5.0 行為，見 CHANGELOG 已知限制）：值的引號段之後的部分不算（`A='x'y` 與 `A='x'z`）、
+    機密名稱的值遮成 `***`（`TOKEN=a` 與 `TOKEN=b`）——這兩種會同鍵，本測試不涵蓋。
     """
     assert gg.test_key(a) != gg.test_key(b), (gg.test_key(a), gg.test_key(b))
 
 
-def test_g112_pair_same_command_twice_gives_the_same_key():
-    """G112 配對：同一條指令兩次鍵相同（不是「什麼都分開」的過度修正）。"""
-    for _, a, _b in _G112_PAIRS:
-        assert gg.test_key(a) == gg.test_key(a), a
+def test_g112_pair_same_goal_with_a_different_tail_gives_the_same_key():
+    """G112 配對：同一個目標只差管線尾巴時鍵相同（不是「什麼都分開」的過度修正）。"""
+    for a in ("pytest t.py -q", "cd p && MODE=new pytest t.py", "export A=1 && pytest t.py"):
+        assert gg.test_key(a + " | tail -3") == gg.test_key(a + " | tail -4"), a
 
 
 def test_g112_pair_cd_destination_still_separates_keys():
-    """G112 配對：`cd` 目的地不同鍵不同，相同則相同。"""
+    """G112 配對：`cd` 目的地不同鍵不同；只差結尾斜線則相同。"""
     assert gg.test_key("cd a && pytest t.py") != gg.test_key("cd b && pytest t.py")
-    assert gg.test_key("cd a && pytest t.py") == gg.test_key("cd a && pytest t.py")
+    assert gg.test_key("cd a/ && pytest t.py") == gg.test_key("cd a && pytest t.py")
 
 
 @pytest.mark.parametrize("cmd", [
@@ -2958,7 +2965,11 @@ def test_g112_pair_cd_destination_still_separates_keys():
     'curl -H "Authorization: Bearer abcd1234efgh" x && pytest t.py',
 ], ids=["bare", "single-quoted", "bearer-env", "bearer-in-quoted-arg"])
 def test_g112_pair_secrets_do_not_reach_the_key(cmd):
-    """G112 配對：機密值（含引號包住的 Bearer）不進鍵。"""
+    """G112 配對：context 裡的機密值（含引號包住的 Bearer）不進鍵。
+
+    只驗 context；指令本身的機密旗標（`--api-key=…`）不遮，會以明碼留在本機狀態檔的鍵裡
+    （1.5.0 行為，見 CHANGELOG 已知限制）。
+    """
     key = gg.test_key(cmd)
     for leaked in ("secret", "sec ret", "abcd1234"):
         assert leaked not in key, key
@@ -3041,7 +3052,8 @@ def test_g112_pair_multi_segment_export_value_keeps_later_assignments(first, sep
     ("TMPDIR=x pytest t.py -q", "TMPDIR=y pytest t.py -q"),
 ])
 def test_g112_pair_mixed_quote_values_still_give_different_keys(a, b):
-    """G112 配對：混合引號、引號後黏字元的值不同 → 鍵不同（不截短成同一個）。"""
+    """G112 配對：混合引號、引號後黏字元的值不同 → 鍵不同（以下各組不截短成同一個；
+    `A='x'y` 與 `A='x'z` 會截短成同一個，見 CHANGELOG 已知限制）。"""
     assert gg.test_key(a) != gg.test_key(b), gg.test_key(a)
 
 
