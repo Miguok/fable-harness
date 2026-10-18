@@ -24,8 +24,10 @@ The current version is also kept in [VERSION](VERSION).
   不再被權威綠的提早結束吞掉）；已計清單有保留上限（512 筆），
   只裁掉舊 id；目前回合裡每個目標最後一筆結果的 id 不受此限。
 - **目標關卡在某些長指令上會卡住**：`export` 一次帶很多個加引號的值、或內含大量沒收尾的 `<<`（例如 C++ 的 `cout <<`）時，
-  判斷要花數秒到數十秒。現在兩者都在毫秒內判完；判不準的賦值（混合引號、反斜線跳脫、未閉合引號）不再被截短，
-  整段以雜湊當成 context，不會讓不同的值被當成同一個目標。
+  判斷很慢：加引號的值每多一個，耗時約加倍（20 個約 0.4 秒）；2000 行 `cout <<` 約 0.4 秒。現在 80 個加引號的值約 1 毫秒、
+  2000 行 `cout <<` 約 10 毫秒（極長的 `export` 鏈仍隨長度平方成長，見已知限制）。判不準的賦值（混合引號、反斜線跳脫、
+  未閉合引號）不再被截短，只把**那一個賦值**以雜湊當成 context，不會讓不同的值被當成同一個目標；
+  `echo`、commit 訊息、`python -c` 等其他指令文字裡的 `k=v` 不受影響。
 - **只差輸出格式旗標就被當成兩個目標**：`--tb=no` 的紅與 `--tb=short -rf` 的綠
   解不開。紅綠解除時改剝掉只改輸出長相的 pytest 旗標，解除順序依 §4b-1 第 3 條（已記過的紅之後出現過綠才解，綠在紅之前不解）
   （§4b-1 第 5 條；是不是 pytest 看鍵的第一個 token——鍵已從測試工具本身起算，參數位置的
@@ -60,9 +62,12 @@ The current version is also kept in [VERSION](VERSION).
 - **連續的獨立賦值**：`X=1 Y=2 && cmd` 的 `X` 會因後面還有 token 而被算進 context；`set -a` 之後的
   獨立賦值實際上會 export，但不算 context。`FOO=1; export FOO; pytest …` 與 `declare -x FOO=1; pytest …` 也不算 context，
   所以沒有 FOO 的綠可以解掉帶 FOO 時的紅——放寬方向。
-- **判不準的賦值以雜湊當 context**：同一個目標若換一種寫法（例如改了引號），兩次的 context 對不上，先紅後綠可能解不掉紅（多擋，不會漏擋）。
+- **判不準的賦值以雜湊當 context**：同一個值換一種寫法（例如 `A=a"b"` 與 `A="ab"`）會被當成兩個 context——
+  一邊的綠解不掉另一邊的紅（多擋），兩邊的紅也分開計數（少擋）。
+- **引號參數裡的 `k=v` 後面不是分隔符時仍被當成環境賦值**：`echo "a k=1 b" && pytest …` 的 context 含 `k=1`，與 1.5.0 相同。
+- **極長的 `export` 鏈隨長度平方成長**：一次 export 2000 個值約 0.3 秒、4000 個約 3 秒。
 - **「不是真的執行」的判斷仍看原始指令**：heredoc 內文含 `--collect-only`／`--version` 等字樣時，
-  後面真跑的 pytest 整筆不記（紅綠都看不見）——假陰性；修法是對切過內文的指令判斷。
+  後面真跑的 pytest 整筆不記（紅綠都看不見）——假陰性。
 - **context 的 `cd` 只取第一個 `<<` 之前**：`cd A && cat > f <<'EOF' … EOF … cd B && pytest …`
   記成 `cd=A`；狀態檔不分專案、只靠 `cd=` 分，這種形態下不同專案的紅綠可能互相解除（危險方向）。
 - **heredoc 邊界**：一般 `<<'EOF'` 的內文若有一行縮排的 `EOF` 會提前收尾（bash 不會）；
@@ -77,7 +82,9 @@ The current version is also kept in [VERSION](VERSION).
 
 - **pre-commit 改為薄殼**：各 repo 的 pre-commit 不再是 `wiring_runner.sh` 的複本，而是一支薄殼
   （`.claude/hooks/precommit_shell.sh`），每次 commit 讀 Fable `main` 上已 commit 的 runner 並執行，
-  commit 進 Fable `main` 即是部署，未 commit 的工作樹改動不會生效。新增安裝腳本
+  commit 進 Fable `main` 即是部署，未 commit 的工作樹改動不會生效。runner 跑完必須回報「至少跑過一條守衛」，
+  沒有回報（例如 runner 被改成什麼都不做）時薄殼擋下 commit，`ALLOW_UNWIRED=1` 仍可明示放行；
+  因此 Fable `main` 不可退回 1.6.0 之前的 runner——舊 runner 不回報，所有裝了薄殼的 repo 都會被擋。新增安裝腳本
   `scripts/install_precommit.sh <Fable 路徑>`：只取代本 kit 自己的舊 hook（先備份），遇到非本 kit 的
   hook、`core.hooksPath`、非 git clone 的 Fable、含 `"` `$` 反引號的路徑一律拒絕且不寫檔。
   INSTALL.md 步驟 10、接線閘擋下訊息與 session 開場提示都改指向安裝腳本。

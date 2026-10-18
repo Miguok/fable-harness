@@ -51,7 +51,7 @@ D8 的來由（實跑真實安裝時發現的缺陷，非合成案例）：
   D6 刪除 .last_sessionstart → never-ran、exit 1
   D7 缺 --home 或 --repo → returncode != 0
   D8 Stop/verify_gate.py 那行顯示 not tracked 且不含 never
-  D9 .claude/hooks/ 下每支 .py／.sh（wiring_runner.sh 除外，它是 git hook）都在 doctor 清單裡
+  D9 .claude/hooks/ 下每支 .py／.sh（wiring_runner.sh 與 precommit_shell.sh 除外，它們是 git hook）都在 doctor 清單裡
 
 ──────────────────────────────────────
 2026-09-05 12:43 GMT+8 追加（組件 4／5 併入，v1.2.0）
@@ -74,6 +74,11 @@ fail-then-pass（實跑輸出，非轉述）：
   突變：把路徑比對關掉 → D10 翻紅；刪掉 INSTALL 表格一列 → D11 翻紅；
   各自只翻自己那一條，還原 → 12 passed。
 最後執行：2026-09-05 14:59 → 12 passed ✅
+
+2026-10-18 11:48 追加（v1.6.0）：D9 的排除清單多一支 precommit_shell.sh——它和
+  wiring_runner.sh 一樣是裝進 .git/hooks 的 git hook 範本，不是 settings.json 註冊的 Claude hook。
+  突變：把 precommit_shell.sh 從排除清單拿掉 → D9 1 failed（訊息指名 'precommit_shell.sh'）；還原 → 綠
+最後執行：2026-10-18 11:48 → 12 passed ✅（1.87s）
 
 ⏳ 待驗收（本檔未涵蓋）
   真實 ~/.claude 的端到端安裝：需乾淨機器，屬 N5 測試矩陣，不在單元測試範圍。

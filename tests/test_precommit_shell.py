@@ -75,14 +75,15 @@ Fable main 就是部署；安裝腳本 `scripts/install_precommit.sh` 負責把�
   全套 tests/：498 passed, 3 skipped（基準 456 passed, 3 skipped，+42）
 
 ✅ 已驗收（本檔涵蓋）
-  B01-B08 → 8 種被掏空的 runner×守衛 false／true：rc=1 且訊息含 "runner did not confirm guard
-    execution"；ALLOW_UNWIRED=1 rc=0 且留下訊息；正常 runner 下 B03-B06 rc 與 .runs 計數如預期
+  B01/B02 → 8 種被掏空的 runner×守衛 false／true：rc=1 且訊息含 "runner did not confirm guard
+    execution"；ALLOW_UNWIRED=1 rc=0 且留下訊息
+  B03-B08 → 正常 runner：B03-B06 rc 與 .runs 計數如預期；B07 零守衛紅；B08 偽造回報寫不進 fd 3
   R01-R17 → 紅 rc=1／綠 rc=0／ALLOW_UNWIRED rc=0，且 DECOY-RAN 從未出現在輸出
   I01-I17 → 拒絕案例 rc≠0 且 hook 內容或目錄零變動；允許案例 F= 行與預期路徑逐字相等（忽略大小寫）
   M18/M19 → 範本取自 main：工作樹的 WIP-MARK、另一分支的 SIDE-MARK 都不會被裝進 hook
 ⏳ 待驗收（本檔未涵蓋）
-  真實 Fable 的升級路徑：本檔與 2026-10-18 的升級實跑都只用假 Fable（從本分支 clone），
-    不碰真實目錄；解鎖條件＝本分支合併進 Fable main 並經使用者點頭後，對真實 Fable 的
+  真實 Fable 的升級路徑：本檔用測試自建的假 Fable（見上方說明，不 clone）；2026-10-18 的
+    升級實跑是本檔之外的手動實驗，用的假 Fable 由本分支 clone 而來；兩者都不碰真實目錄；解鎖條件＝本分支合併進 Fable main 並經使用者點頭後，對真實 Fable 的
     clone 再實跑安裝腳本一次（升級實跑本身已在拋棄式 repo 完成，見上方 2026-10-18 紀錄）
   BROKEN_RUNNERS 之外的蓄意造假：runner 本身可以直接往 fd 3 寫回報——回報只證明 runner 走到
     結尾並跑過至少一條守衛，信任的是經審查進入 Fable main 的程式；解鎖條件＝無（設計上的界線）

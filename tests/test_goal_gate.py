@@ -56,14 +56,28 @@
   G108 env 前綴 `export V0=… Vn=…; …` 的 `test_key` 成本不隨賦值數指數成長（n＝10～80、單／雙／裸／混合四種值形）；
        單引號、雙引號、裸值、空值、多賦值的鍵與修前逐字相同；混合引號／黏字元／未閉合／跳脫的值不合併、仍遮蔽機密
   G109 沒收尾的 `<<`（`std::cout << x`、位移）不得讓 `test_key` 成本與 `<<` 個數成平方；重寫後與原本的 HEREDOC_RE 逐字相同
+  G110 「判不準」只作用在真正會被算進 context 的賦值、只雜湊那個賦值本身；引號參數／一般參數裡的 `k=v`
+       （echo、commit 訊息、`python -c`）不改變 context，鍵與 main 相同；同一條 pytest 連紅三段每段只改 echo 文字仍擋
   （G98 S2 期望於 2026-10-06 fable 複審改為「綠→紅 計 1、不擋」）
 
 執行命令：
   cd <repo> && python -m pytest tests/test_goal_gate.py -v
 
 ══════════════════════════════════════
-執行紀錄（G82～G109，依時間由新到舊；最上面是最新一次）
+執行紀錄（G82～G110，依時間由新到舊；最上面是最新一次）
 ══════════════════════════════════════
+最後執行：2026-10-18 11:53 → 268 passed（G110 實作完成：goal_gate.py `_env_assignments` 先用 main 的規則
+  判斷賦值算不算進 context、只對算進去的才判「判不準」，`run_context` 只雜湊那一個賦值（`NAME=` 加原文），
+  不再雜湊整段前綴）
+  量測（同一組輸入，鍵）：`echo "try n=1" && pytest t.py -q`、`git commit -qam "wip: retry=1" ; pytest …`、
+    `python -c "f(a, k=1)" && pytest …`、`grep -n "x=1" f && pytest …` → 修前（cd883cb）3 筆是 `env#…`，修後 =
+    main 的 `pytest t.py -q`；`cd p && python -c "f(a, k=1)" && pytest …` 修前 `env#ae9ee8c48c56`，修後 `cd=p`
+    `A=a"b" pytest …` 前面多 `echo "n=1" && `：修前 `env#5626ce3d72e8`→`env#944c52f41877`（變），修後兩者皆 `env#5626ce3d72e8`
+  真實紀錄對照（本機 26 份 transcript、1,620 條測試執行）：cd883cb 對 main 不同 83 條；修後不同 33 條，
+    33 條全是 main 把「值後面黏著非分隔符的賦值」算進 context 的那種（新鍵含 env#），無其他原因
+2026-10-18 11:50 先紅：只寫 G110 測試、未改 goal_gate.py → 11 failed, 1 passed（紅 8 列鍵不變＋端到端 2＋配對 1；
+  綠的是 `grep -n "x=1"`，因 `x` 前面是引號）；同一批測試對 main 版跑 → 11 passed, 1 failed
+  （唯一紅的是「真的判不準賦值要雜湊」，main 沒有雜湊＝預期），證明 G110 期望值與 main 一致。
 最後執行：2026-10-18 11:11 → 256 passed（G108～G109 實作完成＋G91 改調模組常數；
   goal_gate.py：`_ENV_VALUE` 三選項互斥、判不準的值走不透明 context（雜湊）、`strip_heredoc_bodies`
   改一次掃描、`FABLE_GOAL_MAX_COUNTED` 改成常數 `MAX_COUNTED_IDS=512`）
@@ -3036,8 +3050,8 @@ def test_g108_keys_of_plain_env_values_are_unchanged(cmd, expected):
 def test_g108_doubtful_env_values_are_not_merged(a, b):
     """G108 不合併：混合引號、引號後黏字元、未閉合引號、反斜線跳脫 → 不同值不同鍵。
 
-    判不準的值（互斥後會被截短成 `A=a`）把原始前綴整段當不透明 context，
-    不截短，所以 `a"b"` 與 `a"c"` 不會落到同一個 context 而互相解紅。
+    判不準的值（互斥後會被截短成 `A=a`）不截短，那一個賦值以雜湊當 context
+    （G110 起只雜湊該賦值，不是整段前綴），所以 `a"b"` 與 `a"c"` 不會落到同一個 context 而互相解紅。
     """
     ka, kb = gg.test_key(a), gg.test_key(b)
     assert ka != kb, "不同的值被合併成同一個鍵：%r" % (ka,)
@@ -3123,3 +3137,86 @@ def test_g109_strip_heredoc_bodies_matches_the_original_regex():
         assert gg.strip_heredoc_bodies(s) == want, repr(s)
         changed += want != s
     assert changed >= 500, "標準答案只在 %d 筆有作用，比對沒有咬力" % changed
+
+
+# ── G110：判不準的值只雜湊那個賦值本身，其他文字裡的 `k=v` 不進 context ──────────
+
+@pytest.mark.parametrize("cmd,expected", [
+    ('echo "try n=1" && pytest t.py -q', "pytest t.py -q"),
+    ('echo "try n=2" && pytest t.py -q', "pytest t.py -q"),
+    ('git commit -qam "wip: retry=1" ; pytest t.py -q', "pytest t.py -q"),
+    ('python -c "f(a, k=1)" && pytest t.py -q', "pytest t.py -q"),
+    ('grep -n "x=1" f && pytest t.py -q', "pytest t.py -q"),
+    ('cd p && python -c "f(a, k=1)" && pytest t.py -q', "cd=p :: pytest t.py -q"),
+    ('cd p && echo "try n=1" && pytest t.py -q', "cd=p :: pytest t.py -q"),
+    ("echo 'a b k=1' && pytest t.py -q", "pytest t.py -q"),
+    ('export A=1; echo "say k=v"; pytest t.py -q', "A=1 :: pytest t.py -q"),
+])
+def test_g110_k_equals_v_outside_an_env_assignment_does_not_change_the_key(cmd, expected):
+    """G110：引號參數或一般指令參數裡的 `k=v` 不是 env 賦值，不得改變 context。
+
+    根因：`cd883cb` 的「判不準」檢查對前綴裡**任何**一個「空白＋`name=value`」都生效，
+    觸發後雜湊整段前綴，echo 文字、commit 訊息、`python -c` 的參數都進了 context。
+    盯的是**類別**（引號內／一般參數裡的 `k=v`，後面接 `;&|` 或字串尾），不是某一筆。
+    期望值是在修改前的 goal_gate.py（main `7e8c7f4`）上跑 `test_key` 記下的。
+    """
+    assert gg.test_key(cmd) == expected, gg.test_key(cmd)
+
+
+def test_g110_echo_text_between_red_segments_does_not_split_the_goal(tmp_path):
+    """G110 端到端：同一條 pytest 連紅三個段落，每段只改 echo 文字 → 第 2 段起擋（與 main 相同）。
+
+    實測（修前）：每段的 echo 文字不同 → 三個雜湊鍵 → 紅散開、各自停在第 1 格，0 次擋。
+    """
+    repo = _repo(tmp_path)
+    outs = []
+    for i in (1, 2, 3):
+        outs.append(_run(repo, _runs(('echo "try n=%d" && pytest t.py -q' % i, FAIL_OUT))))
+        if i == 2:
+            assert list(_state(repo)["red"].values()) == [2], (
+                "同一個目標被分成多個鍵：%r" % (_state(repo)["red"],))
+    assert not _blocked(outs[0]), outs[0]
+    assert _blocked(outs[1]), "第 2 段同一個目標的紅沒有被擋：%r" % (outs[1],)
+    assert _blocked(outs[2]), "第 3 段同一個目標的紅沒有被擋：%r" % (outs[2],)
+
+
+def test_g110_green_without_the_noise_closes_the_red_with_it(tmp_path):
+    """G110 端到端：`cd p && python -c "f(a, k=1)" && pytest` 的紅，被 `cd p && pytest` 的綠收束。
+
+    實測（修前）：前者的 context 是雜湊、後者是 `cd=p`，兩個鍵不同 → 紅不收束。
+    """
+    red = 'cd p && python -c "f(a, k=1)" && pytest t.py -q'
+    green = "cd p && pytest t.py -q"
+    repo = _repo(tmp_path, {"streak": 0, "shelved": [], "red": {}})
+    _run(repo, _runs((red, FAIL_OUT)))
+    assert list(_state(repo)["red"]) == [gg.test_key(red)], _state(repo)["red"]
+    _run(repo, _runs((green, PASS_OUT)))
+    assert not _state(repo)["red"], "綠沒有收束紅：%r" % (_state(repo)["red"],)
+
+
+def test_g110_a_real_doubtful_env_value_hashes_only_that_assignment():
+    """G110 配對：**真的** env 賦值判不準時仍雜湊（G108），而且只雜湊那個賦值。
+
+    同一個 `A=a"b"`，前面多一段 echo／`cd` 以外的文字、或 `export` 之後多一段 echo，
+    context 的雜湊部分不變；`cd` 目的地仍在鍵裡（不同專案不同鍵）；不同的值仍不同鍵；
+    機密原文不進鍵。
+    """
+    plain = gg.test_key('A=a"b" pytest t.py -q')
+    assert gg.key_context(plain).startswith("env#"), plain
+    assert gg.test_key('echo "n=1" && A=a"b" pytest t.py -q') == plain
+    assert gg.test_key('echo "n=2" ; A=a"b" pytest t.py -q') == plain
+
+    k1 = gg.test_key('export A=a"b"; echo "n=1"; pytest t.py -q')
+    k2 = gg.test_key('export A=a"b"; echo "n=2"; pytest t.py -q')
+    assert k1 == k2 and gg.key_context(k1).startswith("env#"), (k1, k2)
+
+    cd_p = gg.test_key('cd p && echo "n=1" && A=a"b" pytest t.py -q')
+    assert cd_p == gg.test_key('cd p && A=a"b" pytest t.py -q')
+    assert gg.key_context(cd_p).startswith("cd=p env#"), cd_p
+    assert cd_p != gg.test_key('cd q && A=a"b" pytest t.py -q')
+
+    assert gg.test_key('A=a"c" pytest t.py -q') != plain
+    assert gg.test_key('A=a"b c" pytest t.py -q') != gg.test_key('A=a"b d" pytest t.py -q')
+
+    key = gg.test_key('echo "SECRETPAYLOAD" && TOKEN=a"SECRET PAYLOAD" pytest t.py -q')
+    assert "SECRET" not in key and "PAYLOAD" not in key, key

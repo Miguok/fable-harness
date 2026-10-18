@@ -593,6 +593,9 @@ CD_RE = re.compile(r"(?:^|[;&|]|\bthen\b|\bdo\b)\s*cd\s+(\"[^\"]*\"|'[^']*'|\S+)
 # 40 個以上不會結束，G108）。代價：`a"b"` 這類混合引號的值只取到 `a`，
 # 由 `_env_assignments` 判成「判不準」，不拿截短的值（見該函式）。
 _ENV_VALUE = r"(?:\"[^\"]*\"|'[^']*'|[^\s;&|\"']*)"
+# main 的值範圍（第三支也吃引號）：只拿來判斷「這個賦值後面接的是不是分隔符」（G110），
+# 單次 `match`、後面沒有東西可以失敗，沒有回溯問題。
+_OLD_ENV_VALUE_RE = re.compile(r"\"[^\"]*\"|'[^']*'|[^\s;&|]*")
 ENV_PREFIX_RE = re.compile(r"(?:^|[;&|]|\s)([A-Za-z_][A-Za-z0-9_]*)=(" + _ENV_VALUE + ")")
 _EXPORT_BEFORE_RE = re.compile(
     r"(?:^|[;&|\n])\s*export\s+(?:[A-Za-z_]\w*=" + _ENV_VALUE + r"\s+)*$")
@@ -603,24 +606,62 @@ def _env_assignments(prefix):
 
     獨立賦值敘述（`P=x &&`、`P=x;`，非 export）不改變測試語義，不算（G106）。
 
-    回傳 `None` 表示**判不準**：有一個值後面緊接著不是空白／`;&|`／字串尾的字元
-    （混合引號 `a"b"`、`'x'y`、未閉合的 `"u`），或值以反斜線結尾（`a\\ b`）。
-    這時值被截短了，截短的值會讓不同的 context 合併（`a"b"`、`a"c"` 都變成
-    `a`），所以不猜、不寫更大的解析器——呼叫端把原始前綴整段當不透明 context。
+    回傳 `(名稱, 值, 判不準)` 的清單。**先**用 main 的規則決定「這個賦值算不算進
+    context」（`export` 的賦值，或後面不是 `;&|` 換行的前綴賦值），**只有算進去的**
+    才看判不準——`echo "try n=1" &&`、`python -c "f(a, k=1)" &&`、`git commit -m
+    "retry=1" ;` 裡的 `k=v` 後面接的是分隔符，不是賦值，不得因為值後面黏著引號就
+    被當成 context（G110）。
+
+    判不準：值後面緊接著不是空白／`;&|`／字串尾的字元（混合引號 `a"b"`、`'x'y`、
+    未閉合的 `"u`），或值以反斜線結尾（`a\\ b`）。這時值被截短了，截短的值會讓不同的
+    context 合併（`a"b"`、`a"c"` 都變成 `a`），所以不猜、不寫更大的解析器——這時的
+    值改成「從值的開頭走到下一個沒被引住的空白或 `;&|`」那一段原文（`_word_end`），
+    呼叫端只雜湊**這一個賦值**，不碰前綴的其他部分。
+
+    ⚠ 「算不算進 context」的判斷一律用 main 的值範圍（`_OLD_ENV_VALUE_RE`，混合引號
+    的值也吃到空白為止）：互斥版的 `_ENV_VALUE` 在 `echo "x k=v" &&` 這種引號內文字
+    只會取到 `v`，後面是 `"` 而不是分隔符，拿它判斷會把 main 不算的賦值算進去。
     """
     out = []
     for m in ENV_PREFIX_RE.finditer(prefix):
         tail = prefix[m.end():m.end() + 1]
-        if (tail and not tail.isspace() and tail not in ";&|") or m.group(2).endswith("\\"):
-            return None
-        if _EXPORT_BEFORE_RE.search(prefix[:m.start(1)]):
-            out.append((m.group(1), m.group(2)))
-            continue
-        rest = prefix[m.end():].lstrip(" \t")
-        if rest and rest[0] in ";&|\n":
-            continue
-        out.append((m.group(1), m.group(2)))
+        doubtful = bool((tail and not tail.isspace() and tail not in ";&|")
+                        or m.group(2).endswith("\\"))
+        end = _OLD_ENV_VALUE_RE.match(prefix, m.start(2)).end() if doubtful else m.end()
+        if not _EXPORT_BEFORE_RE.search(prefix[:m.start(1)]):
+            rest = prefix[end:].lstrip(" \t")
+            if rest and rest[0] in ";&|\n":
+                continue
+        if doubtful:
+            out.append((m.group(1), prefix[m.start(2):_word_end(prefix, m.start(2))], True))
+        else:
+            out.append((m.group(1), m.group(2), False))
     return out
+
+
+def _word_end(text, i):
+    """從 `i` 起，到下一個沒被引住、沒被跳脫的空白或 `;&|` 為止的位置；引號沒閉合就走到字串尾。
+
+    只用來決定「判不準的賦值」要雜湊多長的原文：走過頭只會讓鍵多分一條（安全方向），
+    走不到才會讓不同的值合併，所以未閉合的引號寧可吃到尾。
+    """
+    quote = None
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if quote:
+            if ch == quote:
+                quote = None
+            elif ch == "\\" and quote == '"':
+                i += 1
+        elif ch in "\"'":
+            quote = ch
+        elif ch == "\\":
+            i += 1
+        elif ch.isspace() or ch in ";&|":
+            break
+        i += 1
+    return min(i, n)
 
 
 CONTEXT_SEP = " :: "
@@ -686,20 +727,20 @@ def run_context(prefix):
     # 從第一個 heredoc 記號切掉：`cd x && cat > f <<'EOF'` 的 `cd` 仍然保留，
     # 被丟掉的只有內文。
     prefix = prefix.split("<<", 1)[0]
-    assignments = _env_assignments(prefix)
-    if assignments is None:
-        # 判不準的值（見 `_env_assignments`）：原始前綴整段當不透明 context，
-        # 不截短、不合併。**用雜湊，不放原文**：`redact` 只認「值以引號開頭」或
-        # 「無引號的值」，`TOKEN=a"SECRET PAYLOAD"` 這種混合引號它會漏
-        # （實測 `TOKEN=*** PAYLOAD"`），而鍵會落地到狀態檔、再注入回對話。
-        # 雜湊不同＝前綴不同，且不含任何原文。
-        digest = hashlib.sha256(" ".join(prefix.split()).encode("utf-8")).hexdigest()
-        return "env#" + digest[:12]
     parts = []
     cds = CD_RE.findall(prefix)
     if cds:
         parts.append("cd=" + cds[-1].strip("\"'").replace("\\", "/").rstrip("/"))
-    for name, value in assignments:
+    for name, value, doubtful in _env_assignments(prefix):
+        if doubtful:
+            # 判不準的值（見 `_env_assignments`）：只雜湊**這一個賦值**（`NAME=` 加
+            # 原文），不截短、不合併，前綴的其他部分（echo、commit 訊息…）不進來。
+            # **用雜湊，不放原文**：`redact` 只認「值以引號開頭」或「無引號的值」，
+            # `TOKEN=a"SECRET PAYLOAD"` 這種混合引號它會漏（實測 `TOKEN=*** PAYLOAD"`），
+            # 而鍵會落地到狀態檔、再注入回對話。雜湊不同＝值不同，且不含任何原文。
+            digest = hashlib.sha256(("%s=%s" % (name, value)).encode("utf-8")).hexdigest()
+            parts.append("env#" + digest[:12])
+            continue
         masked = redact("%s=%s" % (name, value))
         head, _, shown = masked.partition("=")
         parts.append("%s=%s" % (head, shown.strip("\"'")))

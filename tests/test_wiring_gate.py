@@ -145,6 +145,16 @@ W14 原本的 fixture 寫的是 `repo: x`（別人的提示）卻斷言它必須
 那條測試把缺陷編碼成了預期行為，與 W22 直接對撞。已改為寫入自己的 repo 路徑，
 於是 W14／W22 成為一組「必須仍然做得到／必須被擋下」的配對。
 
+──────────────────────────────────────
+2026-10-18 11:49 GMT+8：擋下訊息收窄（v1.6.0，W4）
+──────────────────────────────────────
+閘只看最外層 pre-commit 去掉註解後有沒有直接提到宣告檔，看不出它「永遠不執行」，
+所以 W4 斷言的訊息由 "never runs the wiring guards" 改成
+"no direct reference to .claude/wiring-guards"（判定與擋放行為不變）。
+執行命令：python -m pytest tests/test_wiring_gate.py -q -p no:cacheprovider
+最後執行：2026-10-18 11:49 → 128 passed ✅（21.66s）
+突變：把 wiring_gate.py:833 的訊息改回舊說法 → `-k w4` 1 failed, 7 passed；還原 → 綠
+
 ✅ 已驗收（本檔涵蓋）
   W1-W7 判定與擋放行為；R1-R4 runner 行為（皆驅動真實檔案，非測試裡複製的邏輯）
   W22 寫入端的刪除路徑：不屬於自己的提示檔不得被刪
