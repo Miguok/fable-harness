@@ -58,7 +58,8 @@
        另一個值的綠不解這個值的紅；耗時：export 4000 個混合引號值、2 萬字元對抗輸入 `test_key` 各 < 1 秒
   G113 CHANGELOG 已知限制的 context 例子表（A／B 的 context 與同鍵／不同鍵）與機密遮蔽例子表，逐列對真正的
        `key_context(test_key(…))`、`test_key` 相等性與 `redact`；標記缺少或重複、標記內有非表格行、
-       缺分隔列、表頭或資料列欄數不對、沒有資料列，一律 fail、不 skip（解析器本身由 6 種異常＋1 個配對測試盯住）
+       缺分隔列、表頭文字或欄數不對、資料區有分隔列、資料列欄數不對、沒有資料列，一律 fail、不 skip
+       （解析器本身由 8 種異常＋1 個配對測試盯住）
   （G106～G111 隨「模擬 bash 斷字」一併移除；仍成立且與保留行為有關的斷言已搬進 G112 配對）
   （G98 S2 期望於 2026-10-06 fable 複審改為「綠→紅 計 1、不擋」）
 
@@ -69,6 +70,8 @@
 執行紀錄（G82～G113，依時間由新到舊；最上面是最新一次）
 ══════════════════════════════════════
 最後執行：2026-10-18 23:35 → 全套 tests/ → 594 passed, 3 skipped（含本檔）
+  2026-10-18 23:45 第 11 輪審查後：G113 解析器改為比對表頭文字（不只欄數）、資料區不得有分隔列；新增 2 種異常
+  （表頭對調、多一列分隔列），先紅（舊解析器讓兩者通過：第 11 輪正確性鏡頭 probe3 實測；主迴圈的先紅執行同時改了簽名，不能單獨作證），後綠 11 passed（-k g113）
   2026-10-18 23:35 第 10 輪審查後：G113 解析器補 6 種異常（缺分隔列、缺表頭、資料列缺開頭 |、清單項目、標記重複、表頭欄數）
   與 1 個配對；先紅 5 failed（缺表頭那例原本就因資料列為空而 fail）、後綠 9 passed（-k g113）
   2026-10-18 23:18 G113 新增（只讀 CHANGELOG、未改 goal_gate.py）：先紅——CHANGELOG 尚無 `<!-- G113:… -->` 標記，2 failed, 256 deselected
@@ -3100,17 +3103,18 @@ def test_g112_end_to_end_three_red_segments_with_different_sed_still_block(tmp_p
     assert _blocked(outs[2]), "第 3 段同一個目標的紅沒有被擋：%r" % (outs[2],)
 
 
-def _g113_table_rows(block, ncols):
+def _g113_table_rows(block, headers):
     """G113 輔助：取 CHANGELOG 兩個標記之間的表格資料列（去表頭與分隔列、去儲存格外層反引號）。
 
-    標記不存在、沒有資料列、欄數不對都 `pytest.fail`（不得 skip，否則文件改壞了守衛靜默變綠）。
+    標記不存在、沒有資料列、表頭文字或欄數不對都 `pytest.fail`（不得 skip，否則文件改壞了守衛靜默變綠）。
     """
     text = open(os.path.join(ROOT, "CHANGELOG.md"), encoding="utf-8").read()
-    return _g113_parse(text, block, ncols)
+    return _g113_parse(text, block, headers)
 
 
-def _g113_parse(text, block, ncols):
+def _g113_parse(text, block, headers):
     """G113 輔助：從 `text` 取表格資料列；規則同 `_g113_table_rows`。"""
+    ncols = len(headers)
     start, end = "<!-- G113:%s -->" % block, "<!-- /G113:%s -->" % block
     if text.count(start) != 1 or text.count(end) != 1:
         pytest.fail("CHANGELOG.md 標記 %s ／ %s 必須各出現一次" % (start, end))
@@ -3121,13 +3125,15 @@ def _g113_parse(text, block, ncols):
             pytest.fail("標記 %s 之間每一行都必須是表格列：%r" % (start, ln))
     if len(lines) < 2 or not re.fullmatch(r"\|(\s*:?-{3,}:?\s*\|){%d}" % ncols, lines[1]):
         pytest.fail("標記 %s 之間第 2 行必須是 %d 欄的分隔列：%r" % (start, ncols, lines[1:2]))
-    if len(lines[0].strip("|").split("|")) != ncols:
-        pytest.fail("標記 %s 的表頭欄數不是 %d：%r" % (start, ncols, lines[0]))
+    if [c.strip() for c in lines[0].strip("|").split("|")] != list(headers):
+        pytest.fail("標記 %s 的表頭必須是 %r：%r" % (start, list(headers), lines[0]))
     data = lines[2:]  # 第 0 列表頭、第 1 列分隔
     if not data:
         pytest.fail("CHANGELOG.md 標記 %s 之間沒有資料列" % start)
     rows = []
     for ln in data:
+        if re.fullmatch(r"\|(\s*:?-{3,}:?\s*\|)+", ln):
+            pytest.fail("標記 %s 的資料區不能有分隔列：%r" % (start, ln))
         cells = [c.strip() for c in ln.strip().strip("|").split("|")]
         if len(cells) != ncols:
             pytest.fail("欄數 %d != %d：%r" % (len(cells), ncols, ln))
@@ -3138,7 +3144,7 @@ def _g113_parse(text, block, ncols):
 
 def test_g113_changelog_context_examples_match_the_real_functions():
     """G113：CHANGELOG 已知限制的 context 例子表，逐列對真正的 `key_context(test_key(…))` 與鍵相等性。"""
-    rows = _g113_table_rows("context", 5)
+    rows = _g113_table_rows("context", ["指令 A", "指令 B", "A 的 context", "B 的 context", "鍵"])
     for a, b, ctx_a, ctx_b, same in rows:
         if same not in ("同鍵", "不同鍵"):
             pytest.fail("「鍵」欄只能是 同鍵／不同鍵：%r" % (same,))
@@ -3152,7 +3158,7 @@ def test_g113_changelog_context_examples_match_the_real_functions():
 
 def test_g113_changelog_redaction_examples_match_the_real_function():
     """G113：CHANGELOG 已知限制的機密遮蔽例子表，逐列對真正的 `redact`。"""
-    for raw, redacted in _g113_table_rows("redact", 2):
+    for raw, redacted in _g113_table_rows("redact", ["輸入", "遮蔽後"]):
         assert gg.redact(raw) == redacted, (raw, gg.redact(raw))
 
 
@@ -3166,13 +3172,16 @@ _G113_OK = ("<!-- G113:t -->\n| A | B |\n|---|---|\n| `a` | `b` |\n| `c` | `d` |
     _G113_OK.replace("| `a` | `b` |", "- | `a` | `b` |"),                  # 資料列被改成清單項目
     _G113_OK + _G113_OK,                                                   # 同名標記出現兩次
     _G113_OK.replace("| A | B |", "| A | B | C |"),                        # 表頭欄數不對
-], ids=["no-separator", "no-header", "row-without-pipe", "list-item", "duplicate-marker", "header-cols"])
+    _G113_OK.replace("| A | B |", "| B | A |"),                            # 表頭欄位對調
+    _G113_OK.replace("| `c` | `d` |", "|---|---|"),                        # 資料區多一列分隔列
+], ids=["no-separator", "no-header", "row-without-pipe", "list-item", "duplicate-marker", "header-cols",
+        "header-swapped", "extra-separator"])
 def test_g113_parser_fails_on_malformed_tables(text):
     """G113 解析器：表格格式異常一律 fail——不然壞掉的那一列被略過，文件裡的錯例子帶著綠燈進版控。"""
     with pytest.raises(pytest.fail.Exception):
-        _g113_parse(text, "t", 2)
+        _g113_parse(text, "t", ["A", "B"])
 
 
 def test_g113_parser_pair_reads_a_well_formed_table():
     """G113 解析器配對：格式正確的表照常讀出每一列（不是「什麼都 fail」）。"""
-    assert _g113_parse(_G113_OK, "t", 2) == [["a", "b"], ["c", "d"]]
+    assert _g113_parse(_G113_OK, "t", ["A", "B"]) == [["a", "b"], ["c", "d"]]
