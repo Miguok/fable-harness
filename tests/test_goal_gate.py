@@ -35,7 +35,8 @@
   G88 跨回合：前一回合記下的紅，被下一回合只差輸出旗標的綠解掉（配對：-k 不同不解）
   G89 壞掉的 `counted`（字串／dict／混型 list）不得關掉閘，且被正規化成字串 list
   G90 權威綠收束時，其之前的紅 id 要記進 `counted`，之後同回合的新紅不得讓它復活（缺口 A）
-  G91 `counted` 裁切不得淘汰目前回合的 id；上限可由 FABLE_GOAL_MAX_COUNTED 調（缺口 B）
+  G91 `counted` 裁切不得淘汰目前回合每個鍵的最後一筆 id；上限是模組常數 MAX_COUNTED_IDS
+      （測試在載入的模組上調整，不讀環境變數；配對：環境變數設了也不生效）（缺口 B）
   G92 「是不是 pytest」看 token、不分大小寫；`go test ./pytest_helpers/...` 的 -v 不剝（缺口 C）
   G93 格式旗標去外層引號再比；`-r` 只認報告字元，`-rootdir` 不剝（缺口 D）
   G94 同回合同一條指令紅兩次（不同管線尾巴、不同 id）只計 1——釘住既有設計（缺口 E）
@@ -52,15 +53,31 @@
   G107 heredoc 內文的 pytest 字樣不得起算鍵；配對：一般指令鍵不變、無測試指令的 heredoc 不是執行
   G104 權威綠門檻是「每個 context 自己的已計紅」，不是全域最大值（MG-14）；配對：權威綠在已計紅之前不收束
   G103 權威綠夾在「已計的紅」與「新紅」之間要收束（H2 同回合、H4 跨回合）；無權威綠／權威綠在已計紅之前仍爬梯（配對）
+  G108 env 前綴 `export V0=… Vn=…; …` 的 `test_key` 成本不隨賦值數指數成長（n＝10～80、單／雙／裸／混合四種值形）；
+       單引號、雙引號、裸值、空值、多賦值的鍵與修前逐字相同；混合引號／黏字元／未閉合／跳脫的值不合併、仍遮蔽機密
+  G109 沒收尾的 `<<`（`std::cout << x`、位移）不得讓 `test_key` 成本與 `<<` 個數成平方；重寫後與原本的 HEREDOC_RE 逐字相同
   （G98 S2 期望於 2026-10-06 fable 複審改為「綠→紅 計 1、不擋」）
 
 執行命令：
   cd <repo> && python -m pytest tests/test_goal_gate.py -v
 
 ══════════════════════════════════════
-執行紀錄（G82～G107，依時間由新到舊；最上面是最新一次）
+執行紀錄（G82～G109，依時間由新到舊；最上面是最新一次）
 ══════════════════════════════════════
-最後執行：2026-10-06 14:42 → 207 passed（G105～G107 實作完成：權威比對剝格式旗標、context 只認 export
+最後執行：2026-10-18 11:11 → 256 passed（G108～G109 實作完成＋G91 改調模組常數；
+  goal_gate.py：`_ENV_VALUE` 三選項互斥、判不準的值走不透明 context（雜湊）、`strip_heredoc_bodies`
+  改一次掃描、`FABLE_GOAL_MAX_COUNTED` 改成常數 `MAX_COUNTED_IDS=512`）
+  量測（同一組輸入，修前 → 修後，單位秒，`test_key`）：
+    export 20 個賦值（單／雙引號）0.52／0.45 → 0.0005；40、80 個：修前 >5 秒不結束 → 0.0006／0.0013
+    `'x << shift\n'*1000`（11 KB）0.47 → 0.005；`std::cout << x;`×600（9.6 KB）0.047 → 0.003
+    本檔 G109 輸入（33、32、21 KB）：修前 5.7（repeat-shift）、0.77（repeat-cout）、2.63（distinct-words）→ 全 < 0.5
+2026-10-18 先紅：只寫測試、未改 goal_gate.py → 修前確認紅 11 條（G108 不合併 3 列、G108 環境變數上限 1 條、
+  G108 計時 single／double n=20 兩條與 single n=40／80 兩條各逾時 30 秒、G109 計時 3 列）；
+  G108 計時 double n=40／80 因單次 110 秒上限未逐條實跑（修前 bench 同為 >5 秒逾時）；
+  鍵不變 20 列與 G109 逐字比對（4000 筆、648 筆有作用）修前即綠＝行為對照，不是新行為。
+  G109 逐字比對第一次對修後碼翻紅：原正則的「\\w+」會退回較短的字（`<<EOF2` 被 `EOF` 一行收尾），已照原行為保留；
+  G108 機密遮蔽第一次翻紅：`redact` 對 `TOKEN=a"SECRET PAYLOAD"` 漏遮（`TOKEN=*** PAYLOAD"`），改用雜湊。
+2026-10-06 14:42 → 207 passed（G105～G107 實作完成：權威比對剝格式旗標、context 只認 export
   與緊接命令的賦值、判斷前切掉 heredoc 內文；暫存複本變異 MG-21～MG-26 六格各自翻紅）
 2026-10-06 14:11 → 6 failed, 201 passed（補 G105～G107 只寫測試、未改 goal_gate.py）
 2026-10-06 14:11 補 G105～G107（fable 複審三個誤擋缺陷）：預期紅 6 條（G105 兩列、G106 兩條、
@@ -218,8 +235,11 @@ G9 的期望隨之反轉（提 id 仍要擋）。文件與程式不一致時，�
   兩種 block 尚未在真實 session 觸發過。解鎖條件＝連續兩次紅燈後觀察它是否擋下收工。
 """
 import atexit
+import io
 import json
 import os
+import random
+import re
 import shutil
 import subprocess
 import sys
@@ -2430,20 +2450,32 @@ def test_g90_authoritative_green_marks_earlier_reds_as_counted(tmp_path):
     assert not _blocked(out)
 
 
-def test_g91_counted_trim_keeps_ids_of_the_current_turn(tmp_path):
+def _run_gate_in_process(repo, entries, monkeypatch, capsys):
+    """在**已載入的模組** `gg` 上跑一次 Stop（不開子行程），讓測試能調模組常數。"""
+    tp = repo / "transcript.jsonl"
+    tp.write_text("".join(json.dumps(e, ensure_ascii=False) + "\n" for e in entries),
+                  encoding="utf-8", newline="")
+    monkeypatch.chdir(repo)
+    monkeypatch.setattr(sys, "stdin",
+                        io.StringIO(json.dumps({"transcript_path": str(tp)})))
+    assert gg.main() == 0
+    return capsys.readouterr().out.strip()
+
+
+def test_g91_counted_trim_keeps_ids_of_the_current_turn(tmp_path, monkeypatch, capsys):
     """G91（缺口 B）：`counted` 裁到上限時，不得淘汰仍在目前回合裡的 id。
 
-    FABLE_GOAL_MAX_COUNTED=3，一份 transcript 內 5 個不同鍵各紅一次；同一份
-    transcript 連續 Stop 兩次。若裁切淘汰了目前回合的 id，第二次 Stop 會重算，
-    某些鍵的次數變 2。斷言：每鍵次數仍是 1、沒擋、`counted` 至少 5 筆。
-    配對：G87（清單仍有上限、舊 id 會被裁）。
+    載入的模組上 `MAX_COUNTED_IDS=3`（常數，不讀環境變數），一份 transcript 內
+    5 個不同鍵各紅一次；同一份 transcript 連續 Stop 兩次。若裁切淘汰了目前回合的
+    id，第二次 Stop 會重算，某些鍵的次數變 2。斷言：每鍵次數仍是 1、沒擋、
+    `counted` 至少 5 筆。配對：G87（清單仍有上限、舊 id 會被裁）。
     """
     repo = _repo(tmp_path, {"streak": 0, "shelved": [], "red": {}})
     cmds = ["pytest tests/test_%s.py -q" % c for c in "abcde"]
     entries = _runs(*[(c, FAIL_OUT) for c in cmds])
-    env = {"FABLE_GOAL_MAX_COUNTED": "3"}
-    _run(repo, entries, env=env)
-    out = _run(repo, entries, env=env)
+    monkeypatch.setattr(gg, "MAX_COUNTED_IDS", 3)
+    _run_gate_in_process(repo, entries, monkeypatch, capsys)
+    out = _run_gate_in_process(repo, entries, monkeypatch, capsys)
     st = _state(repo)
     assert [st["red"].get(gg.test_key(c)) for c in cmds] == [1] * 5, st["red"]
     assert not _blocked(out)
@@ -2915,3 +2947,179 @@ def test_g107_pair_heredoc_mentioning_pytest_with_no_test_command_is_not_a_run(
     st = _state(repo)
     assert st.get("red", {}) == {}, "heredoc 內文被當成測試指令：%r" % (st.get("red"),)
     assert st.get("streak", 0) == 0
+
+
+# ── G108～G110：正則的最壞情況成本，與鍵的相容性 ─────────────────────────────
+
+_KEY_TIMING_CHILD = (
+    "import sys, time\n"
+    "sys.path.insert(0, sys.argv[1])\n"
+    "import goal_gate as gg\n"
+    "cmd = sys.stdin.read()\n"
+    "t = time.perf_counter()\n"
+    "gg.test_key(cmd)\n"
+    "print(time.perf_counter() - t)\n"
+)
+
+
+def _seconds_for_test_key(cmd):
+    """在獨立子行程（30 秒逾時）裡量 `test_key(cmd)` 的耗時；逾時直接判紅。"""
+    try:
+        r = subprocess.run([sys.executable, "-c", _KEY_TIMING_CHILD, _GATE_DIR],
+                           input=cmd, capture_output=True, encoding="utf-8",
+                           errors="replace", timeout=30)
+    except subprocess.TimeoutExpired:
+        pytest.fail("test_key 超過 30 秒（輸入長度 %d）" % len(cmd))
+    assert r.returncode == 0, r.stderr
+    return float(r.stdout)
+
+
+@pytest.mark.parametrize("n", [10, 20, 40, 80])
+@pytest.mark.parametrize("value", ["'on'", '"on"', "on", 'a"b"'],
+                         ids=["single", "double", "bare", "mixed"])
+def test_g108_env_prefix_cost_does_not_grow_exponentially(n, value):
+    """G108：`export V0=… V{n}=…; PYTHONPATH=src python -m pytest …` 的 `test_key` < 0.5 秒。
+
+    根因：`_ENV_VALUE` 的三個選項互相重疊（`'on'` 可被單引號分支吃，也可被裸值分支吃），
+    `_EXPORT_BEFORE_RE` 在尾端不匹配時每多一個賦值就多一倍回溯。盯的是**類別**：
+    三種值形、n＝10～80 逐級增加；只測某一筆夠快抓不到指數成長。
+    """
+    body = " ".join("V%d=%s" % (i, value) for i in range(n + 1))
+    cmd = "export %s; PYTHONPATH=src python -m pytest tests -q" % body
+    elapsed = _seconds_for_test_key(cmd)
+    assert elapsed < 0.5, "n=%d %s：%.2f 秒" % (n, value, elapsed)
+
+
+@pytest.mark.parametrize("cmd,expected", [
+    ("A='x y' pytest tests -q", "A=x y :: pytest tests -q"),
+    ('A="x y" pytest tests -q', "A=x y :: pytest tests -q"),
+    ("A=x pytest tests -q", "A=x :: pytest tests -q"),
+    ("A= pytest tests -q", "A= :: pytest tests -q"),
+    ('A="" pytest tests -q', "A= :: pytest tests -q"),
+    ("A='' pytest tests -q", "A= :: pytest tests -q"),
+    ("A=1 B='two words' C=\"three words\" D= pytest tests -q",
+     "A=1 B=two words C=three words D= :: pytest tests -q"),
+    ("export A=1; pytest tests -q", "A=1 :: pytest tests -q"),
+    ("export A='1 2' B=\"3 4\" C=5; pytest tests -q",
+     "A=1 2 B=3 4 C=5 :: pytest tests -q"),
+    ("export A=1 && pytest tests -q", "A=1 :: pytest tests -q"),
+    ("P=x && pytest tests -q", "pytest tests -q"),
+    ("P='x y'; pytest tests -q", "pytest tests -q"),
+    ("cd pkg && A=1 pytest tests -q", "cd=pkg A=1 :: pytest tests -q"),
+    ("export V0='on' V1='on'; PYTHONPATH=src python -m pytest tests -q",
+     "V0=on V1=on PYTHONPATH=src :: pytest tests -q"),
+    ('export V0="on" V1="on"; PYTHONPATH=src python -m pytest tests -q',
+     "V0=on V1=on PYTHONPATH=src :: pytest tests -q"),
+    ("export V0=on V1=on; PYTHONPATH=src python -m pytest tests -q",
+     "V0=on V1=on PYTHONPATH=src :: pytest tests -q"),
+    ("MODE=legacy pytest x", "MODE=legacy :: pytest x"),
+    ("MODE=new pytest x", "MODE=new :: pytest x"),
+    ("TOKEN=abc pytest tests -q", "TOKEN=*** :: pytest tests -q"),
+    ('TOKEN="Bearer abc def" pytest tests -q', "TOKEN=*** :: pytest tests -q"),
+])
+def test_g108_keys_of_plain_env_values_are_unchanged(cmd, expected):
+    """G108 鍵不變：單引號、雙引號、裸值、空值、多個賦值、export 的鍵與修改前逐字相同。
+
+    期望值是在修改前的 goal_gate.py（main `7e8c7f4`）上跑 `test_key` 記下的。
+    """
+    assert gg.test_key(cmd) == expected, gg.test_key(cmd)
+
+
+@pytest.mark.parametrize("a,b", [
+    ('A=a"b" pytest tests -q', 'A=a"c" pytest tests -q'),
+    ("A='x'y pytest tests -q", "A='x'z pytest tests -q"),
+    ('A="u1 pytest tests -q', 'A="u2 pytest tests -q'),
+    ("A=a\\ b pytest tests -q", "A=a\\ c pytest tests -q"),
+    ('A="x"y pytest tests -q', 'A="x"z pytest tests -q'),
+    ('cd p && A=a"b" pytest tests -q', 'cd p && A=a"c" pytest tests -q'),
+])
+def test_g108_doubtful_env_values_are_not_merged(a, b):
+    """G108 不合併：混合引號、引號後黏字元、未閉合引號、反斜線跳脫 → 不同值不同鍵。
+
+    判不準的值（互斥後會被截短成 `A=a`）把原始前綴整段當不透明 context，
+    不截短，所以 `a"b"` 與 `a"c"` 不會落到同一個 context 而互相解紅。
+    """
+    ka, kb = gg.test_key(a), gg.test_key(b)
+    assert ka != kb, "不同的值被合併成同一個鍵：%r" % (ka,)
+    assert gg.key_context(ka) != gg.key_context(kb)
+    assert gg.strip_context(ka) == gg.strip_context(kb) == "pytest tests -q"
+
+
+def test_g108_doubtful_env_values_are_still_masked():
+    """G108：不透明 context 不含任何原文（鍵會落地到狀態檔、再注入回對話）。
+
+    `redact` 對混合引號 `TOKEN=a"SECRET PAYLOAD"` 會漏（只遮到 `TOKEN=*** PAYLOAD"`），
+    所以不透明 context 用雜湊，不放原文。
+    """
+    key = gg.test_key('TOKEN=a"SECRETPAYLOAD" pytest tests -q')
+    assert "SECRETPAYLOAD" not in key, key
+    key = gg.test_key('TOKEN=a"SECRET PAYLOAD" pytest tests -q')
+    assert "SECRET" not in key and "PAYLOAD" not in key, key
+
+
+def test_g108_doubtful_value_red_is_not_closed_by_a_different_value_green(tmp_path):
+    """G108 端到端：`A=a"b"` 的紅，不得被 `A=a"c"` 的綠解掉（實際走 Stop 流程）。"""
+    red, green = 'A=a"b" pytest t.py -q', 'A=a"c" pytest t.py -q'
+    repo = _repo(tmp_path, {"streak": 0, "shelved": [], "red": {}})
+    _run(repo, _runs((red, FAIL_OUT)))
+    _run(repo, _runs((green, PASS_OUT)))
+    assert list(_state(repo)["red"]) == [gg.test_key(red)], _state(repo)["red"]
+
+
+def test_g108_env_var_for_the_counted_cap_is_ignored(tmp_path):
+    """G108/G91 配對：`FABLE_GOAL_MAX_COUNTED` 不再被讀取，上限固定為模組常數（512）。
+
+    種 5 個舊 id、跑 5 個新紅；舊碼讀環境變數 3 會把 5 個舊 id 裁掉（剩 5），
+    常數 512 則全留（10）。
+    """
+    old = ["toolu_old%04d" % i for i in range(5)]
+    repo = _repo(tmp_path, {"streak": 0, "red": {}, "shelved": [], "counted": old})
+    cmds = ["pytest tests/test_%s.py -q" % c for c in "abcde"]
+    _run(repo, _runs(*[(c, FAIL_OUT) for c in cmds]),
+         env={"FABLE_GOAL_MAX_COUNTED": "3"})
+    assert len(_state(repo)["counted"]) == 10, _state(repo)["counted"]
+
+
+@pytest.mark.parametrize("name,cmd", [
+    ("repeat-shift", "x << shift\n" * 3000 + "pytest -q"),
+    ("repeat-cout", "cat > a.cpp <<\\EOF\n" + "std::cout << x;\n" * 2000 + "pytest -q"),
+    ("distinct-words", "".join("x << w%d\n" % i for i in range(2000)) + "pytest -q"),
+], ids=["repeat-shift", "repeat-cout", "distinct-words"])
+def test_g109_unterminated_heredoc_markers_cost_is_not_quadratic(name, cmd):
+    """G109：很多個沒收尾的 `<<`（C++ 的 `std::cout << x`、位移運算）→ `test_key` < 0.5 秒。
+
+    根因：`HEREDOC_RE` 對每個 `<<` 都用 `.*?` 掃到字串尾去找結束記號，k 個 `<<`
+    × n 個字元 → O(k·n)。修前量測：11 KB／1000 個 `<<` 約 0.47 秒，33 KB 約 4 秒。
+    三種形狀：同一個字、同一個字加 `\\EOF` 起手、每個 `<<` 後面字都不同。
+    """
+    elapsed = _seconds_for_test_key(cmd)
+    assert elapsed < 0.5, "%s（%d 字元）：%.2f 秒" % (name, len(cmd), elapsed)
+
+
+# 參照實作：修改前的 HEREDOC_RE 原文，只當黑箱比對的標準答案（不是被測對象）。
+_OLD_HEREDOC_RE = re.compile(
+    r"(<<-?[ \t]*(['\"]?)(\w+)\2[^\n]*\n)(.*?)(^[ \t]*\3[ \t]*$)",
+    re.DOTALL | re.MULTILINE)
+
+
+def test_g109_strip_heredoc_bodies_matches_the_original_regex():
+    """G109 行為不變：重寫後的 `strip_heredoc_bodies` 與原本的單一正則逐字相同。
+
+    隨機組合起始行（`<<`、`<<-`、`<<<`、引號、同一行多個 `<<`）、結束記號（縮排、尾端空白、
+    近似但不同的字）、內文與 `\\r\\n` 4000 筆（固定種子），同一輸入餵兩邊。
+    另斷言至少 500 筆真的有 heredoc 被切（標準答案不是空轉）。
+    """
+    rnd = random.Random(20261018)
+    lines = ["x << EOF", "cat <<'EOF'", "cat <<-EOF", 'cat << "EOF"', "cat <<EOF2",
+             "EOF", "  EOF", "EOF  ", "\tEOF", "EOFX", "EOF2", "body line", "pytest -q",
+             "<<<EOF", "a <<EOF <<EOF2", "y <<", "'EOF'", "", "std::cout << x;",
+             "cat <<'EO", 'cat <<"EOF']
+    changed = 0
+    for _ in range(4000):
+        eol = rnd.choice(["\n", "\n", "\r\n"])
+        s = eol.join(rnd.choice(lines) for _ in range(rnd.randint(1, 8)))
+        s += rnd.choice(["", eol])
+        want = _OLD_HEREDOC_RE.sub(lambda m: m.group(1) + m.group(5), s)
+        assert gg.strip_heredoc_bodies(s) == want, repr(s)
+        changed += want != s
+    assert changed >= 500, "標準答案只在 %d 筆有作用，比對沒有咬力" % changed

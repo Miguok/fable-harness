@@ -39,6 +39,8 @@
       任何錯誤一律 fail-open（exit 0 無輸出）——gate 絕不可弄壞 session。
 測試：tests/test_goal_gate.py（fail-then-pass + 突變已驗證）。
 """
+import bisect
+import hashlib
 import json
 import os
 import re
@@ -500,13 +502,52 @@ def strip_format_flags(run):
     return " ".join(out)
 
 
-HEREDOC_RE = re.compile(r"(<<-?[ \t]*(['\"]?)(\w+)\2[^\n]*\n)(.*?)(^[ \t]*\3[ \t]*$)",
-                        re.DOTALL | re.MULTILINE)
+HEREDOC_START_RE = re.compile(r"(<<-?[ \t]*(['\"]?)(\w+)\2[^\n]*\n)")
 
 
 def strip_heredoc_bodies(command):
-    """切掉 heredoc 內文，保留起始行與結束記號（G107）。沒有 heredoc 則原樣回傳。"""
-    return HEREDOC_RE.sub(lambda m: m.group(1) + m.group(5), command)
+    """切掉 heredoc 內文，保留起始行與結束記號（G107）。沒有 heredoc 則原樣回傳。
+
+    結束記號＝起始行之後第一個「去掉頭尾空白／tab 後等於該字」的整行。
+
+    ⚠ 原本是單一正則 `(起始行)(.*?)(^[ \\t]*字[ \\t]*$)`：每個沒收尾的 `<<`
+    （`std::cout << x`、位移運算）都用 `.*?` 掃到字串尾才放棄，k 個 `<<` ×
+    n 個字元＝O(k·n)。實測 11 KB／1000 個 `<<` 0.47 秒，33 KB 5.7 秒，而每個
+    Stop 對回合裡每一條指令都要算一次。改成先一次掃出「每個字出現在哪些行首」，
+    每個起始行用二分法查第一個在它之後的行首；找不到就照原本的行為往下個字元試。
+    結果與原正則逐字相同（G109 用原正則當標準答案比對）。
+    """
+    m = HEREDOC_START_RE.search(command)
+    if not m:
+        return command
+    line_starts = {}
+    pos = 0
+    for line in command.split("\n"):
+        line_starts.setdefault(line.strip(" \t"), []).append(pos)
+        pos += len(line) + 1
+    out, copied = [], 0
+    while m:
+        word = m.group(3)
+        # 沒加引號時，原正則的 `\w+` 在找不到結束記號時會退回較短的字（`[^\n]*` 吃掉
+        # 剩下的字元）：`<<EOF2` 之後只有 `EOF` 一行也算收尾。那不是 shell 的語意，
+        # 但為了與原行為逐字相同（G109）照樣保留，由長到短各試一次。
+        for w in ([word] if m.group(2) else
+                  [word[:n] for n in range(len(word), 0, -1)]):
+            starts = line_starts.get(w, ())
+            i = bisect.bisect_left(starts, m.end())
+            if i < len(starts):
+                break
+        else:
+            m = HEREDOC_START_RE.search(command, m.start() + 1)
+            continue
+        end = command.find("\n", starts[i])
+        end = len(command) if end < 0 else end
+        out.append(command[copied:m.end()])
+        out.append(command[starts[i]:end])
+        copied = end
+        m = HEREDOC_START_RE.search(command, end)
+    out.append(command[copied:])
+    return "".join(out)
 
 
 def test_key(command):
@@ -546,7 +587,12 @@ def test_key(command):
 
 
 CD_RE = re.compile(r"(?:^|[;&|]|\bthen\b|\bdo\b)\s*cd\s+(\"[^\"]*\"|'[^']*'|\S+)")
-_ENV_VALUE = r"(?:\"[^\"]*\"|'[^']*'|[^\s;&|]*)"
+# 三個選項**互斥**（第三個不吃引號字元）：值的第一個字元是 `"` 只能走第一支、
+# `'` 只能走第二支。原本第三支 `[^\s;&|]*` 也吃引號，`'on'` 有兩條路可走，
+# `_EXPORT_BEFORE_RE` 尾端不匹配時每多一個賦值就多一倍回溯（20 個賦值 0.5 秒、
+# 40 個以上不會結束，G108）。代價：`a"b"` 這類混合引號的值只取到 `a`，
+# 由 `_env_assignments` 判成「判不準」，不拿截短的值（見該函式）。
+_ENV_VALUE = r"(?:\"[^\"]*\"|'[^']*'|[^\s;&|\"']*)"
 ENV_PREFIX_RE = re.compile(r"(?:^|[;&|]|\s)([A-Za-z_][A-Za-z0-9_]*)=(" + _ENV_VALUE + ")")
 _EXPORT_BEFORE_RE = re.compile(
     r"(?:^|[;&|\n])\s*export\s+(?:[A-Za-z_]\w*=" + _ENV_VALUE + r"\s+)*$")
@@ -556,9 +602,17 @@ def _env_assignments(prefix):
     """context 用的環境變數賦值：`export` 的賦值，或緊接命令的前綴賦值。
 
     獨立賦值敘述（`P=x &&`、`P=x;`，非 export）不改變測試語義，不算（G106）。
+
+    回傳 `None` 表示**判不準**：有一個值後面緊接著不是空白／`;&|`／字串尾的字元
+    （混合引號 `a"b"`、`'x'y`、未閉合的 `"u`），或值以反斜線結尾（`a\\ b`）。
+    這時值被截短了，截短的值會讓不同的 context 合併（`a"b"`、`a"c"` 都變成
+    `a`），所以不猜、不寫更大的解析器——呼叫端把原始前綴整段當不透明 context。
     """
     out = []
     for m in ENV_PREFIX_RE.finditer(prefix):
+        tail = prefix[m.end():m.end() + 1]
+        if (tail and not tail.isspace() and tail not in ";&|") or m.group(2).endswith("\\"):
+            return None
         if _EXPORT_BEFORE_RE.search(prefix[:m.start(1)]):
             out.append((m.group(1), m.group(2)))
             continue
@@ -632,11 +686,20 @@ def run_context(prefix):
     # 從第一個 heredoc 記號切掉：`cd x && cat > f <<'EOF'` 的 `cd` 仍然保留，
     # 被丟掉的只有內文。
     prefix = prefix.split("<<", 1)[0]
+    assignments = _env_assignments(prefix)
+    if assignments is None:
+        # 判不準的值（見 `_env_assignments`）：原始前綴整段當不透明 context，
+        # 不截短、不合併。**用雜湊，不放原文**：`redact` 只認「值以引號開頭」或
+        # 「無引號的值」，`TOKEN=a"SECRET PAYLOAD"` 這種混合引號它會漏
+        # （實測 `TOKEN=*** PAYLOAD"`），而鍵會落地到狀態檔、再注入回對話。
+        # 雜湊不同＝前綴不同，且不含任何原文。
+        digest = hashlib.sha256(" ".join(prefix.split()).encode("utf-8")).hexdigest()
+        return "env#" + digest[:12]
     parts = []
     cds = CD_RE.findall(prefix)
     if cds:
         parts.append("cd=" + cds[-1].strip("\"'").replace("\\", "/").rstrip("/"))
-    for name, value in _env_assignments(prefix):
+    for name, value in assignments:
         masked = redact("%s=%s" % (name, value))
         head, _, shown = masked.partition("=")
         parts.append("%s=%s" % (head, shown.strip("\"'")))
@@ -1108,12 +1171,15 @@ def one_line(value, limit):
     """
     text = str(value if value is not None else "")
     return " ".join(text.split())[:limit]
-# `counted`（已計過的紅執行 id）軟性保留上限，目前回合的 id 不受此限；可用 FABLE_GOAL_MAX_COUNTED 調（G91）。
-MAX_COUNTED_IDS = _env_int("FABLE_GOAL_MAX_COUNTED", "512")
+# `counted`（已計過的紅執行 id）軟性保留上限：超過時先裁最舊的、不在 `current`
+# （目前回合每個鍵的最後一筆 id）裡的 id。是模組常數，不讀環境變數；測試在載入的
+# 模組上調它（G91）。
+MAX_COUNTED_IDS = 512
 
 
 def _trim_counted(ids, current):
-    """超過上限時先裁最舊的、**不在目前回合**的 id；目前回合的 id 一律保留。"""
+    """超過上限時先裁最舊的、**不在 `current`** 的 id；`current`（呼叫端傳入的是目前
+    回合每個鍵的最後一筆 id，不是回合內所有紅執行的 id）一律保留。"""
     excess = len(ids) - MAX_COUNTED_IDS
     out = []
     for i in ids:
@@ -1414,7 +1480,8 @@ def run_stop(data, root):
     # id 全域唯一，只需記得目前回合可能被重讀到的範圍，故設上限、超過裁舊的。
     # 根因（sol 內審 2026-10-06 缺口 B、G91）：原本一律 `[-MAX:]` 只留最新 N 筆，
     # 目前回合紅執行多於 N 時，回合內的 id 也被裁掉，下一次 Stop 重讀就重算。
-    # 現在先裁**不在目前回合**的 id，目前回合的 id 一律保留。
+    # 現在先裁不在 `last_ids`（目前回合每個鍵的最後一筆 id）裡的 id，那些一律保留；
+    # 同一個鍵在回合內的較早幾筆紅執行不在保護範圍內，超過上限時一樣會被裁。
     state["counted"] = _trim_counted(counted + new_ids, set(last_ids.values()))
 
     if not fresh_red:
