@@ -94,7 +94,7 @@ The current version is also kept in [VERSION](VERSION).
   不保證受到保護，不能一概宣稱這些資料不會進入版本控制。
 
 - **狀態檔的 `streak` 欄可能失真**：任一 context 被權威驗證的綠收束、另一個目標轉綠、或某一項被擱置時，
-  `.fable/goal_state.json` 的 `streak` 會歸零，即使其他鍵仍有已計紅；擋下訊息與擱置清單用各鍵自己的次數，
+  `.fable/goal_state.json` 的 `streak` 會歸零，即使其他鍵仍有已計紅；另一個鍵出現新紅時，它也會被改寫成那個鍵的次數；擋下訊息與擱置清單用各鍵自己的次數，
   實際計數與是否阻擋不受影響。
 
 ### Changed

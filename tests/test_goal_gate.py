@@ -58,8 +58,8 @@
        另一個值的綠不解這個值的紅；耗時：export 4000 個混合引號值、2 萬字元對抗輸入 `test_key` 各 < 1 秒
   G113 CHANGELOG 已知限制的 context 例子表（A／B 的 context 與同鍵／不同鍵）與機密遮蔽例子表，逐列對真正的
        `key_context(test_key(…))`、`test_key` 相等性與 `redact`；標記缺少或重複、標記內有非表格行、
-       缺分隔列、表頭文字或欄數不對、資料區有分隔列、資料列欄數不對、沒有資料列，一律 fail、不 skip
-       （解析器本身由 8 種異常＋1 個配對測試盯住）
+       表頭或分隔列不是逐字的固定格式、資料列不是 n 個非空反引號儲存格、沒有資料列，一律 fail、不 skip
+       （白名單解析器；由 11 種異常＋1 個配對測試盯住）
   （G106～G111 隨「模擬 bash 斷字」一併移除；仍成立且與保留行為有關的斷言已搬進 G112 配對）
   （G98 S2 期望於 2026-10-06 fable 複審改為「綠→紅 計 1、不擋」）
 
@@ -69,7 +69,10 @@
 ══════════════════════════════════════
 執行紀錄（G82～G113，依時間由新到舊；最上面是最新一次）
 ══════════════════════════════════════
-最後執行：2026-10-18 23:35 → 全套 tests/ → 594 passed, 3 skipped（含本檔）
+最後執行：2026-10-18 23:58 → 全套 tests/ → 599 passed, 3 skipped；本檔 270 passed
+  2026-10-18 23:58 第 12 輪審查後：G113 解析器改成白名單（表頭與分隔列逐字、資料列整列 fullmatch 非空反引號格）；
+  新增 3 種異常（空儲存格、沒有資料列、資料列欄數），空儲存格那例對舊解析器先紅（1 failed），其餘兩例舊解析器本來就 fail；
+  改後 -k g113 14 passed
   2026-10-18 23:45 第 11 輪審查後：G113 解析器改為比對表頭文字（不只欄數）、資料區不得有分隔列；新增 2 種異常
   （表頭對調、多一列分隔列），先紅（舊解析器讓兩者通過：第 11 輪正確性鏡頭 probe3 實測；主迴圈的先紅執行同時改了簽名，不能單獨作證），後綠 11 passed（-k g113）
   2026-10-18 23:35 第 10 輪審查後：G113 解析器補 6 種異常（缺分隔列、缺表頭、資料列缺開頭 |、清單項目、標記重複、表頭欄數）
@@ -3113,33 +3116,24 @@ def _g113_table_rows(block, headers):
 
 
 def _g113_parse(text, block, headers):
-    """G113 輔助：從 `text` 取表格資料列；規則同 `_g113_table_rows`。"""
-    ncols = len(headers)
+    """G113 輔助：從 `text` 取表格資料列；規則同 `_g113_table_rows`。
+
+    白名單：只接受一種寫法——表頭與分隔列逐字相符，每列資料是 n 個「反引號包住、非空」的儲存格。
+    其他任何形狀一律 fail；不逐一列舉壞格式（逐一列舉的版本每輪審查都多找到一種漏網寫法）。
+    """
+    n = len(headers)
     start, end = "<!-- G113:%s -->" % block, "<!-- /G113:%s -->" % block
     if text.count(start) != 1 or text.count(end) != 1:
         pytest.fail("CHANGELOG.md 標記 %s ／ %s 必須各出現一次" % (start, end))
-    body = text.split(start, 1)[1].split(end, 1)[0]
-    lines = [ln.strip() for ln in body.splitlines() if ln.strip()]
-    for ln in lines:
-        if not ln.startswith("|"):
-            pytest.fail("標記 %s 之間每一行都必須是表格列：%r" % (start, ln))
-    if len(lines) < 2 or not re.fullmatch(r"\|(\s*:?-{3,}:?\s*\|){%d}" % ncols, lines[1]):
-        pytest.fail("標記 %s 之間第 2 行必須是 %d 欄的分隔列：%r" % (start, ncols, lines[1:2]))
-    if [c.strip() for c in lines[0].strip("|").split("|")] != list(headers):
-        pytest.fail("標記 %s 的表頭必須是 %r：%r" % (start, list(headers), lines[0]))
-    data = lines[2:]  # 第 0 列表頭、第 1 列分隔
-    if not data:
+    lines = [ln.strip() for ln in text.split(start, 1)[1].split(end, 1)[0].splitlines() if ln.strip()]
+    if lines[:2] != ["| " + " | ".join(headers) + " |", "|" + "---|" * n]:
+        pytest.fail("標記 %s 的表頭與分隔列必須是 %r：%r" % (start, headers, lines[:2]))
+    if len(lines) < 3:
         pytest.fail("CHANGELOG.md 標記 %s 之間沒有資料列" % start)
-    rows = []
-    for ln in data:
-        if re.fullmatch(r"\|(\s*:?-{3,}:?\s*\|)+", ln):
-            pytest.fail("標記 %s 的資料區不能有分隔列：%r" % (start, ln))
-        cells = [c.strip() for c in ln.strip().strip("|").split("|")]
-        if len(cells) != ncols:
-            pytest.fail("欄數 %d != %d：%r" % (len(cells), ncols, ln))
-        rows.append([c[1:-1] if len(c) >= 2 and c[0] == "`" and c[-1] == "`" else c
-                     for c in cells])
-    return rows
+    for ln in lines[2:]:
+        if not re.fullmatch(r"\|(?: `[^`|]+` \|){%d}" % n, ln):
+            pytest.fail("標記 %s 的資料列必須是 %d 個反引號儲存格：%r" % (start, n, ln))
+    return [re.findall(r"`([^`]+)`", ln) for ln in lines[2:]]
 
 
 def test_g113_changelog_context_examples_match_the_real_functions():
@@ -3174,8 +3168,11 @@ _G113_OK = ("<!-- G113:t -->\n| A | B |\n|---|---|\n| `a` | `b` |\n| `c` | `d` |
     _G113_OK.replace("| A | B |", "| A | B | C |"),                        # 表頭欄數不對
     _G113_OK.replace("| A | B |", "| B | A |"),                            # 表頭欄位對調
     _G113_OK.replace("| `c` | `d` |", "|---|---|"),                        # 資料區多一列分隔列
+    _G113_OK.replace("| `c` | `d` |", "| | |"),                            # 空儲存格
+    _G113_OK.replace("| `a` | `b` |\n| `c` | `d` |\n", ""),                # 沒有資料列
+    _G113_OK.replace("| `a` | `b` |", "| `a` | `b` | `x` |"),             # 資料列欄數不對
 ], ids=["no-separator", "no-header", "row-without-pipe", "list-item", "duplicate-marker", "header-cols",
-        "header-swapped", "extra-separator"])
+        "header-swapped", "extra-separator", "empty-cells", "no-data-rows", "row-cols"])
 def test_g113_parser_fails_on_malformed_tables(text):
     """G113 解析器：表格格式異常一律 fail——不然壞掉的那一列被略過，文件裡的錯例子帶著綠燈進版控。"""
     with pytest.raises(pytest.fail.Exception):
