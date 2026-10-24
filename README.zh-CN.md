@@ -4,7 +4,7 @@
 
 [English](README.en.md) &nbsp;·&nbsp; [繁體中文](README.md) &nbsp;·&nbsp; **简体中文** &nbsp;·&nbsp; [日本語](README.ja.md) &nbsp;·&nbsp; [한국어](README.ko.md)
 
-![Version: 1.6.0](https://img.shields.io/badge/version-1.6.0-blue.svg) &nbsp; ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
+![Version: 1.7.0](https://img.shields.io/badge/version-1.7.0-blue.svg) &nbsp; ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 
 ## 这是什么
 
@@ -22,7 +22,7 @@ Fable Harness 是一个小型工具包——几个 hook、一个 skill、几个�
 
 - **OODA 循环**——回答前，Claude 先收集证据（实际搜索/读取文件，不靠训练记忆瞎猜），把假设讲出来，把任务转成一个可验证的目标（「让它能跑」这种说法不够），然后小步修改、每一步都验证。
 - **多方对抗审查（adversarial review）**——这个工具包最具特色的机制。在采信一个重大结论之前（架构决策、根因判定、任何可能影响生产环境的结论），Claude 会**同时**派出三个独立的「反方」子代理，各自负责不同角度：**skeptic** 专找逻辑漏洞、**red-team** 专找安全与失效风险、**simplifier** 专找不必要的过度工程。三个视角里要过半「存活」（没被推翻），结论才算采信。
-- **模型分工**——推理、架构设计、根因分析留给当下主导的模型；写代码与重构交给 Sonnet；批量文件处理、搜索、文本整理交给 Haiku。用刚好合适的模型做刚好合适的事。
+- **模型分工**——推理、架构设计、根因分析留给当下主导的模型；写代码、重构、上网查资料交给 Sonnet；批量文件处理、仓库内搜码、格式转换交给 Haiku。用刚好合适的模型做刚好合适的事。
 - **省 token 是这套架构的副产品**——成本的节省是同一套架构自然带出来的，而不是外挂的功能。上面那套分级路由已经让贵模型的 token 只花在推理、把粗重工作推给便宜的模型；在这之上，对抗审查的三反方与 Explore 式搜索都跑在**独立子代理**里，各自握有一份干净的 context、只回收一段精简结论——过程中大量的中间 token 因此被丢弃，不会滚雪球累积进主对话。而这些子代理是**并行** fan-out、各自只带少量 context，而不是在一条越拉越长的对话里堆叠。这种「分级路由＋独立子代理」的形态，是业界公认能压低 LLM token 成本的做法——Fable 自己尚未做基准测量，所以这里讲的是「为什么会省」，而不是承诺某个百分比。
 - **完成定义（Definition of Done，TDD）**——只要改到实际逻辑，就要有自动化测试，并且证明「改之前测试会失败、改之后测试会通过」。单纯看输出顺不顺眼，或随手一个 `console.log`，都不算验证。
 - **诚实汇报**——任何汇报的第一句话就是实际结果（不是铺垫），失败就照实讲，不美化。

@@ -17,6 +17,7 @@
 四百多條。真的需要定位時，把 `--maxfail=1` 加上二分法就找得到。
 """
 import os
+import shutil
 
 import pytest
 
@@ -47,6 +48,21 @@ def pytest_configure(config):
     （2026-09-06 自查）。`pytest_configure` 早於收集，才蓋得住 import 期。
     """
     _BEFORE.append(_snapshot())
+    # 四個測試檔用 subprocess 起 `sh`／`bash`。從 PowerShell 跑時 PATH 沒有 Git 的 sh，
+    # 而 `bash` 解析到 WSL（C:\Windows\system32\bash.exe）——前者炸成 36 個 WinError 2，
+    # 後者安靜跑錯環境。這裡一次講清楚，不讓人去讀 36 個 traceback（2026-10-24 實測）。
+    # 只列舉（--co）不起程序，放行；Codex 外審 2026-10-24 指出無條件擋會連收集都做不了。
+    if config.option.collectonly:
+        return
+    if shutil.which("sh") is None:
+        pytest.exit("PATH 上沒有 sh：本 repo 的測試要在 Git Bash 下執行"
+                    "（PowerShell／cmd 的 PATH 沒有 Git 的 sh，且 bash 會解析到 WSL）。",
+                    returncode=2)
+    # sh 在、但 bash 先解析到 WSL 的 launcher（System32）也要擋：呼叫 bash 的測試會跑進 WSL。
+    bash = shutil.which("bash") or ""
+    if os.path.normcase(os.path.join("windows", "system32")) in os.path.normcase(bash):
+        pytest.exit("PATH 上的 bash 是 WSL（%s），不是 Git Bash：本 repo 的測試要在 Git Bash 下執行。"
+                    % bash, returncode=2)
 
 
 @pytest.fixture(scope="session", autouse=True)

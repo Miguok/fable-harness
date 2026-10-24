@@ -9,9 +9,9 @@
 
 | 任務性質 | model | 例子 |
 |---|---|---|
-| 邏輯推理、架構設計、根因分析、重大決策、抗辯裁決 | 當前模型（不指定 model） | 設計評估、bug 根因判定、judge panel |
-| 程式編寫、重構、bug 修復、測試撰寫 | `sonnet` | 實作功能、改測試、修 lint |
-| 檔案批次處理、文書編輯、資料搜尋、格式轉換、摘要 | `haiku` | Explore 搜碼、整理 log、改 README 措辭 |
+| 規劃、統籌、邏輯推理、架構設計、根因分析、驗收子代理交回的 diff、重大決策、抗辯裁決 | 當前模型（不指定 model） | 拆工作、設計評估、bug 根因判定、驗收 diff、judge panel |
+| 程式編寫、重構、bug 修復、測試撰寫、上網查資料、翻譯、需要判斷一致性的比對（跨檔反向引用、數字對帳、慣例比對） | `sonnet` | 實作功能、改測試、修 lint、查外部文件、翻譯文件、對帳 |
+| 結果能直接檢查對錯的純蒐集與粗活：分類、格式轉換、檔案批次處理、搜碼、整理資料 | `haiku` | Explore 找呼叫點、整理 log、轉換格式 |
 
 - 瑣碎單步操作（改一行、看一個檔）主迴圈直接做，不委派。
 - 抗辯三反方的 model 底線規則見協議 §5 與 adversarial-review skill（正本），此處不重複。
@@ -37,7 +37,7 @@
 ## 專案守則
 
 - 測試一律放 `tests/`，遵守全域 docstring 鐵則（四區塊 + 執行紀錄）。
-- hooks 腳本改動後必須重跑 `python -m pytest tests/ -v` 且綠燈才算完成。
+- hooks 腳本改動後必須重跑 `python -m pytest tests/ -v` 且綠燈才算完成。測試要在 Git Bash 下跑：PowerShell 的 PATH 沒有 `sh`，`bash` 會解析到 WSL（conftest 會直接擋下並說明）。
 - `.claude/hooks/.last_*` 是 hook 觸發 marker（e2e 測試用），不要手動改、不要進版控。
 - 佈署到全域（`C:\Users\user\.claude\`）前必須：本專案全部測試綠 + 用戶明確點頭。佈署步驟見 README.md。
 - 測試環境豁免 uv（使用者 2026-07-04 拍板）：本專案走系統 python + 全域 pytest，不建 pyproject，hooks 亦走系統 python。

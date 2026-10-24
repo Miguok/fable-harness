@@ -12,6 +12,15 @@ The current version is also kept in [VERSION](VERSION).
 
 ## [Unreleased]
 
+## [1.7.0] — 2026-10-24
+
+### Changed
+
+- **模型分工表改寫**：haiku 列改為判準「結果能直接檢查對錯的純蒐集與粗活」加例子，
+  刪「文書編輯」「摘要」；「資料搜尋」拆成 repo 內搜碼（haiku）與上網查資料（sonnet）；
+  翻譯與需要判斷一致性的比對（跨檔反向引用、數字對帳）歸 sonnet；主迴圈列補規劃、統籌、
+  驗收子代理交回的 diff。CLAUDE.md、協議 §5、model-dispatch-rules skill、五語 README 同批改。
+
 ## [1.6.0] — 2026-10-18
 
 ### Fixed

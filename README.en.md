@@ -4,7 +4,7 @@
 
 **English** &nbsp;·&nbsp; [繁體中文](README.md) &nbsp;·&nbsp; [简体中文](README.zh-CN.md) &nbsp;·&nbsp; [日本語](README.ja.md) &nbsp;·&nbsp; [한국어](README.ko.md)
 
-![Version: 1.6.0](https://img.shields.io/badge/version-1.6.0-blue.svg) &nbsp; ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
+![Version: 1.7.0](https://img.shields.io/badge/version-1.7.0-blue.svg) &nbsp; ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 
 ## What is it
 
@@ -22,7 +22,7 @@ To be upfront about the limits: hooks and skills can only transplant the *proced
 
 - **OODA loop** — before answering, Claude gathers evidence (search/read the actual files, never guess from training memory), states its assumptions out loud, turns the task into something verifiable ("make it work" isn't good enough), then makes small changes and checks each one.
 - **Multi-party adversarial review** — this kit's signature move. Before trusting a big conclusion (an architecture decision, a root-cause diagnosis, anything that could affect production), Claude dispatches three independent "opposition" sub-agents *in parallel*, each with a different job: a **skeptic** who looks for logical holes, a **red-team** who looks for security and failure risks, and a **simplifier** who looks for needless over-engineering. The conclusion only gets trusted if a majority of the three "survive" the challenge.
-- **Model routing** — reasoning, architecture, and root-cause work stays on whichever model is currently driving; coding and refactoring gets routed to Sonnet; batch file work, search, and text cleanup gets routed to Haiku. Right-sized model for the job.
+- **Model routing** — reasoning, architecture, and root-cause work stays on whichever model is currently driving; coding, refactoring, and web lookups get routed to Sonnet; batch file work, in-repo code search, and format conversion get routed to Haiku. Right-sized model for the job.
 - **Token-efficient by design** — the cost savings fall out of the same architecture, not a bolted-on feature. The tiered routing above already keeps the expensive model's tokens on reasoning and pushes bulk work to cheaper models; on top of that, the adversarial reviewers and Explore-style searches run in **isolated sub-agents**, each with its own clean context, returning only a compact conclusion — so most of their intermediate tokens are discarded instead of snowballing into the main conversation. And those sub-agents fan out **in parallel**, each carrying a small context, rather than piling up in one ever-growing thread. This "tiered routing + isolated sub-agents" shape is a widely-recognized way to cut LLM token cost — Fable itself hasn't been benchmarked for a specific figure, so this describes *why* it saves, not a promised percentage.
 - **Definition of Done (TDD)** — if a change touches actual logic, it needs an automated test and evidence that the test failed before the fix and passed after. Eyeballing the output or a stray `console.log` doesn't count as verification.
 - **Honest reporting** — the first sentence of any report is the actual result (not a lead-up); failures get reported as failures, not softened.
