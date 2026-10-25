@@ -48,6 +48,14 @@ The current version is also kept in [VERSION](VERSION).
   | `TOKEN=a pytest t.py` | `TOKEN=b pytest t.py` | `TOKEN=a` | `TOKEN=b` | `不同鍵` |
   | `TOKEN=abc&&pytest t.py` | `TOKEN=abc && pytest t.py` | `TOKEN=abc&&` | `TOKEN=abc` | `不同鍵` |
   <!-- /G113:context -->
+- **一次呼叫串好幾條測試時，結果可能算到錯的目標，誤清與誤擋都會發生**：目標從第一個測試指令起擷取，
+  剝掉引號外 `|`、`>` 起的尾段；成敗取輸出裡最後一行「N passed／failed／errors」。所以
+  `pytest a.py | tail -3; pytest b.py | tail -3` 這類寫法，b 的結果算在 a 頭上：b 綠時可能解掉 a 的紅
+  （a 是權威驗證指令時，解掉同 context 所有紅）；b 紅時 a 被記一次失敗，可能因此被擋或擱置。
+- **`--tb=`、`--color=` 的值緊貼分隔符時，兩條指令可能被當成同一個目標**：`pytest a.py --tb=no;pytest -k slow b.py`
+  與 `pytest a.py -k slow b.py` 被視為同一個目標，一條的綠可能解掉另一條的紅。分隔符前留空白可避免。
+- **接線閘對 `git -C <路徑>` 的路徑照字面使用**：Git Bash 寫法（`/c/Users/...`）、`~`、未展開的 `"$VAR"`
+  在 Windows 上可能找不到 repo，那一次 commit 不做接線檢查，`--no-verify` 也放行。
 
 ## [1.7.0] — 2026-10-24
 
