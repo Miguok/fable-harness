@@ -61,7 +61,7 @@ The current version is also kept in [VERSION](VERSION).
 - **任一 Stop hook 擋下之後，目標閘不讀接下來的測試結果（待修）**：Claude 因 Stop hook 擋下而繼續工作時，
   帶 `stop_hook_active` 的 Stop 目標閘直接放行、不讀測試結果；回合若在這種 Stop 結束，這些結果之後也讀不到。
   所以這期間的紅不累加，該擋或該擱置時可能沒擋；這期間的綠也解不掉紅，下一個回合同一目標再紅時可能被誤擋
-  或誤擱置。1.2.0 起即有。
+  或誤擱置。1.5.0 起即有。
 
 ## [1.7.0] — 2026-10-24
 
