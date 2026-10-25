@@ -39,6 +39,7 @@
       任何錯誤一律 fail-open（exit 0 無輸出）——gate 絕不可弄壞 session。
 測試：tests/test_goal_gate.py（fail-then-pass + 突變已驗證）。
 """
+import hashlib
 import json
 import os
 import re
@@ -296,6 +297,9 @@ VERIFIER_REL = os.path.join(".claude", "fable-verifier")
 def load_verifiers(root):
     """repo 宣告的權威驗證指令，正規化成鍵；沒宣告就是空集合。
 
+    回傳的是「可作權威」的宣告鍵：不帶 context、指令段非空的行才收（帶 context 的與
+    指令段為空的宣告都不授權，G117 釘住）。
+
     這是「什麼綠可以解掉整段目標」的**唯一**來源。1.4.x 曾試過反過來做：
     由程式推論「寬指令的綠涵蓋窄指令的紅」，抗辯實測出六種會把真紅燈靜默
     清掉的情況（先綠後紅、`pytest tests` 無尾斜線、跨工具、`-k` 過濾、
@@ -329,9 +333,11 @@ def load_verifiers(root):
         line = line.strip()
         if not line or line.startswith("#"):
             continue
-        k = test_key(line)
-        if k:
-            keys.add(k)
+        # 宣告行要不帶 context、指令段非空才算權威。指令段為空的行（`make lint || tox`）若收進來
+        # 會變成 `H("")` 權威，任何 `X | nox` 的綠都配對得上、清掉整個 context 的紅。
+        ctx, run = key_parts(line)
+        if run and not ctx:
+            keys.add(test_key(line))
     return frozenset(keys)
 
 
@@ -461,6 +467,8 @@ PIPELINE_TAIL_RE = re.compile(r"\s*[0-9]?\s*[|>].*$", re.S)
 # transcript 重放查得）。改變「跑哪些測試」的旗標（-k／-x／-s／路徑）一律保留。
 # ⚠ 鍵本身（test_key）不剝：狀態檔與擱置紀錄存的是使用者實際下的指令形態
 # （G52／G64／G72 釘住 `-q` 留在鍵裡）；只在「紅綠是否同一目標」的比對上剝。
+# ↳ 狀態檔現在存雜湊，「存實際指令形態」那句已不成立；不剝的理由改為計數契約：
+# `pytest -q` 與 `pytest --tb=no` 的紅分開計數，解除時才合併（G117 I-1）。
 _TOKEN_RE = re.compile(r"(?:\"[^\"]*\"|'[^']*'|[^\s\"'])+")
 _FORMAT_FLAG_RE = re.compile(
     r"-q{1,2}|-v{1,2}|-r[fEsxXpPaAwN]+|--tb=\S+|--no-header|--color=\S+")
@@ -527,11 +535,33 @@ def test_key(command):
     # 讓每一個目標都變成鍵 `'cat'`——三個無關的目標會被串成一條強制擱置，
     # 正是逐鍵計數要根治的那個病。`go test -run 'A|B'` 與 `'A|Z'` 同理，
     # 兩者都變成 `go test -run 'A`，一邊的綠會清掉另一邊的紅。
+    # 空指令段（`make lint || tox` 被管線尾巴切空）照樣雜湊，不回 `""`：`""` 不符合
+    # KEY_RE，下一次載入會被當舊鍵丟掉，那類指令的階梯就永遠停在 1（G117 釘住）。
+    ctx, run = key_parts(command)
+    return "g2:%s:%s:%s" % (_h(ctx), _h(run), _h(strip_format_flags(run)))
+
+
+def key_parts(command):
+    """(context, 指令段)：`test_key` 雜湊之前的正規化結果，context 的值不遮。"""
     m = TEST_CMD_RE.search(command)
     stripped = command[m.start():] if m else command
     run = " ".join(strip_pipeline_tail(stripped).split())
-    ctx = run_context(command[:m.start()] if m else "")
-    return ("%s%s%s" % (ctx, CONTEXT_SEP, run)) if ctx else run
+    return run_context(command[:m.start()] if m else ""), run
+
+
+def _h(text):
+    return hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()
+
+
+# 鍵＝`g2:H(context):H(指令段):H(剝格式旗標的指令段)`。
+# 為什麼是雜湊：遮蔽後的文字曾經同時兼任「目標身分」與「落地內容」——不遮，
+# `pytest --api-key=X` 的 X 明碼進狀態檔；遮了，`--token=a` 與 `--token=b` 同鍵、
+# 一條的綠解掉另一條的紅，而且每改一條遮蔽規則階梯就跟著變。雜湊吃未遮文字：
+# 身分精確、落地不含原文；遮蔽只留在顯示路徑（擱置項與擋下訊息的 `redact(原文)`）。
+# 狀態檔的鍵從不顯示給人看，所以不需要可讀。
+# ⚠ 低熵機密（短密碼）可被持有狀態檔的人逐一猜測比對——本機、gitignored 的檔，
+# 使用者裁定接受（2026-10-25，見 CHANGELOG 已知限制）。
+KEY_RE = re.compile(r"^g2:([0-9a-f]{64}):([0-9a-f]{64}):([0-9a-f]{64})$")
 
 
 CD_RE = re.compile(r"(?:^|[;&|]|\bthen\b|\bdo\b)\s*cd\s+(\"[^\"]*\"|'[^']*'|\S+)")
@@ -539,16 +569,18 @@ ENV_PREFIX_RE = re.compile(r"(?:^|[;&|]|\s)([A-Za-z_][A-Za-z0-9_]*)="
                            r"(\"[^\"]*\"|'[^']*'|\S*)")
 
 
-CONTEXT_SEP = " :: "
+def _segment(key, i):
+    m = KEY_RE.match(key)
+    return m.group(i) if m else key   # 形狀不對的鍵（載入時已濾掉）只等於自己
 
 
-def strip_context(key):
-    """鍵去掉 context，只留指令本身——權威驗證的**比對**用這個。"""
-    return key.split(CONTEXT_SEP, 1)[1] if CONTEXT_SEP in key else key
+def decl_ident(key):
+    """鍵去掉 context、剝掉格式旗標的指令段——權威驗證的**比對**用這個。"""
+    return _segment(key, 3)
 
 
 def key_context(key):
-    """鍵的 context 部分（沒有就是空字串）——權威驗證的**清除範圍**用這個。
+    """鍵的 context 部分（沒有 context 時是 `H("")`）——權威驗證的**清除範圍**用這個。
 
     比對與清除刻意用不同的粒度：比對要寬（宣告檔寫乾淨的指令，實際執行帶
     `cd=…`，不放寬就對不上 93.4% 的執行），清除要窄（不同 context 是不同的
@@ -556,14 +588,12 @@ def key_context(key):
     ——寬的那次讓 `MODE=legacy` 的綠清掉 `MODE=new` 的紅，窄的那次讓整個機制
     失效。
     """
-    return key.split(CONTEXT_SEP, 1)[0] if CONTEXT_SEP in key else ""
+    return _segment(key, 1)
 
 
 def goal_identity(key):
     """比對「同一個目標」用的身分：context 照舊，指令部分剝掉輸出格式旗標。"""
-    ctx = key_context(key)
-    run = strip_format_flags(strip_context(key))
-    return ("%s%s%s" % (ctx, CONTEXT_SEP, run)) if ctx else run
+    return "%s:%s" % (_segment(key, 1), _segment(key, 3))
 
 
 def run_context(prefix):
@@ -590,6 +620,9 @@ def run_context(prefix):
     `AUTH_TOKEN="Bearer eyJhbGciOiJIUzI1NiJ9.PAYLOAD.SIGZZZ"` 實際落地成
     `AUTH_TOKEN=*** eyJhbGciOiJIUzI1NiJ9.PAYLOAD.SIGZZZ`：遮罩看起來生效了，
     酬載卻整段寫進狀態檔，再由 hook 注入回下一回合的對話（2026-09-06 抗辯實測）。
+    ↳ 上面「值要先遮蔽」與「遮蔽要在脫引號之前」兩段描述的是 1.7.0 及更早的作法，已被取代：現在 context 的值**不遮**，只進
+    雜湊身分（見 `test_key` 下方 `KEY_RE` 的註解），落地的鍵不含原文；遮蔽只留在
+    顯示路徑。引號仍要脫掉（`MODE="new"` 與 `MODE=new` 同一個目標）。
     """
     # heredoc 的**內文**不是執行 context。`test_key` 已經改成先找到測試指令再
     # 切，但交給這裡的前綴仍然是整個左半邊，包含 `cat > tests/x.py <<'EOF' … EOF`
@@ -607,10 +640,8 @@ def run_context(prefix):
     if cds:
         parts.append("cd=" + cds[-1].strip("\"'").replace("\\", "/").rstrip("/"))
     for name, value in ENV_PREFIX_RE.findall(prefix):
-        masked = redact("%s=%s" % (name, value))
-        head, _, shown = masked.partition("=")
-        parts.append("%s=%s" % (head, shown.strip("\"'")))
-    return redact(" ".join(parts))
+        parts.append("%s=%s" % (name, value.strip("\"'")))
+    return " ".join(parts)
 
 
 def strip_pipeline_tail(s):
@@ -830,6 +861,7 @@ UNREADABLE_SHELF = "_unreadable_shelved"
 # 是晚一個回合），太長就是上面那個假陽性——而假陽性掛在硬擋上，貴得多。
 RED_TTL_SECONDS = 24 * 3600
 RED_SEEN = "red_seen"
+DROPPED = "_dropped_legacy_keys"   # red／red_seen 載入時有任何修正就設（不只舊鍵）；只在記憶體裡，run_stop 取走、不落地
 
 
 def load_state(root):
@@ -902,11 +934,16 @@ def load_state(root):
     # 註解互相矛盾，而錯的那一段會被下一個人當成既有決議引用。行為由 G72 釘住。
     # 舊版留下的未知欄位（例如已退場的 `episode`）原樣保留，不主動刪。
     s.setdefault("red", {})
+    # 留住篩選之前的原值：下面每一步篩選都重新綁定新 dict，所以最後比一次就知道有沒有
+    # 丟東西（型別不對、TTL 過期、形狀不對、`red_seen` 孤兒、容器不是字典）。NaN 時間戳
+    # 的鍵由 TTL 篩選丟掉（G117 NaN 測試）。
+    # 在篩選之後才比，就看不到被型別篩選先濾掉的明碼舊鍵（`{"pytest --api-key=X": "2"}`）。
+    raw = (s["red"], s.get(RED_SEEN, {}))
     if not isinstance(s["red"], dict):
         s["red"] = {}
     s["red"] = {k: v for k, v in s["red"].items()
                 if isinstance(v, int) and not isinstance(v, bool) and v > 0}
-    seen = s.get(RED_SEEN)
+    seen = raw[1]
     if not isinstance(seen, dict):
         seen = {}
     seen = {k: v for k, v in seen.items()
@@ -916,7 +953,15 @@ def load_state(root):
     # ——升級不該把別人爬到一半的階梯抹掉。
     s["red"] = {k: v for k, v in s["red"].items()
                 if now - seen.get(k, now) < RED_TTL_SECONDS}
+    # 形狀不是 `g2:` 雜湊組合的鍵（1.7.0 及更早的文字鍵，指令段可能帶明碼機密）一律
+    # 丟掉，次數不遷移：舊鍵的 context 已遮，算不回新身分。這是形狀篩選，不是來源驗證；
+    # 混版時舊 hook 每寫一次明碼鍵，新 hook 下一次**存檔**才清——所以丟了東西就要求
+    # 呼叫端存檔（`DROPPED`），連沒有測試執行的 Stop 也存。只讀的入口
+    # （UserPromptSubmit）不存，明碼留到下一個 Stop。
+    s["red"] = {k: v for k, v in s["red"].items() if KEY_RE.match(k)}
     s[RED_SEEN] = {k: seen.get(k, now) for k in s["red"]}
+    if raw != (s["red"], s[RED_SEEN]):
+        s[DROPPED] = True
     # 手改壞的 `counted`：丟掉無效部分，不得讓它關掉整道閘。
     c = s.get("counted")
     s["counted"] = [i for i in c if isinstance(i, str)] if isinstance(c, list) else []
@@ -1267,6 +1312,7 @@ def run_stop(data, root):
     # 同一個鍵的綠解掉同一個鍵的紅；repo 宣告的權威驗證指令的綠解掉整段。
     # 除此之外不做任何涵蓋推論——「寬指令的綠清掉窄指令的紅」已被抗辯實測
     # 出六種會把真紅燈靜默清掉的情況而退回。
+    dropped = state.pop(DROPPED, False)
     red = state.setdefault("red", {})
     before = (dict(red), state["streak"])
     before_counted = list(state.get("counted", []))
@@ -1333,9 +1379,9 @@ def run_stop(data, root):
     #
     # 那句辯護的錯在於：「宣告檔在這個 repo」推不出「這個綠來自這個 repo」——
     # `cd` 不受宣告檔約束。屬〈引用≠推論〉。
-    declared = {strip_format_flags(d) for d in load_verifiers(root)}
+    declared = {decl_ident(d) for d in load_verifiers(root)}
     verified_ctx = {key_context(k) for k in greens
-                    if strip_format_flags(strip_context(k)) in declared
+                    if decl_ident(k) in declared
                     and order.get(k, 0) > latest_red_by_ctx.get(key_context(k), 0)}
     if verified_ctx:
         for k in [k for k in red if key_context(k) in verified_ctx]:
@@ -1348,7 +1394,7 @@ def run_stop(data, root):
         auth_order = {}
         for k in greens:
             c = key_context(k)
-            if c in verified_ctx and strip_format_flags(strip_context(k)) in declared:
+            if c in verified_ctx and decl_ident(k) in declared:
                 auth_order[c] = max(auth_order.get(c, 0), order.get(k, 0))
         closed_ids = [last_ids[k] for k, v in verdicts.items()
                       if v == "fail" and last_ids.get(k)
@@ -1410,7 +1456,7 @@ def run_stop(data, root):
         if (greens and state["streak"]
                 and not any(k in red for k, v in verdicts.items() if v == "fail")):
             state["streak"] = 0
-        if ((dict(red), state["streak"]) != before
+        if (dropped or (dict(red), state["streak"]) != before
                 or state["counted"] != before_counted):
             save_or_complain(root, state)
         return block_unexplained_shelf(state)
@@ -1449,6 +1495,7 @@ def run_stop(data, root):
     key = max(fresh_red, key=lambda k: red[k])
     # 指令不落地，用完即取：`red` 只存次數。存遮蔽過的指令會讓機密多一個
     # 長期落腳處，而唯一需要它的是擱置項，那裡才寫。
+    # ↳ 1.7.0 及更早這句不成立——`red` 的鍵就是指令文字；鍵改成雜湊組合之後才成立。
     cmd = redact(raw_by_key.get(key, ""))
     state["streak"] = streak = red[key]
 

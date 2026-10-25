@@ -52,14 +52,23 @@
   G104 權威綠門檻是「每個 context 自己的已計紅」，不是全域最大值（MG-14）；配對：權威綠在已計紅之前不收束
   G103 權威綠夾在「已計的紅」與「新紅」之間要收束（H2 同回合、H4 跨回合）；無權威綠／權威綠在已計紅之前仍爬梯（配對）
   G112 環境變數值不同 → 鍵不同，涵蓋註解含引號、`bash -c`、`ssh '…'`、`export` 含跳脫引號、`$'…'`、獨立賦值
-       這些寫法；context 擷取不認的寫法（`A='x'y`／`A='x'z`、機密名稱遮成 `***`、第一個 `<<` 之後、子 shell、
+       這些寫法；context 擷取不認的寫法（`A='x'y`／`A='x'z`、第一個 `<<` 之後、子 shell、
        pushd 等）會同鍵、不在本測試範圍，見 CHANGELOG 已知限制「context 是字面擷取結果，不是實際 shell 環境」；
        配對：同目標只差管線尾巴鍵相同、`cd` 不同鍵不同、context 裡的機密（含 Bearer）不進鍵、一般指令鍵形狀固定、
        另一個值的綠不解這個值的紅；耗時：export 4000 個混合引號值、2 萬字元對抗輸入 `test_key` 各 < 1 秒
   G113 CHANGELOG 已知限制的 context 例子表（A／B 的 context 與同鍵／不同鍵）與機密遮蔽例子表，逐列對真正的
-       `key_context(test_key(…))`、`test_key` 相等性與 `redact`；標記缺少或重複、標記內有非表格行、
+       `key_parts(…)[0]`（未遮的 context）、`test_key` 相等性與 `redact`；標記缺少或重複、標記內有非表格行、
        表頭或分隔列不是逐字的固定格式、資料列不是 n 個非空反引號儲存格、沒有資料列，一律 fail、不 skip
        （白名單解析器；由 11 種異常＋1 個配對測試盯住）
+  G117 目標身分改雜湊組合 `g2:H(ctx):H(run):H(sff(run))`（P7-1；契約 reports/goal_gate_identity_contract_review_20261025.md）：
+       鍵不含指令文字；context／指令段的值、`-k`、node id 不同 → 異鍵；空白、引號 → 同鍵（配對；cd／env／
+       管線尾巴見 G112）；格式旗標拆計數不拆解除身分；字面 ` :: ` 不切成 context，有真 `cd` 時 context 仍在（配對）；
+       連紅三回合狀態檔與輸出無機密（裸值、引號含空白兩種）；形狀不對、值型別不對、`red_seen` 孤兒、容器不是字典
+       四類丟棄都在沒有測試執行的 Stop 落地、`red_seen` 同步；NaN 時間戳只存檔一次、第二個 Stop 不寫檔；
+       空指令段（`make lint || tox`）照樣是 g2 鍵、連紅照常擋與擱置；指令段為空的宣告行（`make lint || tox`、`> note`、
+       `2>/dev/null`）不成為權威；g2 鍵原樣保留（配對）；
+       帶 context 的宣告行不成為權威、不帶 context 的照常配對（配對）；6 萬字元指令算鍵 < 0.5 秒
+       （G113 的 context 例子表改盯 CHANGELOG [Unreleased] 那張；1.6.0 那張留作歷史、不再受守衛）
   （G106～G111 隨「模擬 bash 斷字」一併移除；仍成立且與保留行為有關的斷言已搬進 G112 配對）
   （G98 S2 期望於 2026-10-06 fable 複審改為「綠→紅 計 1、不擋」）
 
@@ -67,9 +76,45 @@
   cd <repo> && python -m pytest tests/test_goal_gate.py -v
 
 ══════════════════════════════════════
-執行紀錄（G82～G113，依時間由新到舊；最上面是最新一次）
+執行紀錄（G82～G117，依時間由新到舊；最上面是最新一次）
 ══════════════════════════════════════
-最後執行：2026-10-18 23:58 → 全套 tests/ → 599 passed, 3 skipped；本檔 270 passed
+最後執行：2026-10-25 19:01 → 全套 tests/ → 674 passed, 4 skipped（118.12s）；本檔 296 passed
+  2026-10-25 確認輪：正確性 SURVIVED（本機真實紀錄檔重放 1,062 份、約 6,400 次 Stop，新舊差異 0）、簡潔性
+  SURVIVED、安全 REFUTED（只有文件：降版再升版與新舊兩版同跑的失效未寫進已知限制）→ CHANGELOG 補兩條。
+  Codex 最後審查（reports/goal_gate_identity_impl_round6_final_review_20261025*）：程式無阻擋項。
+  （前一次）2026-10-25 17:58 → 全套 tests/ → 674 passed, 4 skipped（114.82s）；本檔 296 passed
+  2026-10-25 第 5 輪（安全：第 4 輪程式無回歸；簡潔性：兩個宣告篩選分在兩處）：「不帶 context、指令段非空」
+  合併到 `load_verifiers` 一處，刪 `NO_CONTEXT`。Codex 第 5 輪確認等價。突變：宣告不濾 context 1 failed；
+  宣告不濾空指令段 3 failed。
+  （前一次）2026-10-25 17:44 → 全套 tests/ → 674 passed, 4 skipped（114.75s）；本檔 296 passed
+  2026-10-25 第 4 輪（正確性 REFUTED：第 3 輪刪掉 `return ""` 後，指令段為空的宣告行變成 `H("")` 權威，
+  任何 `X | nox` 的綠清掉整個 context 的紅；v1.7.0 在 `load_verifiers` 的 `if k:` 丟掉它）：新增 G117
+  宣告測試，`make lint || tox` 一列先紅 1 failed（現行）／換回 v1.7.0 程式 1 passed；`load_verifiers` 改成指令段
+  非空才收後三列 passed。突變「宣告不篩空指令段」3 failed。Codex 第 4 輪實查兩版所有 `test_key` 呼叫端，
+  只有 `load_verifiers` 依賴空值（reports/goal_gate_identity_impl_round4_review_20261025*）。
+  （前一次）2026-10-25 17:14 → 全套 tests/ → 671 passed, 4 skipped（116.45s）；本檔 293 passed
+  2026-10-25 第 3 輪（正確性 REFUTED：`make lint || tox` 被切成空指令段，`test_key` 回 `""`，下一次載入不符合
+  KEY_RE 被丟，階梯永遠停在 1）：新增 G117 空指令段兩列，先紅 2 failed（17:10，未改 goal_gate.py）；刪掉
+  `if not run: return ""` 後 2 passed。Codex 第 3 輪同意（reports/goal_gate_identity_impl_round3_review_20261025*）。
+  2026-10-25 第 2 輪（簡潔性 REFUTED 文字＋安全 SURVIVED）：丟棄偵測改成比 `(red, red_seen)` 篩選前原值；
+  刪 G117 重複列 4 個（text-key、I-2 cd／env、I-3 pipeline-tail；quoted-env 依 Codex 保留）；加 NaN 時間戳測試。
+  突變：比較忽略 red_seen 2 failed；原值在型別篩選之後才留 1 failed；另一格「不濾非有限時間戳」0 failed——
+  NaN 時間戳的鍵本來就被 TTL 篩選丟掉，守衛多餘已拿掉（16:56）。
+  （前一次）2026-10-25 16:35 → 全套 tests/ → 672 passed, 4 skipped（115.82s）；本檔 294 passed
+  2026-10-25 第 1 輪抗辯（正確性、簡潔性 REFUTED）＋Codex 審修法後：刪 `key_text`、`run_context` 遮蔽分支、
+  值尾 `rstrip(";&|")`（引號內 `MODE='a|'` 與 `MODE=a` 同鍵、權威綠清掉別 context 的紅，實跑重現）；丟棄偵測改成
+  比對篩選前的原始鍵集合（值型別不對的明碼舊鍵原本不落地）。測試改用檔內 `_key_text`（`key_parts` 排成文字）；
+  G57／G71 改驗雜湊鍵與 `redact`。突變八格各自翻紅：鍵改回文字 8 failed；不丟形狀不對的鍵 2；丟了不存檔 5；
+  宣告不濾 context 1；偵測在型別篩選之後 1；不算孤兒 1；容器被換掉不算丟 1；身分用遮蔽 context 1。
+  （下一則 09:51 紀錄裡「改讀 `key_text`」是當時的作法，`key_text` 已刪。）
+  （前一次）2026-10-25 09:51 → 全套 tests/ → 668 passed, 4 skipped（141.21s）；本檔 290 passed
+  2026-10-25 09:40～09:50 G117（身分雜湊）：先紅 6 failed, 11 passed（鍵形狀、context 機密值異鍵、` :: ` 歧義、
+  落地明碼、舊鍵丟棄兩列；HEAD dd1350c＝v1.7.0 程式）。實作後舊測試 39 條紅全是斷言鍵文字（G52／G56／G57／G63／
+  G64／G67／G70／G71／G72／G80／G112 配對／G113），改讀 `key_text`（v1.7.0 文字鍵）或比 `test_key` 相等，語意不變。
+  突變六格各自翻紅：鍵改回文字 6 failed；不丟舊鍵 2 failed；丟了不存檔 2 failed；身分用遮蔽 context 1 failed；
+  宣告不濾 context 1 failed；不剝值尾分隔符 1 failed。實測值：`test_key("cd a && TOKEN=SECRETX pytest
+  --api-key=SECRETY tests/ -q")` 符合 `^g2:[0-9a-f]{64}(:[0-9a-f]{64}){2}$`、不含 SECRET 與 pytest。
+  （前一次）2026-10-18 23:58 → 全套 tests/ → 599 passed, 3 skipped；本檔 270 passed
   2026-10-18 23:58 第 12 輪審查後：G113 解析器改成白名單（表頭與分隔列逐字、資料列整列 fullmatch 非空反引號格）；
   新增 3 種異常（空儲存格、沒有資料列、資料列欄數），空儲存格那例對舊解析器先紅（1 failed），其餘兩例舊解析器本來就 fail；
   改後 -k g113 14 passed
@@ -359,6 +404,12 @@ sys.path.insert(0, _GATE_DIR)
 import goal_gate as gg  # noqa: E402
 
 
+def _key_text(cmd):
+    """`key_parts` 排成文字（context 未遮）——只用來釘擷取與正規化規則；落地的鍵是雜湊。"""
+    ctx, run = gg.key_parts(cmd)
+    return "%s :: %s" % (ctx, run) if ctx else run
+
+
 def _ladder(cmd, n, shelved=None):
     """把「這個目標已經連敗 n 次」種成狀態檔。
 
@@ -597,7 +648,7 @@ def test_g56_a_green_in_one_project_does_not_clear_a_red_in_another(tmp_path):
     _run(repo, _runs(("cd package_B && pytest -q", PASS_OUT)))
     left = list(_state(repo)["red"])
     assert left, "另一個專案的綠把這個專案的真紅清掉了"
-    assert "package_A" in left[0], left
+    assert left == [gg.test_key("cd package_A && pytest -q")], left
 
     # 配對：同一個專案的綠仍必須解除
     _run(repo, _runs(("cd package_A && pytest -q", PASS_OUT)))
@@ -610,10 +661,14 @@ def test_g57_a_secret_in_an_env_prefix_does_not_reach_the_key(tmp_path):
     鍵是寫進 `.fable/goal_state.json` 的東西，而 `GITHUB_TOKEN=… pytest` 的
     值就是機密。把 env 從「雜訊」改判成「context」時，順手把這條路也開了，
     所以同批補上遮蔽。
+    ↳ 已被取代：鍵現在是雜湊（G117），值不遮也不落地；本條改驗落地的鍵不含機密、
+    顯示路徑（`redact`）遮得到且仍認得指令。
     """
     key = gg.test_key("GITHUB_TOKEN=ghp_SUPERSECRET pytest tests/x.py -q")
     assert "ghp_SUPERSECRET" not in key, f"機密進了鍵：{key}"
-    assert "GITHUB_TOKEN" in key and "pytest" in key, f"遮過頭，認不出來了：{key}"
+    shown = gg.redact("GITHUB_TOKEN=ghp_SUPERSECRET pytest tests/x.py -q")
+    assert "ghp_SUPERSECRET" not in shown, f"機密進了顯示形：{shown}"
+    assert "GITHUB_TOKEN" in shown and "pytest" in shown, f"遮過頭，認不出來了：{shown}"
 
 
 @pytest.mark.parametrize("cmd", [
@@ -1525,7 +1580,7 @@ def test_g52_a_heredoc_before_the_test_command_does_not_collapse_goals(tmp_path)
     assert gg.test_key(alpha) != gg.test_key(beta), (
         f"兩個無關的 TDD 目標歸成同一個鍵：{gg.test_key(alpha)!r}"
     )
-    assert gg.test_key(alpha) == "pytest tests/test_alpha.py -q"
+    assert _key_text(alpha) == "pytest tests/test_alpha.py -q"
 
     assert (gg.test_key("go test -run 'TestAlpha|TestBeta' ./...")
             != gg.test_key("go test -run 'TestAlpha|TestZulu' ./...")), \
@@ -1806,7 +1861,7 @@ def test_g63_context_still_separates_two_projects(tmp_path):
     _run(repo, _runs(("cd package_A && pytest -q", FAIL_OUT)))
     _run(repo, _runs(("cd package_B && pytest -q", PASS_OUT)))
     left = list(_state(repo)["red"])
-    assert left and "package_A" in left[0], (
+    assert left == [gg.test_key("cd package_A && pytest -q")], (
         f"另一個專案的綠把這個專案的真紅清掉了：red={left}"
     )
 
@@ -1834,7 +1889,7 @@ def test_g64_a_path_containing_a_runner_name_is_not_the_test_command(cmd, expect
     配對是後兩條：`./venv/bin/pytest` 這種真的用路徑呼叫的方式必須仍然認得，
     否則修法會把一整類合法用法變成「沒有跑測試」。
     """
-    assert gg.test_key(cmd) == expect
+    assert _key_text(cmd) == expect
 
 
 @pytest.mark.parametrize("cmd", [
@@ -1931,7 +1986,7 @@ def test_g67_a_verifier_green_only_clears_its_own_context(tmp_path):
     _run(repo, _runs(("MODE=legacy pytest -q", PASS_OUT)))
     left = _state(repo)["red"]
     assert left, "另一個 context 的權威綠把這個 context 的紅清掉了"
-    assert "MODE=new" in list(left)[0], left
+    assert list(left) == [gg.test_key("MODE=new pytest -q")], left
 
 
 def test_g68_a_verifier_green_still_clears_its_own_context(tmp_path):
@@ -1984,7 +2039,7 @@ def test_g70_a_windows_path_containing_a_runner_name_is_not_the_test_command():
 
     這是 G64 修的同一類，只是換了分隔字元——「同一類沒掃完」的又一次。
     """
-    key = gg.test_key(r"cd C:\Temp\pytest\tmp && python -m pytest tests/ -q")
+    key = _key_text(r"cd C:\Temp\pytest\tmp && python -m pytest tests/ -q")
     assert key == "cd=C:/Temp/pytest/tmp :: pytest tests/ -q", key
     assert "&&" not in key, f"指令半邊仍含 &&，命中落在路徑上：{key}"
 
@@ -2001,14 +2056,15 @@ def test_g71_a_quoted_secret_with_a_space_does_not_reach_the_key():
     引號本身仍要脫掉，否則 `MODE="new"` 與 `MODE=new` 會變成兩個目標。
     """
     payload = "eyJhbGciOiJIUzI1NiJ9.SUPERSECRETPAYLOAD.SIGZZZ"
-    key = gg.test_key('AUTH_TOKEN="Bearer %s" pytest -q tests/' % payload)
+    cmd = 'AUTH_TOKEN="Bearer %s" pytest -q tests/' % payload
+    key = gg.test_key(cmd)
     assert payload not in key, f"機密酬載進了鍵：{key}"
-    assert key == "AUTH_TOKEN=*** :: pytest -q tests/", key
+    assert gg.redact(cmd) == "AUTH_TOKEN=*** pytest -q tests/", gg.redact(cmd)
 
-    spaced = gg.test_key("API_KEY='sk live AAAABBBBCCCC' pytest -q tests/")
-    assert "AAAABBBBCCCC" not in spaced, f"機密酬載進了鍵：{spaced}"
+    spaced = gg.redact("API_KEY='sk live AAAABBBBCCCC' pytest -q tests/")
+    assert "AAAABBBBCCCC" not in spaced, f"機密酬載進了顯示：{spaced}"
 
-    assert gg.test_key("FILE=tests/test_auth.py pytest -q") == \
+    assert _key_text("FILE=tests/test_auth.py pytest -q") == \
         "FILE=tests/test_auth.py :: pytest -q"
     assert gg.test_key('MODE="new" pytest -q') == gg.test_key("MODE=new pytest -q")
 
@@ -2033,7 +2089,7 @@ def test_g72_a_1_4_x_state_file_starts_the_new_ladder_from_one(tmp_path):
         "舊的全域 streak 被接到新鍵上，升級後第一次失敗就被擋："
         + (out[:200] if out else ""))
     state = json.loads((repo / ".fable" / "goal_state.json").read_text(encoding="utf-8"))
-    assert state["red"] == {"pytest tests/ -q": 1}, state
+    assert state["red"] == {gg.test_key("python -m pytest tests/ -q"): 1}, state
     assert state["streak"] == 1, state
     assert state.get("episode") == "ep-1788625552", (
         "舊版留下的未知欄位被清掉了——不搬移不等於清掉別人的東西：" + str(state))
@@ -2235,11 +2291,11 @@ def test_g80_a_heredoc_body_does_not_become_part_of_the_goal(tmp_path):
     heredoc = ("cat > tests/test_a.py <<'EOF'\n"
                "def retry(n, backoff=2):\n    return n\nEOF\n"
                "python -m pytest tests/test_a.py -q")
-    assert gg.test_key(heredoc) == "pytest tests/test_a.py -q", gg.test_key(heredoc)
+    assert _key_text(heredoc) == "pytest tests/test_a.py -q", _key_text(heredoc)
 
-    assert gg.test_key("cd /proj && cat > f.py <<'EOF'\nx=1\nEOF\npytest -q") == \
+    assert _key_text("cd /proj && cat > f.py <<'EOF'\nx=1\nEOF\npytest -q") == \
         "cd=/proj :: pytest -q"
-    assert gg.test_key("MODE=new pytest -q") == "MODE=new :: pytest -q"
+    assert _key_text("MODE=new pytest -q") == "MODE=new :: pytest -q"
 
     repo = _repo(tmp_path)
     for i in range(3):
@@ -2957,8 +3013,8 @@ def test_g112_different_env_values_give_different_keys_in_any_shell_spelling(a, 
     （註解裡的 `'`、`$'…'`、被包住的整段指令）會把真的賦值當成引號內文丟掉，
     兩個不同的目標合成同一個鍵，一邊的綠清掉另一邊的紅。多分一條鍵也不是保守方向：
     同一個目標的連紅會散在不同鍵而不爬梯。
-    例外（1.5.0 行為，見 CHANGELOG 已知限制）：值的引號段之後的部分不算（`A='x'y` 與 `A='x'z`）、
-    機密名稱的值遮成 `***`（`TOKEN=a` 與 `TOKEN=b`）、第一個 `<<` 之後的賦值——這些會同鍵，本測試不涵蓋；
+    例外（見 CHANGELOG 已知限制）：值的引號段之後的部分不算（`A='x'y` 與 `A='x'z`）、
+    第一個 `<<` 之後的賦值——這些會同鍵，本測試不涵蓋；
     context 能認得哪些寫法以 `goal_gate.py` 的 `run_context` 為準；後果見 CHANGELOG 已知限制
     「context 是字面擷取結果，不是實際 shell 環境」。
     """
@@ -2984,11 +3040,7 @@ def test_g112_pair_cd_destination_still_separates_keys():
     'curl -H "Authorization: Bearer abcd1234efgh" x && pytest t.py',
 ], ids=["bare", "single-quoted", "bearer-env", "bearer-in-quoted-arg"])
 def test_g112_pair_secrets_do_not_reach_the_key(cmd):
-    """G112 配對：context 裡的機密值（含引號包住的 Bearer）不進鍵。
-
-    只驗 context；指令本身的機密旗標（`--api-key=…`）不遮，會以明碼留在本機狀態檔的鍵裡
-    （1.5.0 行為，見 CHANGELOG 已知限制）。
-    """
+    """G112 配對：context 裡的機密值（含引號包住的 Bearer）不進鍵——防鍵退回文字（鍵是雜湊，G117）。"""
     key = gg.test_key(cmd)
     for leaked in ("secret", "sec ret", "abcd1234"):
         assert leaked not in key, key
@@ -3033,8 +3085,8 @@ def test_g112_cost_of_20000_char_adversarial_input(name, cmd):
      "V0=on V1=on PYTHONPATH=src :: pytest tests -q"),
     ("MODE=legacy pytest x", "MODE=legacy :: pytest x"),
     ("MODE=new pytest x", "MODE=new :: pytest x"),
-    ("TOKEN=abc pytest tests -q", "TOKEN=*** :: pytest tests -q"),
-    ('TOKEN="Bearer abc def" pytest tests -q', "TOKEN=*** :: pytest tests -q"),
+    ("TOKEN=abc pytest tests -q", "TOKEN=abc :: pytest tests -q"),
+    ('TOKEN="Bearer abc def" pytest tests -q', "TOKEN=Bearer abc def :: pytest tests -q"),
     ("export PYTHONPATH=src MODE=legacy && pytest t.py -q",
      "PYTHONPATH=src MODE=legacy :: pytest t.py -q"),
     ("cd p && export A=1 && pytest t.py -q", "cd=p A=1 :: pytest t.py -q"),
@@ -3051,9 +3103,9 @@ def test_g112_cost_of_20000_char_adversarial_input(name, cmd):
 def test_g112_pair_plain_command_keys_keep_their_shape(cmd, expected):
     """G112 配對：一般指令（`cd`、指令前綴賦值、export、管線尾巴）的鍵形狀固定。
 
-    期望值是 1.5.0 的 `test_key` 輸出；防「什麼都分開／什麼都合併」的過度修正。
+    期望值是 `key_parts` 排成文字的擷取結果（context 未遮）；防「什麼都分開／什麼都合併」的過度修正。
     """
-    assert gg.test_key(cmd) == expected, gg.test_key(cmd)
+    assert _key_text(cmd) == expected, _key_text(cmd)
 
 
 @pytest.mark.parametrize("first", ['"$PWD"/src', 'a"b"', '"x"y', "'x'y"])
@@ -3137,13 +3189,13 @@ def _g113_parse(text, block, headers):
 
 
 def test_g113_changelog_context_examples_match_the_real_functions():
-    """G113：CHANGELOG 已知限制的 context 例子表，逐列對真正的 `key_context(test_key(…))` 與鍵相等性。"""
+    """G113：CHANGELOG 已知限制的 context 例子表，逐列對真正的 `key_parts(…)[0]` 與 `test_key` 相等性。"""
     rows = _g113_table_rows("context", ["指令 A", "指令 B", "A 的 context", "B 的 context", "鍵"])
     for a, b, ctx_a, ctx_b, same in rows:
         if same not in ("同鍵", "不同鍵"):
             pytest.fail("「鍵」欄只能是 同鍵／不同鍵：%r" % (same,))
-        assert gg.key_context(gg.test_key(a)) == ctx_a, (a, gg.key_context(gg.test_key(a)))
-        assert gg.key_context(gg.test_key(b)) == ctx_b, (b, gg.key_context(gg.test_key(b)))
+        assert gg.key_parts(a)[0] == ctx_a, (a, gg.key_parts(a)[0])
+        assert gg.key_parts(b)[0] == ctx_b, (b, gg.key_parts(b)[0])
         if same == "同鍵":
             assert gg.test_key(a) == gg.test_key(b), (a, b)
         else:
@@ -3182,3 +3234,180 @@ def test_g113_parser_fails_on_malformed_tables(text):
 def test_g113_parser_pair_reads_a_well_formed_table():
     """G113 解析器配對：格式正確的表照常讀出每一列（不是「什麼都 fail」）。"""
     assert _g113_parse(_G113_OK, "t", ["A", "B"]) == [["a", "b"], ["c", "d"]]
+
+
+# ── G117：目標身分是雜湊組合，不是遮蔽後的文字（P7-1；契約 reports/goal_gate_identity_contract_review_20261025.md）──
+# 缺陷類別：遮蔽後的文字同時兼任「目標身分」與「落地內容」——不遮，機密進狀態檔；遮了，不同目標同鍵、
+# 每條遮蔽規則都改變階梯。鍵改成 `g2:H(ctx):H(run):H(sff(run))`，雜湊吃未遮文字；遮蔽只留在顯示路徑。
+_G117_SHAPE = re.compile(r"^g2:[0-9a-f]{64}:[0-9a-f]{64}:[0-9a-f]{64}$")
+
+
+def test_g117_a_key_is_the_hash_composite_and_holds_no_text():
+    """G117 I：鍵是固定形狀的雜湊組合，不含指令文字。"""
+    k = gg.test_key("cd a && TOKEN=SECRETX pytest --api-key=SECRETY tests/ -q")
+    assert _G117_SHAPE.match(k), k
+    assert "SECRET" not in k and "pytest" not in k, k
+
+
+@pytest.mark.parametrize("a,b", [
+    ("TOKEN=a pytest x.py", "TOKEN=b pytest x.py"),                 # I-5：context 的機密值不同 → 異鍵（v1.7.0 同鍵）
+    ("pytest --api-key=a x.py", "pytest --api-key=b x.py"),
+    ("pytest -k alpha x.py", "pytest -k beta x.py"),
+    ("pytest 'x.py::t[token=valid]'", "pytest 'x.py::t[token=bad]'"),
+], ids=["ctx-secret", "run-secret", "k", "node-id"])
+def test_g117_different_selections_or_values_are_different_goals(a, b):
+    """G117 I-2：值或選取不同 → 計數鍵不同、解除身分也不同。"""
+    assert gg.test_key(a) != gg.test_key(b)
+    assert gg.goal_identity(gg.test_key(a)) != gg.goal_identity(gg.test_key(b))
+
+
+@pytest.mark.parametrize("a,b", [
+    ("pytest   x.py", "pytest x.py"),
+    ('MODE="new" pytest -q', "MODE=new pytest -q"),
+], ids=["whitespace", "quoted-env"])
+def test_g117_pair_v170_merges_still_merge(a, b):
+    """G117 I-3 配對：v1.7.0 既有的合併照舊（不是「什麼都分開」）。"""
+    assert gg.test_key(a) == gg.test_key(b)
+
+
+def test_g117_format_flags_split_the_count_but_not_the_release_identity():
+    """G117 I-1：格式旗標不同 → 計數鍵不同（v1.7.0 語意）；解除身分相同。"""
+    a, b = gg.test_key("pytest x.py -q"), gg.test_key("pytest x.py --tb=no")
+    assert a != b
+    assert gg.goal_identity(a) == gg.goal_identity(b)
+
+
+def test_g117_a_literal_separator_in_the_command_is_not_a_context():
+    """G117 I-6：指令裡的字面 ` :: ` 不再被切成 context（v1.7.0 會把 `pytest -k "a` 當成 context）。"""
+    assert gg.key_context(gg.test_key('pytest -k "a :: b" t.py')) == gg.key_context(gg.test_key("pytest t.py"))
+
+
+def test_g117_pair_a_real_cd_with_a_literal_separator_keeps_its_context():
+    """G117 I-6 配對：有真 `cd` 時 context 仍在，字面 ` :: ` 不影響它。"""
+    a = gg.key_context(gg.test_key('cd a && pytest -k "x :: y" t.py'))
+    assert a == gg.key_context(gg.test_key("cd a && pytest t.py"))
+    assert a != gg.key_context(gg.test_key("pytest t.py"))
+
+
+@pytest.mark.parametrize("cmd", [
+    "TOKEN=SECRETX pytest --api-key=SECRETY tests/",
+    'AUTH_TOKEN="Bearer x SECRETX" pytest --token "a SECRETY" tests/',
+], ids=["bare", "quoted-with-space"])
+def test_g117_no_plaintext_secret_reaches_the_state_file(tmp_path, cmd):
+    """G117 S：連紅三回合（含擱置），狀態檔全文與輸出都沒有指令段與 context 的機密。"""
+    repo = _repo(tmp_path, {"streak": 0, "shelved": []})
+    out = ""
+    for _ in range(3):
+        out += _run(repo, _runs((cmd, FAIL_OUT)))
+        _run(repo, payload={"hook_event_name": "UserPromptSubmit"})
+    raw = (repo / STATE_REL).read_text(encoding="utf-8")
+    assert len(_state(repo)["shelved"]) == 1, "前置不成立：沒有擱置"
+    for s in ("SECRETX", "SECRETY"):
+        assert s not in raw, f"{s} 落地：{raw}"
+        assert s not in out, f"{s} 進了輸出：{out}"
+
+
+_G117_G2 = gg.test_key("pytest tests/ok.py -q")
+
+
+@pytest.mark.parametrize("state", [
+    {"red": {"cd=a :: pytest t.py": 1, "g2:zz": 1, "SECRETX": 1}},             # 形狀不對的鍵
+    {"red": {"pytest --api-key=SECRETX tests/": "2"}},                         # 值型別不對（型別篩選先濾掉）
+    {"red": {_G117_G2: 1}, "red_seen": {"pytest --api-key=SECRETX t/": 1.0}},  # red_seen 孤兒鍵
+    {"red": ["pytest --api-key=SECRETX tests/"]},                              # 整個容器不是字典
+], ids=["bad-shape", "bad-value-type", "orphan-seen", "non-dict"])
+def test_g117_legacy_keys_are_dropped_and_the_drop_is_saved(tmp_path, state):
+    """G117 M-1／M-5：丟掉的東西（形狀、值型別、孤兒、容器）都要在沒有測試執行的 Stop 落地。"""
+    repo = _repo(tmp_path, dict({"streak": 2, "shelved": []}, **state))
+    _run(repo, [_user_prompt("no tests this turn")])
+    st = _state(repo)
+    assert all(_G117_SHAPE.match(k) for k in st["red"]), st["red"]
+    assert set(st.get("red_seen", {})) == set(st["red"]), st
+    assert "SECRETX" not in (repo / STATE_REL).read_text(encoding="utf-8")
+
+
+def test_g117_a_declaration_with_a_context_does_not_authorize(tmp_path):
+    """G117：帶 context 的宣告行（`cd x && pytest -q`）不成為權威驗證（v1.7.0 既有結果，雜湊後明著保留）。
+
+    少了這條，`cd y && pytest -q` 的綠會被當成權威、清掉同 context 的 `-k a` 窄紅。
+    """
+    repo = _repo(tmp_path, {"streak": 0, "shelved": [], "red": {}})
+    _declare_verifier(repo, "cd x && pytest -q")
+    _run(repo, _runs(("cd y && pytest -q -k a", FAIL_OUT)))
+    _run(repo, _runs(("cd y && pytest -q", PASS_OUT)))
+    assert list(_state(repo)["red"]) == [gg.test_key("cd y && pytest -q -k a")], _state(repo)["red"]
+
+
+def test_g117_pair_a_declaration_without_context_still_authorizes(tmp_path):
+    """G117 配對：不帶 context 的宣告照常配對帶 `cd` 的執行，並清掉同 context 的窄紅（G62／G67 的語意）。"""
+    repo = _repo(tmp_path, {"streak": 0, "shelved": [], "red": {}})
+    _declare_verifier(repo, "pytest -q")
+    _run(repo, _runs(("cd y && pytest -q -k a", FAIL_OUT)))
+    _run(repo, _runs(("cd y && pytest -q", PASS_OUT)))
+    assert not _state(repo)["red"], _state(repo)["red"]
+
+
+def test_g117_a_non_finite_timestamp_is_dropped_once_not_on_every_stop(tmp_path):
+    """G117：手改出的 NaN 時間戳（連同它的鍵，TTL 篩選丟掉）存檔一次；第二個 Stop 不再寫檔（比較不得恆為不等）。"""
+    repo = _repo(tmp_path)
+    p = repo / STATE_REL
+    p.parent.mkdir(exist_ok=True)
+    p.write_text('{"streak": 1, "shelved": [], "red": {"%s": 1}, "red_seen": {"%s": NaN}}'
+                 % (_G117_G2, _G117_G2), encoding="utf-8", newline="")
+    _run(repo, [_user_prompt("no tests")])
+    first = p.read_text(encoding="utf-8")
+    assert "NaN" not in first, first
+    mtime = p.stat().st_mtime_ns
+    _run(repo, [_user_prompt("no tests again")])
+    assert p.stat().st_mtime_ns == mtime, "第二個沒有變化的 Stop 又寫了一次檔"
+
+
+@pytest.mark.parametrize("cmd", ["make lint || tox -e py311", "MODE=x make lint || tox"],
+                         ids=["no-context", "with-context"])
+def test_g117_an_empty_command_segment_still_climbs_the_ladder(tmp_path, cmd):
+    """G117：測試指令被管線尾巴切成空字串（`… || tox`）時，鍵仍是 g2 形狀、連紅照樣擋與擱置。
+
+    曾經對空指令段回 `""`，而 `""` 不符合 KEY_RE、下一次載入就被當舊鍵丟掉——階梯永遠停在 1，
+    不擋、不擱置、沒有訊息（2026-10-25 第 3 輪正確性鏡頭實跑；v1.7.0 會照常計數）。
+    """
+    assert _G117_SHAPE.match(gg.test_key(cmd)), gg.test_key(cmd)
+    repo = _repo(tmp_path, {"streak": 0, "shelved": []})
+    _run(repo, _runs((cmd, FAIL_OUT)))
+    _run(repo, payload={"hook_event_name": "UserPromptSubmit"})
+    out = _run(repo, _runs((cmd, FAIL_OUT)))
+    assert _blocked(out), _state(repo)
+    _run(repo, payload={"hook_event_name": "UserPromptSubmit"})
+    _run(repo, _runs((cmd, FAIL_OUT)))
+    assert len(_state(repo)["shelved"]) == 1, _state(repo)
+
+
+@pytest.mark.parametrize("decl", ["make lint || tox", "> note", "2>/dev/null"],
+                         ids=["or-tox", "quote-line", "redirect-only"])
+def test_g117_a_declaration_with_an_empty_command_segment_does_not_authorize(tmp_path, decl):
+    """G117：指令段是空的宣告行不成為權威——v1.7.0 在 `load_verifiers` 的 `if k:` 丟掉它。
+
+    空指令段照樣雜湊之後，這行一度變成 `H("")` 權威：任何 `X | nox` 的綠都配對得上、清掉整個
+    context 的紅並把連敗歸零，階梯到不了第 2 格（2026-10-25 第 4 輪正確性鏡頭實跑）。
+    """
+    repo = _repo(tmp_path, {"streak": 0, "shelved": []})
+    _declare_verifier(repo, decl)
+    _run(repo, _runs(("pytest tests/a.py", FAIL_OUT)))
+    _run(repo, _runs(("ruff check . | nox -s tests", PASS_OUT)))
+    out = _run(repo, _runs(("pytest tests/a.py", FAIL_OUT)))
+    assert _blocked(out) and _state(repo)["streak"] == 2, _state(repo)
+
+
+def test_g117_pair_a_current_key_survives_loading(tmp_path):
+    """G117 M-1 配對：g2 形狀的鍵載入時原樣保留，次數接得上（不是「什麼都丟」）。"""
+    cmd = "pytest tests/x.py -q"
+    repo = _repo(tmp_path, _ladder(cmd, 2))
+    out = _run(repo, _turn(cmd, FAIL_OUT))
+    assert _blocked(out) and "shelving it" in _reason(out), "第三次紅沒擱置：g2 鍵的兩次沒接上"
+
+
+def test_g117_a_long_command_keys_in_linear_time():
+    """G117 成本：6 萬字元的指令算鍵 < 0.5 秒（三段完整 sha256 的成本邊界）。"""
+    cmd = "pytest " + "tests/x.py " * 6000
+    t = time.perf_counter()
+    gg.test_key(cmd)
+    assert time.perf_counter() - t < 0.5

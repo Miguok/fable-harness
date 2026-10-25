@@ -12,6 +12,43 @@ The current version is also kept in [VERSION](VERSION).
 
 ## [Unreleased]
 
+### Fixed
+
+- **目標關卡把測試指令本身的機密寫進本機狀態檔**：`.fable/goal_state.json` 的 `red`／`red_seen`
+  以指令文字當鍵，`pytest --api-key=X` 的 X 以明碼落地。現在鍵是雜湊組合
+  （context、指令段、剝掉輸出格式旗標的指令段各一段 sha256），`red`／`red_seen` 的鍵不含指令原文。
+
+### Changed
+
+- **context 的值不同就是不同目標**：`TOKEN=a pytest t.py` 與 `TOKEN=b pytest t.py` 以前因為值被遮成
+  `***` 而同鍵、一條的綠會解掉另一條的紅；現在異鍵。黏著分隔符的寫法也因此分開，例子見已知限制表。
+- **指令裡字面的 ` :: ` 不再被切成 context**（以前 `pytest -k "a :: b"` 的 `pytest -k "a` 會被當成 context）。
+- **舊版狀態檔的鍵在下一次正常跑完的 Stop 時丟棄**：1.7.0 及更早的文字鍵算不回新身分，次數不遷移，
+  那些目標的階梯從 1 重算。
+
+### Known limitations
+
+- **低熵機密可被猜**：雜湊吃未遮的值，持有狀態檔的人可以逐一猜測短密碼並比對。
+- **同一份狀態檔不可由新舊兩版 hook 處理**：兩版同時處理同一個 Stop 時，兩道階梯都可能無聲失效
+  （連紅不擋、不擱置）；而且舊版每處理一次 Stop 就重寫一次帶明碼的文字鍵，混用期間上面 Fixed 那條
+  不成立。新版要到下一次正常跑完的 Stop 存檔才丟掉這些鍵，只讀的入口（使用者送出訊息時的注入）與
+  閘自己走 fail-open 的那次 Stop 都不清。全域與專案的 hook 必須指向同一版。
+- **降回 1.7.0 再升回時計數可能失真**：降版期間 1.7.0 的綠收不掉新版留下的紅，在該目標最後一次
+  紅的 24 小時內升回，那些目標可能直接被擋或擱置；降版期間 1.7.0 的權威驗證綠會清掉新版所有的紅，
+  不分 context。
+- **擱置紀錄與擋下訊息沿用原本的遮蔽**：1.6.0 列出的半遮形狀照舊會進擱置紀錄並注入對話。
+- **context 是字面擷取結果**（1.6.0 起的限制，現行行為如下）：
+
+  <!-- G113:context -->
+  | 指令 A | 指令 B | A 的 context | B 的 context | 鍵 |
+  |---|---|---|---|---|
+  | `A='x'y pytest t.py` | `A='x'z pytest t.py` | `A=x` | `A=x` | `同鍵` |
+  | `cd "$HOME"/projA && pytest t.py` | `cd "$HOME"/projB && pytest t.py` | `cd=$HOME` | `cd=$HOME` | `同鍵` |
+  | `cd a; pytest t.py` | `cd a && pytest t.py` | `cd=a;` | `cd=a` | `不同鍵` |
+  | `TOKEN=a pytest t.py` | `TOKEN=b pytest t.py` | `TOKEN=a` | `TOKEN=b` | `不同鍵` |
+  | `TOKEN=abc&&pytest t.py` | `TOKEN=abc && pytest t.py` | `TOKEN=abc&&` | `TOKEN=abc` | `不同鍵` |
+  <!-- /G113:context -->
+
 ## [1.7.0] — 2026-10-24
 
 ### Changed
@@ -73,14 +110,12 @@ The current version is also kept in [VERSION](VERSION).
 
   以下是代表例，不是完整支援清單；表中 context 不含測試指令本身：
 
-  <!-- G113:context -->
   | 指令 A | 指令 B | A 的 context | B 的 context | 鍵 |
   |---|---|---|---|---|
   | `A='x'y pytest t.py` | `A='x'z pytest t.py` | `A=x` | `A=x` | `同鍵` |
   | `cd "$HOME"/projA && pytest t.py` | `cd "$HOME"/projB && pytest t.py` | `cd=$HOME` | `cd=$HOME` | `同鍵` |
   | `cd a; pytest t.py` | `cd a && pytest t.py` | `cd=a;` | `cd=a` | `不同鍵` |
   | `TOKEN=a pytest t.py` | `TOKEN=b pytest t.py` | `TOKEN=***` | `TOKEN=***` | `同鍵` |
-  <!-- /G113:context -->
 
   精確行為以 `.claude/hooks/goal_gate.py` 的 `test_key`、`CD_RE`、
   `ENV_PREFIX_RE`、`run_context` 與 `redact` 為準。
