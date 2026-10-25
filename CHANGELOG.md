@@ -12,6 +12,8 @@ The current version is also kept in [VERSION](VERSION).
 
 ## [Unreleased]
 
+## [1.8.0] — 2026-10-26
+
 ### Fixed
 
 - **目標關卡把測試指令本身的機密寫進本機狀態檔**：`.fable/goal_state.json` 的 `red`／`red_seen`
@@ -56,6 +58,9 @@ The current version is also kept in [VERSION](VERSION).
   與 `pytest a.py -k slow b.py` 被視為同一個目標，一條的綠可能解掉另一條的紅。分隔符前留空白可避免。
 - **接線閘對 `git -C <路徑>` 的路徑照字面使用**：Git Bash 寫法（`/c/Users/...`）、`~`、未展開的 `"$VAR"`
   在 Windows 上可能找不到 repo，那一次 commit 不做接線檢查，`--no-verify` 也放行。
+- **任一 Stop hook 擋下之後的那一段，目標閘不讀（待修）**：Claude 因 Stop hook 擋下而繼續工作時，那次 Stop
+  目標閘直接放行、不讀這段的測試結果；回合若就此結束，這段的紅綠之後也讀不到。所以這段的紅不累加，這段的綠
+  也解不掉紅，下一個回合同一目標再紅時可能被誤擱置。1.2.0 起即有。
 
 ## [1.7.0] — 2026-10-24
 
