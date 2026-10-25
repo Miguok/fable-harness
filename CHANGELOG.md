@@ -29,9 +29,6 @@ The current version is also kept in [VERSION](VERSION).
   代價；1.6.0 已知限制表已更正為現行行為）。
 - **分隔符之後只認 `pytest`／`pytest.exe`／`python -m pytest` 三種啟動形式**：`uv run pytest -q`
   出現在後段時格式旗標不剝，方向是不合併（至多多擋一次，不會靜默清紅）。
-- **接線閘對 `git -C <路徑>` 的路徑照字面交給作業系統**：Git Bash 寫法（`/c/Users/...`）、`~`、未展開的
-  `"$VAR"` 在 Windows 上解析不到 repo，那一次 commit 呼叫不檢查（含 `--no-verify` 也放行），只在同目錄
-  `.gate_fail` 留一行。接線閘凍結中，尚未修。
 
 ## [1.7.0] — 2026-10-24
 

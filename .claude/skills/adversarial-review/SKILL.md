@@ -18,7 +18,6 @@ description: 多方抗辯——對重大結論/架構決策/bug根因判定/安�
 
 2. **同一則訊息平行派出三個反方**（必須用 Agent 工具、subagent_type 分別為 `skeptic`、`red-team`、`simplifier`，一次三發不得串行）。
    委派抗辯三反方（skeptic/red-team/simplifier）一律明指 model: opus；唯一例外：主迴圈模型 ID 含 opus 或 fable 時可不指定 model（繼承主迴圈）；無法判斷主迴圈是誰→用 opus。（抗辯裁決由主迴圈自做，不受此限。）每個 agent 的 prompt = 待審包原文 + 該鏡頭的任務指示。逐條抗辯時每條發現固定耗 3 個子代理（三鏡頭），單輪平行子代理總數上限 6＝一輪最多 2 條發現；更多條就分批送審，批與批的結論分開回報、不合併。
-   反方要實跑 hook／閘門探針時，prompt 裡固定附一句：**探針一律驅動複製到 scratchpad 的副本，不得直接餵 `.claude/hooks/` 的生產檔**——生產檔的屍檢寫在它自己旁邊的 `.gate_fail`，探針的合成輸入會把雜訊寫進去（2026-10-25 清出 6 筆全是探針）。
 
 3. **裁決（過半存活制）**：
    - 3 票 SURVIVED → confirmed，可直接採信
