@@ -60,12 +60,6 @@
        `key_context(test_key(…))`、`test_key` 相等性與 `redact`；標記缺少或重複、標記內有非表格行、
        表頭或分隔列不是逐字的固定格式、資料列不是 n 個非空反引號儲存格、沒有資料列，一律 fail、不 skip
        （白名單解析器；由 11 種異常＋1 個配對測試盯住）
-  G114 機密不論在 context 段或指令段、不論引號怎麼串接（`a"SEC RET"`、`a"b c"d'e f'`、`--token <<< x`），
-       都不進鍵、不進訊息；配對：裸值到分隔符為止（`TOKEN=abc&&pytest` 的測試指令不被吞）、非機密鍵名的值照留；
-       端到端：舊版留下的明碼鍵載入時改鍵並保留次數（第三次紅照擱置、檔內無明碼）（P7-1／:140，1.8.0）
-  G115 黏著分隔符的格式旗標（`--tb=no;pytest`、`--tb=no&&pytest`）不得讓兩條不同指令同鍵；分隔符之後別的命令的
-       旗標原樣保留（`rm -rf`）；配對：每個 pytest 段（含 `python -m pytest`）自己的格式旗標照剝、單段行為不變、
-       引號裡的 `|` 不是分隔符（T1，1.8.0）
   （G106～G111 隨「模擬 bash 斷字」一併移除；仍成立且與保留行為有關的斷言已搬進 G112 配對）
   （G98 S2 期望於 2026-10-06 fable 複審改為「綠→紅 計 1、不擋」）
 
@@ -104,15 +98,6 @@
     `P=1 &&` 算進 context；`A='x'y` 與 `A='x'z` 合成同一鍵。
     （`TOKEN=a"SECRET PAYLOAD"` 經鍵的路徑遮成 `TOKEN=***`，不洩漏，主迴圈 22:10 實查；`redact` 直接套在整條原始指令上
     只遮到 `TOKEN=*** PAYLOAD"`，那是 1.5.0 起就有、本次未改動的行為，不是退版造成的。）
-2026-10-25 08:05 全套 tests/ 669 passed, 4 skipped（119.39s，Git Bash）
-2026-10-25 08:02 → 本檔 291 passed ✅（G114／G115 實作後；goal_gate.py：`_SECRET_VALUE` token 形狀、`test_key` 的 run 段經
-  `redact`、`load_state` 舊明碼鍵改鍵合併、`strip_format_flags` 依分隔符切段；CHANGELOG 1.6.0 G113:redact 表改成現行輸出並加
-  `--key=alpha` 列）。突變三格各自翻紅：拿掉 run 段 redact → G114 5 failed, 6 passed；拿掉切段 → G115 5 failed, 5 passed；
-  拿掉改鍵合併 → G114 端到端 1 failed。實測值：`test_key("pytest --api-key=SECRETX tests/")` → `pytest --api-key=*** tests/`；
-  `redact('TOKEN=a"SEC RETX" pytest x.py')` → `TOKEN=*** pytest x.py`；`goal_identity` 對 `pytest a.py --tb=no;pytest -k slow b.py`
-  → `pytest a.py;pytest -k slow b.py`（與 `pytest a.py -k slow b.py` 分鍵）；`pytest a.py -rf&&rm -rf x` 的 `rm -rf x` 保留。
-2026-10-25 07:53～08:02 之間先紅（G114／G115 只寫測試、未改 goal_gate.py，HEAD 0a242bc）：15 failed, 6 passed
-  （6 條綠是配對：or-or 與 quoted-pipe 本來就靠管線尾巴分鍵、單段與 plain-key 行為原本就對；確切分鐘未逐次 `date`，UNVERIFIED）
 2026-10-18 21:55～22:01 之間先紅（G112，未改 goal_gate.py，HEAD 0abe9cb）：8 failed, 8 passed
   （6 條鍵合併、export 4000 值耗時 2.9 秒、` a=`×20000 耗時 10.8 秒；配對與其餘對抗輸入為綠）
 （以下 2026-10-18 15:43 以前關於 G106～G111 的紀錄隨該行為移除，不再保留；2026-10-06 的 G105 紀錄見下）
@@ -3197,91 +3182,3 @@ def test_g113_parser_fails_on_malformed_tables(text):
 def test_g113_parser_pair_reads_a_well_formed_table():
     """G113 解析器配對：格式正確的表照常讀出每一列（不是「什麼都 fail」）。"""
     assert _g113_parse(_G113_OK, "t", ["A", "B"]) == [["a", "b"], ["c", "d"]]
-
-
-# ── G114：鍵的每一段與訊息都經過完整遮蔽（P7-1／:140，1.8.0）──────────────────────
-# 缺陷類別：遮蔽沒有套到鍵的每一段（`run` 段原文落地），而且裸值 pattern 只吃到第一個空白
-# （`TOKEN=a"SEC RET"` 遮成 `TOKEN=*** RET"`）。類別測試盯的是「任何一段、任何串接寫法」，
-# 不是原本回報的那一條指令。
-_G114_CASES = [
-    ("flag-in-run", "pytest --api-key=SECRETX tests/", "SECRETX"),
-    ("spaced-flag-in-run", 'cd a && pytest --token "ghp SECRETX" t.py', "SECRETX"),
-    ("glued-quote-env", 'TOKEN=a"SEC RETX" pytest x.py', "RETX"),
-    ("glued-quote-flag", 'pytest --api-key=a"SEC RETX" x.py', "RETX"),
-    ("multi-segment-env", "TOKEN=a\"b c\"d'e SECRETX' pytest x.py", "SECRETX"),
-    ("multi-segment-flag", "pytest --token a\"b c\"d'e SECRETX' x.py", "SECRETX"),
-]
-
-
-@pytest.mark.parametrize("cmd,secret", [(c, s) for _, c, s in _G114_CASES],
-                         ids=[i for i, _, _ in _G114_CASES])
-def test_g114_secrets_never_reach_the_key_in_any_segment(cmd, secret):
-    """G114 類別：機密不論在 context 段還是指令段、不論引號怎麼串接，都不進鍵、不進訊息。"""
-    key = gg.test_key(cmd)
-    assert secret not in key, f"機密進了鍵：{key}"
-    assert "pytest" in key, f"遮過頭，認不出測試指令：{key}"
-    shown = gg.redact(cmd)
-    assert secret not in shown, f"機密進了訊息：{shown}"
-    assert "pytest" in shown, f"遮過頭，認不出測試指令：{shown}"
-
-
-@pytest.mark.parametrize("cmd,kept", [
-    ("TOKEN=abc&&pytest x.py", "&&pytest x.py"),        # 裸值到分隔符為止，測試指令不被吞
-    ("TOKEN=abc;pytest x.py", ";pytest x.py"),
-    ("pytest --token <<< ghp_x t.py", "t.py"),          # here-string 分支照舊
-    ("make test FILE=tests/test_auth.py", "FILE=tests/test_auth.py"),  # 非機密鍵名不遮
-], ids=["and-and", "semicolon", "here-string", "plain-key"])
-def test_g114_pair_masking_stops_at_the_separator_and_keeps_plain_keys(cmd, kept):
-    """G114 配對：遮蔽到分隔符為止、非機密鍵名的值照留（不是「什麼都遮」）。"""
-    shown = gg.redact(cmd)
-    assert kept in shown, shown
-    assert "ghp_x" not in shown and "abc" not in shown, shown
-
-
-def test_g114_a_plaintext_key_left_by_an_older_version_is_rekeyed_and_keeps_its_count(tmp_path):
-    """G114 端到端：舊版留在狀態檔裡的明碼鍵，載入時改成遮蔽鍵並保留次數——明碼不留、階梯不歸零。"""
-    cmd = "pytest --api-key=SECRETX tests/"
-    old_key = "pytest --api-key=SECRETX tests/"     # 1.7.0 以前的鍵形狀（run 段未遮）
-    repo = _repo(tmp_path, {"streak": 2, "red": {old_key: 2},
-                            "red_seen": {old_key: time.time()}, "shelved": []})
-    out = _run(repo, _turn(cmd, FAIL_OUT))
-    raw = (repo / STATE_REL).read_text(encoding="utf-8")
-    assert "SECRETX" not in raw, f"明碼仍在狀態檔：{raw}"
-    assert "SECRETX" not in out, f"明碼回吐進對話：{out}"
-    assert _blocked(out) and "shelving it" in _reason(out), "舊鍵的兩次沒有接上：第三次紅應擱置"
-
-
-# ── G115：格式旗標只在各自的 pytest 段內剝（T1，1.8.0）─────────────────────────────
-# 缺陷類別：`--tb=\S+`／`--color=\S+` 與 `-r…` 對整條指令的 token 逐一 fullmatch，黏著的
-# `;`／`&&` 與下一條指令一起被吃掉（`--tb=no;pytest` 整個 token 消失）、別的命令的 `-rf` 被當成
-# pytest 報告旗標。修法是依分隔符切段、每段各自判 runner；盯的是「分隔符之後的任何 token」。
-def _ident(c):
-    return gg.goal_identity(gg.test_key(c))
-
-
-@pytest.mark.parametrize("a,b", [
-    ("pytest a.py --tb=no;pytest -k slow b.py", "pytest a.py -k slow b.py"),
-    ("pytest a.py --tb=no&&pytest b.py", "pytest a.py b.py"),
-    ("pytest a.py --color=no||pytest b.py", "pytest a.py b.py"),
-    ('pytest -k "a|b"', 'pytest -k "a|c"'),                 # 引號裡的 `|` 不是分隔符，選取不同仍不同
-], ids=["semicolon", "and-and", "or-or", "quoted-pipe"])
-def test_g115_a_glued_separator_does_not_merge_two_different_runs(a, b):
-    """G115 類別：黏著分隔符的格式旗標不得讓兩條不同的測試指令算成同一個目標。"""
-    assert _ident(a) != _ident(b), (_ident(a), _ident(b))
-
-
-def test_g115_another_commands_flags_are_not_pytest_format_flags():
-    """G115：分隔符之後是別的命令時，它的旗標原樣保留（`rm -rf` 的 `-rf` 不是 pytest 的 `-r`）。"""
-    assert "rm -rf x" in _ident("pytest a.py -rf&&rm -rf x")
-
-
-@pytest.mark.parametrize("a,b", [
-    ("pytest a.py --tb=no; pytest b.py -q", "pytest a.py; pytest b.py"),
-    ("pytest a.py --tb=no;pytest b.py -q", "pytest a.py; pytest b.py"),
-    ("pytest a.py; python -m pytest b.py -q", "pytest a.py; python -m pytest b.py -v"),
-    ("pytest a.py --tb=no", "pytest a.py -q"),
-    ('pytest -k "a|b" -q', 'pytest -k "a|b"'),
-], ids=["two-pytest-spaced", "two-pytest-glued", "python-m-pytest", "single", "quoted-pipe"])
-def test_g115_pair_format_flags_in_each_pytest_segment_still_merge(a, b):
-    """G115 配對：每個 pytest 段自己的格式旗標照剝（不是「有分隔符就什麼都不剝」）。"""
-    assert _ident(a) == _ident(b), (_ident(a), _ident(b))

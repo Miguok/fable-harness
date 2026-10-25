@@ -473,44 +473,19 @@ def _unquote(t):
     return t
 
 
-# 指令分隔符與「一段指令」交替出現；引號裡的 `;&|` 不是分隔符（`-k "a|b"`），
-# 落單的引號照字面吃掉，不丟字。
-_CMD_SEG_RE = re.compile(r"&&|\|\||[;&|]|(?:\"[^\"]*\"|'[^']*'|[^;&|\"']|[\"'])+")
-_CMD_SEPS = {";", "&", "|", "&&", "||"}
-
-
 def strip_format_flags(run):
-    """Drop output-format-only pytest flags, one command segment at a time.
-
-    先依 `;`／`&&`／`||`／`|`／`&` 切段，每段各自判 runner、各自剝：原本對整條
-    指令的 token 逐一 fullmatch，`--tb=\\S+` 把黏著的 `;pytest` 連下一條指令一起
-    吃掉（`pytest a.py --tb=no;pytest -k slow b.py` 與 `pytest a.py -k slow b.py`
-    同鍵，後者的綠解掉前者的紅），`rm -rf` 的 `-rf` 也被當成 pytest 的 `-r` 報告
-    旗標剝掉（T1，1.8.0 修）。切段之後分隔符與各段原樣接回，段內空白收成單一空白。
-    """
-    segs = _CMD_SEG_RE.findall(run)
-    return "".join(s if s in _CMD_SEPS else _strip_segment_flags(s) for s in segs)
-
-
-def _strip_segment_flags(run):
-    """單一指令段：只有 runner 是 pytest 才剝，其餘段原樣（空白收攏）保留。
+    """Drop output-format-only pytest flags.
 
     只去掉完整 token 的外層成對引號後再比對；引號內的內容不拆解、不改寫。
-    第一段依賴 `test_key` 已把指令起點切到 runner：第一個 token（去引號、小寫）是
+    依賴 `test_key` 已把指令起點切到 runner：第一個 token（去引號、小寫）是
     `pytest` 或以 `pytest.exe` 結尾才算 pytest；參數位置的 `pytest`
     （`go test -run pytest`）不算（G97、G100）。fable 終審 2026-10-06 P3：
-    原本的啟動器跳過迴圈在鍵路徑上是死碼，已刪。分隔符之後的段沒有經過
-    `test_key` 的切點，所以另認 `python[3][.exe] -m pytest` 這一種啟動形式
-    （Codex 2026-10-25 第二意見第 6 題）；`uv run pytest` 等其他啟動器在後段
-    不剝——方向是「不合併」，閘至多多嘮叨一次，不會靜默清紅。
+    原本的啟動器跳過迴圈在鍵路徑上是死碼，已刪。
     """
     toks = _TOKEN_RE.findall(run)
     first = _unquote(toks[0]).lower() if toks else ""
     if first != "pytest" and not first.endswith("pytest.exe"):
-        launcher = (len(toks) >= 3 and re.fullmatch(r"python3?(\.exe)?", first)
-                    and _unquote(toks[1]) == "-m" and _unquote(toks[2]).lower() == "pytest")
-        if not launcher:
-            return " ".join(run.split())
+        return run
     out, i = [], 0
     while i < len(toks):
         t = toks[i]
@@ -554,11 +529,7 @@ def test_key(command):
     # 兩者都變成 `go test -run 'A`，一邊的綠會清掉另一邊的紅。
     m = TEST_CMD_RE.search(command)
     stripped = command[m.start():] if m else command
-    # 指令段也要遮：鍵落地到狀態檔，`pytest --api-key=X` 的 X 就是機密。原本只遮
-    # context 段，`run` 原文直接進 `red`／`red_seen` 的鍵（1.5.0 起即有，1.8.0 修）。
-    # 遮在定位之後、不在整條指令之前——`redact` 會改寫文字，先遮會改變
-    # `TEST_CMD_RE` 的命中位置（Codex 2026-10-25 第二意見）。
-    run = redact(" ".join(strip_pipeline_tail(stripped).split()))
+    run = " ".join(strip_pipeline_tail(stripped).split())
     ctx = run_context(command[:m.start()] if m else "")
     return ("%s%s%s" % (ctx, CONTEXT_SEP, run)) if ctx else run
 
@@ -946,16 +917,6 @@ def load_state(root):
     s["red"] = {k: v for k, v in s["red"].items()
                 if now - seen.get(k, now) < RED_TTL_SECONDS}
     s[RED_SEEN] = {k: seen.get(k, now) for k in s["red"]}
-    # 1.8.0 以前 `run` 段不遮，舊檔的鍵可能帶明碼（`pytest --api-key=X …`）。升級後新鍵
-    # 是遮蔽過的形狀，舊鍵既不會被解掉也不會很快被淘汰（淘汰只砍次數最低的），明碼就
-    # 一直躺在檔裡。這裡把每個鍵過一次 `redact`：同形的合併取次數最大、時間最新——
-    # 階梯不歸零、明碼不留（Codex 2026-10-25 第二意見第 2 題）。
-    red, seen = {}, {}
-    for k, v in s["red"].items():
-        rk = redact(k)
-        red[rk] = max(red.get(rk, 0), v)
-        seen[rk] = max(seen.get(rk, 0), s[RED_SEEN][k])
-    s["red"], s[RED_SEEN] = red, seen
     # 手改壞的 `counted`：丟掉無效部分，不得讓它關掉整道閘。
     c = s.get("counted")
     s["counted"] = [i for i in c if isinstance(i, str)] if isinstance(c, list) else []
@@ -967,12 +928,7 @@ def load_state(root):
 # `FILE=*** CASE=***`——擱置項的用途正是讓人認出「當時卡在哪」，遮到認不出來
 # 就把這條記錄變成廢話。
 SECRET_KEY = r"[\w.-]*(?:token|secret|password|passwd|pass|apikey|api_key|key|auth|credential|cred)"
-# 值是一個 shell token：裸段、雙引號段、單引號段任意串接（`a"SEC RET"d'e f'`），
-# 到空白或指令分隔符（`;`、`&`、`|`）為止。原本是 `\S+`：串接值只遮到第一個空白
-# （`TOKEN=a"SECRET PAYLOAD"` → `TOKEN=*** PAYLOAD"`，1.5.0 起即有，1.8.0 修），
-# 而且會把 `TOKEN=abc&&pytest x.py` 的 `&&pytest` 一起吞掉。
-_SECRET_VALUE = r"(?:\"[^\"]*\"|'[^']*'|[^\s\"';&|])+"
-SECRET_ASSIGN_RE = re.compile(r"(?i)\b(-{0,2}" + SECRET_KEY + r")=(" + _SECRET_VALUE + r")")
+SECRET_ASSIGN_RE = re.compile(r"(?i)\b(-{0,2}" + SECRET_KEY + r")=(\S+)")
 # 值可以是引號包住的（裡面有空白）、heredoc 記號，或裸的一段。只吃 `\S+` 的話
 # `--token "ghp_x MORE tail"` 會在第一個空白斷掉：`***` 蓋在前半段、後半段留
 # 明碼——那比完全不遮更危險，因為旁邊有 `***`，讀的人會判定已經遮過了。
@@ -988,18 +944,15 @@ SECRET_ASSIGN_RE = re.compile(r"(?i)\b(-{0,2}" + SECRET_KEY + r")=(" + _SECRET_V
 SECRET_FLAG_KEY = (r"(?:[\w.-]*[-._])?"
                    r"(?:token|secret|password|passwd|pass|apikey|api_key|key"
                    r"|auth|credential|cred)")
-# here-string 分支原本是 `<<<?\s*\S*\s+`：`--token <<< ghp_x t.py` 時 `\S*` 吃掉 `ghp_x`，
-# `***` 蓋在 `t.py` 上、真正的 token 留明碼（只有 token 在行尾時靠回溯才碰巧對）。
-# 改成只跳過記號本身，值一律是記號後的第一個 token（1.8.0）。
 SECRET_SPACED_RE = re.compile(
-    r"(?i)(\s--?" + SECRET_FLAG_KEY + r")\s+(?:<<<?\s*)?"
-    r"(" + _SECRET_VALUE + r")")
+    r"(?i)(\s--?" + SECRET_FLAG_KEY + r")\s+(?:<<<?\s*\S*\s+)?"
+    r"(\"[^\"]*\"|'[^']*'|\S+)")
 # PowerShell 的環境變數寫法：`$env:GITHUB_TOKEN = "ghp_…"`。等號兩側有空白、
 # 前面還有 `$env:`，前面每一條都碰不到它——而 SHELL_TOOLS 明文含 PowerShell。
 # 實測三回合紅之後，`.fable/goal_state.json` 的 last_command 逐字含明碼 token，
 # 且 UserPromptSubmit 的注入內容裡 grep 得到同一串（2026-09-06 抗辯）。
 SECRET_PS_ENV_RE = re.compile(
-    r"(?i)(\$env:" + SECRET_KEY + r")\s*=\s*(" + _SECRET_VALUE + r")")
+    r"(?i)(\$env:" + SECRET_KEY + r")\s*=\s*(\"[^\"]*\"|'[^']*'|\S+)")
 # `curl -u alice:pw` / `--user alice:pw`：帳密用冒號連在一起，沒有 `=`，
 # 也不是 URL 內嵌，所以 URL_CRED_RE 碰不到。只認 `-u`／`--user` 這兩個確定
 # 是帳密的旗標，且值必須含冒號——`docker run -u 1000` 這種不會被動到。
@@ -1494,9 +1447,8 @@ def run_stop(data, root):
     # 這一回合紅的鍵裡，走得最遠的那個決定階梯。取最遠而不是最後一個：
     # 一回合內同時紅了兩個目標時，該被擋的是已經試最多次的那一個。
     key = max(fresh_red, key=lambda k: red[k])
-    # 原始指令不落地：`red` 的鍵是 `test_key`（context 段與指令段都經過 `redact`），
-    # 值只是次數；原文只在這裡取一次，遮蔽後給擱置項與擋下訊息用。
-    # （原註解寫「指令不落地，red 只存次數」——鍵本身就是指令，那句不成立；1.8.0 更正。）
+    # 指令不落地，用完即取：`red` 只存次數。存遮蔽過的指令會讓機密多一個
+    # 長期落腳處，而唯一需要它的是擱置項，那裡才寫。
     cmd = redact(raw_by_key.get(key, ""))
     state["streak"] = streak = red[key]
 

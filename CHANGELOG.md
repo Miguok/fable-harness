@@ -12,24 +12,6 @@ The current version is also kept in [VERSION](VERSION).
 
 ## [Unreleased]
 
-### Fixed
-
-- **目標關卡把測試指令本身的機密寫進本機狀態檔**：鍵只遮 context 段，`pytest --api-key=X`
-  的 X 以明碼落在 `.fable/goal_state.json` 的 `red`／`red_seen` 鍵；遮蔽的裸值只吃到第一個空白，
-  `TOKEN=a"SECRET PAYLOAD"` 遮成 `TOKEN=*** PAYLOAD"` 進擱置紀錄與擋下訊息；`--token <<< x t.py`
-  把 `***` 蓋在 `t.py` 上。現在鍵的兩段都經過遮蔽，值是整個 shell token（引號串接也整段遮、到
-  指令分隔符為止），舊狀態檔裡的明碼鍵載入時改成遮蔽鍵並保留次數。
-- **目標關卡的格式旗標吃掉黏著的分隔符**：`--tb=no;pytest -k slow b.py` 被整個 token 剝掉，
-  兩條不同的測試指令算成同一個目標，一條的綠解掉另一條的紅；`rm -rf` 的 `-rf` 也被當成 pytest
-  的報告旗標。現在先依 `;`／`&&`／`||`／`|`／`&` 切段，每段各自判 runner 再剝。
-
-### Known limitations
-
-- **帶機密樣式名稱的選取參數不再區分**：`pytest --key=alpha t.py` 與 `--key=beta` 同鍵（遮蔽的
-  代價；1.6.0 已知限制表已更正為現行行為）。
-- **分隔符之後只認 `pytest`／`pytest.exe`／`python -m pytest` 三種啟動形式**：`uv run pytest -q`
-  出現在後段時格式旗標不剝，方向是不合併（至多多擋一次，不會靜默清紅）。
-
 ## [1.7.0] — 2026-10-24
 
 ### Changed
@@ -59,8 +41,7 @@ The current version is also kept in [VERSION](VERSION).
   蓋掉，測試先行每片一紅一綠也會在第三片被擱置。現在已計的紅之後只要出現同一目標的綠，
   那個紅就收束，之後的新紅從 1 計（§4b-1 第 3 條）；權威驗證綠同理（同一 context 內）。
 - **權威驗證指令只差輸出格式旗標就比對不到**：宣告 `python -m pytest tests/ -q`，實跑帶
-  `-p no:cacheprovider` 或 `-rf --tb=no` 時宣告形同無效。比對兩邊都先剝格式旗標；選取旗標不同仍不相符
-  （例外：帶機密樣式名稱的選取參數值會被遮成 `***`，`--token=a` 與 `--token=b` 視為相同，見 1.8.0 已知限制）。
+  `-p no:cacheprovider` 或 `-rf --tb=no` 時宣告形同無效。比對兩邊都先剝格式旗標；選取旗標不同仍不相符。
 
 ### Known limitations
 
@@ -104,17 +85,17 @@ The current version is also kept in [VERSION](VERSION).
   精確行為以 `.claude/hooks/goal_gate.py` 的 `test_key`、`CD_RE`、
   `ENV_PREFIX_RE`、`run_context` 與 `redact` 為準。
 
-- **機密遮蔽的限制**（本條 1.8.0 更正：指令段也遮、串接值整段遮，以下是更正後的行為）：
-  鍵的 context 段與指令段中被機密名稱規則命中的值都遮成 `***`，因此不同機密值不再區分——
-  含指令段裡帶機密樣式名稱的選取參數（`pytest --key=alpha t.py` 與 `--key=beta` 同鍵，
-  一條的綠會解掉另一條的紅）；名稱未被規則辨識的機密不保證遮蔽。例如：
+- **機密遮蔽不完整**：context 中被機密名稱規則命中的值會遮成 `***`，
+  因此不同機密值可能不再區分；名稱未被規則辨識的機密不保證遮蔽。
+  測試指令本身（旗標、位置參數等）不經遮蔽，其中的機密會以明碼保留在本機
+  `.fable/goal_state.json` 的 `red`／`red_seen` 鍵中。
+  擱置紀錄與擋下訊息雖會經過遮蔽，仍可能殘留機密並進入對話，例如：
 
   <!-- G113:redact -->
   | 輸入 | 遮蔽後 |
   |---|---|
-  | `TOKEN=a"b c" pytest t.py` | `TOKEN=*** pytest t.py` |
-  | `pytest t.py --api-key=a"b c"` | `pytest t.py --api-key=***` |
-  | `pytest --key=alpha t.py` | `pytest --key=*** t.py` |
+  | `TOKEN=a"b c" pytest t.py` | `TOKEN=*** c" pytest t.py` |
+  | `pytest t.py --api-key=a"b c"` | `pytest t.py --api-key=*** c"` |
   <!-- /G113:redact -->
 
   不應把出現 `***` 視為整段機密已清除的保證。
