@@ -23,7 +23,7 @@
   RG30B 真 git：main 與 annotated tag 都推上去、不帶出別的 tag；gh 失敗後重跑只補 Release
   RG30C 真 git：本機 tag 是 lightweight／巢狀／別名 → 不推送
   RG30E 真 git：本機有名字等於 commit OID 的分支 → 推的仍是審過的 commit
-  RG30D 隔離箱的每道檢查（共 11 例，各違反一道）故意違反都會被**那一道**在執行前擋下
+  RG30D 隔離箱的檢查（共 12 例，各違反一道）故意違反都會被**那一道**在執行前擋下
   RG31 經 main()：跳過審查首發後用同一組參數重跑能補完；不帶 override 重跑被擋
 
 執行命令：
@@ -40,7 +40,9 @@
 審查真的找出缺陷。文字規則這一層已被證明不夠。
 
 執行命令：python -m pytest tests/test_release_gate.py -q
-最後執行：2026-11-15 23:22 → 62 passed ✅（全套 717 passed, 4 skipped in 160.88s）
+最後執行：2026-11-15 23:45 → 63 passed ✅（全套 718 passed, 4 skipped in 160.12s）
+發佈前審查（688c886）後：RG30D 補「唯一 pushurl 指向誘餌」一例——拿掉「push url 必須等於
+  暫存 bare」那道檢查時它紅（1 failed），其餘 11 例不會紅；說明改成實際涵蓋範圍。
 第六輪（審實際程式碼）修正：Codex 指出裸 OID 當 push 來源會被同名 ref 蓋過——RG30E 先紅
   （遠端 main 變成未審查的 c2），來源改 `^{commit}`／`^{tag}` 後綠；RG30D 擴成 11 例，
   每例用 match 釘住擋下它的那一道檢查；推送失敗訊息補「守衛擋下」一條、刪掉可推出的
@@ -744,7 +746,7 @@ def test_rg26_a_failed_push_stops_and_does_not_claim_what_the_remote_holds(
     assert "rc=%d" % rc in problem, problem
     assert stderr in problem, "原始診斷沒帶出來：" + problem
     for must in ("已被別的 tag 占用", "先整合遠端變更", "先處理遠端設定",
-                 "pre-push 守衛因內容擋下", "其他（連線、認證、逾時）"):
+                 "pre-push hook 因內容擋下", "其他（連線、認證、逾時）"):
         assert must in problem, "少了這條處理指示：%s\n%s" % (must, problem)
     for never in ("已完成", "沒有生效", "尚未公開"):
         assert never not in problem, "對遠端現況下了保證：%s" % never
@@ -919,7 +921,8 @@ class RealGitBox:
                             cwd=str(cwd))
             urls = (out.stdout or "").splitlines()
             assert out.returncode == 0 and len(urls) == 1, "push url 不是恰好一個：%r" % urls
-            assert pathlib.Path(urls[0]).resolve() == self.bare.resolve(), urls
+            assert pathlib.Path(urls[0]).resolve() == self.bare.resolve(), (
+                "push url 不是暫存 bare：%r" % urls)
 
     # ── 夾具小工具 ──
     def git(self, argv, cwd=None):
@@ -1054,7 +1057,8 @@ _ESCAPES = {"global-option": "不允許的子命令", "banned-option": "不允�
             "lc-all-changed": "LC_ALL 被動過", "cwd-outside": "cwd 在暫存根之外",
             "gitdir-redirect": "實際 gitdir 在暫存根之外",
             "dest-not-origin": "推送目的地不是 origin",
-            "two-push-urls": "push url 不是恰好一個"}
+            "two-push-urls": "push url 不是恰好一個",
+            "decoy-push-url": "push url 不是暫存 bare"}
 
 
 @pytest.mark.parametrize("escape", list(_ESCAPES))
@@ -1062,8 +1066,10 @@ def test_rg30d_the_isolation_box_blocks_each_measured_escape_before_running_it(
         tmp_path, monkeypatch, escape):
     """RG30D：RealGitBox 的每一道檢查都要咬得到人——故意違反就在執行前 raise。
 
-    守衛只有在「故意違反會紅」時才算守衛。每一例只違反一道檢查，十一例涵蓋
-    `_check` 的全部檢查；其中 -C、GIT_DIR、改掉白名單變數的值、`--file`、多個
+    守衛只有在「故意違反會紅」時才算守衛。每一例只違反一道檢查，十二例涵蓋
+    `_check` 除第一行（非 git 呼叫；下一行的子命令白名單等價地擋下）以外的每一道。
+    gitdir-redirect 例的 `.git` 指向不存在的路徑，擋下它的是探測 rc≠0 那半句，
+    `is_relative_to` 那半句沒有被單獨驗到。其中 -C、GIT_DIR、改掉白名單變數的值、`--file`、多個
     pushurl 是抗辯在 scratch 實測過、曾經寫壞外層 repo 或推到誘餌的路徑。
     斷言兩件事：raise 了，而且那條指令沒有被執行（log 沒有增加；誘餌 bare
     沒有收到任何 ref）。
@@ -1098,14 +1104,15 @@ def test_rg30d_the_isolation_box_blocks_each_measured_escape_before_running_it(
     else:
         decoy = box.root / "decoy.git"
         box.git(["init", "--bare", "-b", "main", str(decoy)], cwd=box.root)
-        box.git(["config", "--add", "remote.origin.pushurl", str(box.bare)])
+        if escape == "two-push-urls":
+            box.git(["config", "--add", "remote.origin.pushurl", str(box.bare)])
         box.git(["config", "--add", "remote.origin.pushurl", str(decoy)])
         cmd = ["git", "push", "origin", box.c1 + ":refs/heads/main"]
     before = len(box.log)
     with pytest.raises(AssertionError, match=_ESCAPES[escape]):   # 必須是這道檢查擋的
         box(cmd, **kw)
     assert len(box.log) == before, "擋下之前就執行了"
-    if escape == "two-push-urls":
+    if escape in ("two-push-urls", "decoy-push-url"):
         assert not box.git(["for-each-ref"], cwd=box.root / "decoy.git"), "誘餌收到了 ref"
 
 

@@ -337,7 +337,7 @@ def do_release(version, commit, override_reason):
     if err:
         return "%s；%s，排除原因後重跑。" % (err, nothing)
     if fields is None:
-        # 明確指定 commit：不帶時標的是執行當下的 HEAD，而跑全套測試那 20 秒
+        # 明確指定 commit：不帶時標的是執行當下的 HEAD，而跑全套測試的那幾分鐘
         # 裡有人 commit，就會標到未審查的那一個。
         out = run(["git", "tag", "-a", tag, "-m", "release %s" % version, commit])
         if out.returncode != 0:
@@ -398,7 +398,7 @@ PUSH_FAILED = """\
   ・`already exists`：這個版號在遠端已被別的 tag 占用，改發下一個版號。
   ・`fetch first` 或 `non-fast-forward`：遠端 main 無法快轉到本 commit。先整合遠端變更，改發下一個版號（本機 tag %(tag)s 已指向本 commit，同一版號在新 commit 上會被擋），提交並重新審查。
   ・`remote rejected`：遠端的規則（例如分支保護）拒絕，先處理遠端設定，再用同一組參數重跑。
-  ・本機 pre-push 守衛因內容擋下（例如偵測到私料）：修掉內容會產生新 commit，改發下一個版號並重新審查（同一版號的本機 tag 指向舊 commit，會被擋）。
+  ・本機 pre-push hook 因內容擋下（例如偵測到私料）：修掉內容會產生新 commit，改發下一個版號並重新審查（同一版號的本機 tag 指向舊 commit，會被擋）。hook 因自身故障或設定問題擋下時，照下一條處理。
   ・其他（連線、認證、逾時）：排除原因後用同一組參數重跑 `release.py %(version)s`（含 --override-review／--reason，若有）；只有遠端最後等於本 commit 與本 tag 物件時才會成功並接著建 Release。
 不得手動建 tag 或 Release，也不要用 `git push --tags`（本機 tag 可能已作廢）。"""
 
