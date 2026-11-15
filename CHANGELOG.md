@@ -12,6 +12,8 @@ The current version is also kept in [VERSION](VERSION).
 
 ## [Unreleased]
 
+## [1.8.3] — 2026-11-15
+
 ### Fixed
 
 - **發佈腳本沒有推 main**：`scripts/release.py` 原本只推 tag、建 Release，`main` 要另外手動推；
