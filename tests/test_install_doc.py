@@ -1,8 +1,8 @@
 """INSTALL.md 的解除安裝步驟必須涵蓋安裝時複製到 ~/.claude 的每一個東西——公開可攜測試。
 
-一句話目的：安裝清單與解除安裝清單是兩份手寫文字，沒有守衛就會漂移。1.8.1 之前
-  INSTALL.md 步驟 8 複製三個 skill，Uninstall 卻只刪 adversarial-review，另外兩個留在
-  ~/.claude/skills/ 繼續載入、繼續指向一個已不再注入的協議。
+一句話目的：安裝清單與解除安裝清單是兩份手寫文字，沒有守衛就會漂移。從 2026-08-26（d1f0489）
+  INSTALL.md 步驟 8 開始複製三個 skill，到 1.8.1 為止 Uninstall 都只刪 adversarial-review，另外兩個
+  留在 ~/.claude/skills/ 繼續載入、繼續指向一個已不再注入的協議。
 
 驗收項目清單：
   U1 scripts/fable_doctor.py 的 COPIED_ARTIFACTS（複製到 ~/.claude 的唯一清單）裡每一項，
@@ -17,19 +17,28 @@
   python -m pytest tests/test_install_doc.py -v
 
 ══════════════════════════════════════
-驗收邊界說明 + 執行紀錄（2026-11-15 18:4x GMT+8）
+驗收邊界說明 + 執行紀錄（2026-11-15 18:47 GMT+8）
 ══════════════════════════════════════
 對應：1.8.2 Fixed「解除安裝漏刪兩個治理 skill」
 執行命令：python -m pytest tests/test_install_doc.py -v
-最後執行：見 1.8.2 發佈的 commit 訊息（先紅：修 INSTALL.md 之前 U1 兩案失敗；後綠：修之後全過）
+最後執行：2026-11-15 18:47 → 8 passed ✅（8 passed in 0.04s）
+
+先紅後綠（guard 是否正確觸發）：
+  修 INSTALL.md 之前（v1.8.1 的 Uninstall 寫法）→ 2 failed, 6 passed；紅的兩案正是
+    U1[.claude/skills/cognitive-rubrics/SKILL.md] 與 U1[.claude/skills/model-dispatch-rules/SKILL.md]
+  修之後 → 8 passed（U1 六案＋U2＋U3）
 
 ✅ 已驗收（本檔涵蓋）
-  U1 → 6 個複製品的位置都在 Uninstall 一節
-  U2 → repo 的 skill／agent 都在 COPIED_ARTIFACTS
-  U3 → Uninstall 一節存在且非空
+  U1 → COPIED_ARTIFACTS 每一項的位置都在 Uninstall 一節
+  U2 → repo 的 skill／agent 都在 COPIED_ARTIFACTS（多一個沒列進清單的 skill 或 agent 就紅）
+  U3 → Uninstall 一節存在且非空（標題改名時給出明確訊息；U1 也會一起紅）
 ⏳ 待驗收（本檔未涵蓋）
-  Uninstall 寫的刪除動作是否真的把東西刪乾淨：那是使用者手動執行的文件步驟，repo 沒有
-  模擬家目錄的端到端解除安裝。解鎖條件：若日後有 uninstall 腳本，改測腳本本身。
+  1. Uninstall 寫的刪除動作是否真的把東西刪乾淨：那是使用者手動執行的文件步驟，repo 沒有
+     模擬家目錄的端到端解除安裝。解鎖條件：若日後有 uninstall 腳本，改測腳本本身。
+  2. 比對只看「名稱有沒有出現在 Uninstall 一節」，不看那句話是不是叫人刪它：若有人在同一節寫
+     「保留 skeptic.md」也會過。目前 Uninstall 裡這些名稱只出現在刪除那一步。解鎖條件：Uninstall
+     改成結構化清單時，改成逐項比對。
+  3. install marker（寫入的，不是複製的）與安裝備份檔不在 COPIED_ARTIFACTS，本檔不守。
 """
 import importlib.util
 import re
