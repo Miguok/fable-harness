@@ -1,6 +1,6 @@
 # Fable Protocol Kit — 專案指示
 
-本專案是「讓 Opus/Sonnet/Haiku 以 Fable 5 的操作模式工作」的行為協議套件（hooks + skill + agents）。
+本專案是「讓 Opus/Sonnet/Haiku 以 Fable 5 的操作模式工作」的行為協議套件（hooks + skills + agents）。
 行為協議本體由 SessionStart hook 注入（`.claude/hooks/fable_protocol.md`），此處只放模型分工、不可妥協守則、治理文件路由與專案守則。
 
 ## 模型分工（Model Routing）— 委派子代理時強制遵守

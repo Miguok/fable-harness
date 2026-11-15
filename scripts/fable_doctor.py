@@ -7,9 +7,9 @@ broken hook from wedging a session, but it also makes "the interpreter does not 
 look exactly like "the hook ran fine". Nothing is printed and nothing is logged. This
 script is the place where that becomes visible.
 
-It also compares the *copied* artifacts (skill, agents) against the repo. The hooks
+It also compares the *copied* artifacts (skills, agents) against the repo. The hooks
 update themselves on ``git pull`` because they are referenced by path; the copies do
-not. Without this check, an upgraded install silently keeps running the old skill.
+not. Without this check, an upgraded install silently keeps running the old skills.
 
 Usage:
     python scripts/fable_doctor.py --home ~ --repo /path/to/fable-harness

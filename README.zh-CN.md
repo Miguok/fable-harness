@@ -8,7 +8,7 @@
 
 ## 这是什么
 
-Fable Harness 是一个小型工具包——几个 hook、一个 skill、几个子代理——会在每次开启 Claude Code 会话时自动注入。它不会教 Claude 新招式，而是确保 Claude **每一次都照着一套有纪律的流程走**：先收集证据再回答、把假设讲出来而不是靠猜、对自己的重大结论先自我挑战，并且拿出真正的证据（而不是「看起来没问题」）证明改动真的有效。
+Fable Harness 是一个小型工具包——几个 hook、三个 skill、几个子代理——会在每次开启 Claude Code 会话时自动注入。它不会教 Claude 新招式，而是确保 Claude **每一次都照着一套有纪律的流程走**：先收集证据再回答、把假设讲出来而不是靠猜、对自己的重大结论先自我挑战，并且拿出真正的证据（而不是「看起来没问题」）证明改动真的有效。
 
 可以把它想成是「行为的底线」，而不是完整的开发框架。它不会帮你排 sprint、不会帮你跑 CI 流水线——它做的是在智能体工作的过程中，让它保持诚实、谨慎、可验证。
 
@@ -40,7 +40,7 @@ Fable Harness 是一个小型工具包——几个 hook、一个 skill、几个�
 | 反方子代理 | `.claude/agents/{skeptic,red-team,simplifier}.md` | 对抗审查流程用的三个独立子代理角色 |
 | 模型分工 | `CLAUDE.md` | 上面提到的分工表 |
 | harness 检测器 | `scripts/detect_harness.py` | 只读检查——这个项目是不是已经有自己的开发 harness（例如 harnessmith、Superpowers），有的话 Fable 就退居底线角色 |
-| 健检 | `scripts/fable_doctor.py` | 回报五个 hook 各自解析到哪个解释器、上次何时真的跑过、已复制的 skill 与 agents 是否仍与 repo 相同、记录的版本有没有落后 |
+| 健检 | `scripts/fable_doctor.py` | 回报五个 hook 各自解析到哪个解释器、上次何时真的跑过、已复制的 skills 与 agents 是否仍与 repo 相同、记录的版本有没有落后 |
 | 治理文档 | `.claude/skills/model-dispatch-rules/`、`.claude/skills/cognitive-rubrics/` | 子代理派工模板、何时该慢下来的判断准则 |
 
 ## 快速开始

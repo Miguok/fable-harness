@@ -17,11 +17,11 @@
   python -m pytest tests/test_install_doc.py -v
 
 ══════════════════════════════════════
-驗收邊界說明 + 執行紀錄（2026-11-15 18:56 GMT+8）
+驗收邊界說明 + 執行紀錄（2026-11-15 19:21 GMT+8）
 ══════════════════════════════════════
-對應：1.8.2 Fixed「解除安裝漏刪兩個治理 skill」
+對應：1.8.2 Fixed「解除安裝漏刪兩個治理技能」
 執行命令：python -m pytest tests/test_install_doc.py -v
-最後執行：2026-11-15 18:56 → 8 passed ✅（8 passed in 0.05s；耗時隨機器負載在 0.04～0.2 秒之間）
+最後執行：2026-11-15 19:21 → 8 passed ✅（8 passed in 0.04s）
 
 先紅後綠（guard 是否正確觸發）：
   修 INSTALL.md 之前（v1.8.1 的 Uninstall 寫法）→ 2 failed, 6 passed；紅的兩案正是

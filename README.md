@@ -8,7 +8,7 @@
 
 ## 這是什麼
 
-Fable Harness 是一個小型套件——幾個 hooks、一個 skill、幾個子代理——會在每次開啟 Claude Code session 時自動注入。它不會教 Claude 新招式，而是確保 Claude **每一次都照著一套有紀律的流程走**：先蒐集證據再回答、把假設講出來而不是用猜的、對自己的重大結論先自我挑戰，並且拿出真正的證據（而不是「看起來沒問題」）證明改動真的有效。
+Fable Harness 是一個小型套件——幾個 hooks、三個 skill、幾個子代理——會在每次開啟 Claude Code session 時自動注入。它不會教 Claude 新招式，而是確保 Claude **每一次都照著一套有紀律的流程走**：先蒐集證據再回答、把假設講出來而不是用猜的、對自己的重大結論先自我挑戰，並且拿出真正的證據（而不是「看起來沒問題」）證明改動真的有效。
 
 可以把它想成是「行為的底線」，不是完整的開發框架。它不會幫你排 sprint、不會幫你跑 CI 流程——它做的是在 agent 工作的過程中，讓它保持誠實、謹慎、可驗證。
 
@@ -16,7 +16,7 @@ Fable Harness 是一個小型套件——幾個 hooks、一個 skill、幾個子
 
 本專案蒸餾自第二次的 Fable 開放版本（Anthropic 的 Fable 模型）——那種謹慎、有紀律的做事方式。與其把這份紀律鎖在單一模型裡，這個 kit 把它提煉成一套可重複使用的協議，用來強化 Opus（以及其他 Claude 模型）身邊的工作架構，讓不管是哪個模型在主導，都能維持同一套紀律。
 
-誠實說在前面：hooks 和 skill 只能移植「程序」本身（先蒐證、講假設、交叉質疑結論、要求驗證證據），沒辦法移植一個模型天生的判斷力。但實務上，「表現得好」跟「表現得隨便」之間的落差，大多來自程序被跳過，而不是判斷力不足。這正是這個 kit 想補上的落差。
+誠實說在前面：hooks 和 skills 只能移植「程序」本身（先蒐證、講假設、交叉質疑結論、要求驗證證據），沒辦法移植一個模型天生的判斷力。但實務上，「表現得好」跟「表現得隨便」之間的落差，大多來自程序被跳過，而不是判斷力不足。這正是這個 kit 想補上的落差。
 
 ## 運作機制
 
@@ -40,7 +40,7 @@ Fable Harness 是一個小型套件——幾個 hooks、一個 skill、幾個子
 | 反方子代理 | `.claude/agents/{skeptic,red-team,simplifier}.md` | 抗辯流程用的三個獨立子代理角色 |
 | 模型分工 | `CLAUDE.md` | 上面提到的分工表 |
 | harness 偵測器 | `scripts/detect_harness.py` | 只讀檢查——這個專案是不是已經有自己的開發 harness（例如 harnessmith、Superpowers），有的話 Fable 就退居底線角色 |
-| 健檢 | `scripts/fable_doctor.py` | 回報五個 hook 各自解析到哪個直譯器、上次何時真的跑過、已複製的 skill 與 agents 是否仍與 repo 相同、記錄的版本有沒有落後 |
+| 健檢 | `scripts/fable_doctor.py` | 回報五個 hook 各自解析到哪個直譯器、上次何時真的跑過、已複製的 skills 與 agents 是否仍與 repo 相同、記錄的版本有沒有落後 |
 | 治理文件 | `.claude/skills/model-dispatch-rules/`、`.claude/skills/cognitive-rubrics/` | 子代理派工範本、何時該慢下來的判斷準則 |
 
 ## 快速開始

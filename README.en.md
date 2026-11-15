@@ -8,7 +8,7 @@
 
 ## What is it
 
-Fable Harness is a small kit — a few hooks, a skill, and some sub-agents — that gets injected into every Claude Code session automatically. It doesn't teach Claude new tricks. It makes sure Claude *follows a disciplined process* every single time: gather evidence before answering, state assumptions instead of guessing, challenge its own big conclusions before trusting them, and show real proof (not just "looks good to me") that a change actually works.
+Fable Harness is a small kit — a few hooks, three skills, and some sub-agents — that gets injected into every Claude Code session automatically. It doesn't teach Claude new tricks. It makes sure Claude *follows a disciplined process* every single time: gather evidence before answering, state assumptions instead of guessing, challenge its own big conclusions before trusting them, and show real proof (not just "looks good to me") that a change actually works.
 
 Think of it as a behavioral floor, not a framework. It doesn't plan your sprints or run your CI pipeline — it just keeps the agent honest, careful, and verifiable while it works.
 

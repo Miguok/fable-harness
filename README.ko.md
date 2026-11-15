@@ -8,7 +8,7 @@
 
 ## 이것은 무엇인가
 
-Fable Harness는 작은 키트——몇 개의 hook, 하나의 skill, 몇 개의 서브에이전트——로, Claude Code 세션을 열 때마다 자동으로 주입됩니다. Claude에게 새로운 재주를 가르치는 것이 아니라, Claude가 **매번 규율 있는 프로세스를 따르도록** 보장합니다. 답하기 전에 증거를 모으고, 추측 대신 가정을 말하고, 자신의 큰 결론을 믿기 전에 스스로 반박하며, 변경이 정말로 작동한다는 것을(“괜찮아 보인다”가 아니라) 진짜 증거로 보여 줍니다.
+Fable Harness는 작은 키트——몇 개의 hook, 세 개의 skill, 몇 개의 서브에이전트——로, Claude Code 세션을 열 때마다 자동으로 주입됩니다. Claude에게 새로운 재주를 가르치는 것이 아니라, Claude가 **매번 규율 있는 프로세스를 따르도록** 보장합니다. 답하기 전에 증거를 모으고, 추측 대신 가정을 말하고, 자신의 큰 결론을 믿기 전에 스스로 반박하며, 변경이 정말로 작동한다는 것을(“괜찮아 보인다”가 아니라) 진짜 증거로 보여 줍니다.
 
 이것은 프레임워크가 아니라 “행동의 하한선”이라고 생각하세요. 스프린트를 계획하거나 CI 파이프라인을 돌리지는 않습니다——에이전트가 작업하는 동안 정직하고, 신중하며, 검증 가능한 상태로 유지하는 것이 전부입니다.
 
@@ -40,7 +40,7 @@ Fable Harness는 작은 키트——몇 개의 hook, 하나의 skill, 몇 개의
 | 반대역 에이전트 | `.claude/agents/{skeptic,red-team,simplifier}.md` | 대립 리뷰에 쓰이는 3개의 독립 서브에이전트 역할 |
 | 모델 배분 | `CLAUDE.md` | 위에서 설명한 배분 표 |
 | harness 감지기 | `scripts/detect_harness.py` | 읽기 전용 확인——프로젝트에 이미 자체 개발 harness(예: harnessmith, Superpowers)가 있는지 확인하고, 있으면 Fable은 한 발 물러나 하한선만 담당 |
-| 상태 점검 | `scripts/fable_doctor.py` | 각 hook이 실제로 어떤 인터프리터로 해석되는지, 마지막으로 실행된 시각, 복사된 skill과 agents가 repo와 여전히 일치하는지, 기록된 버전이 뒤처졌는지 보고 |
+| 상태 점검 | `scripts/fable_doctor.py` | 각 hook이 실제로 어떤 인터프리터로 해석되는지, 마지막으로 실행된 시각, 복사된 skills와 agents가 repo와 여전히 일치하는지, 기록된 버전이 뒤처졌는지 보고 |
 | 거버넌스 문서 | `.claude/skills/model-dispatch-rules/`, `.claude/skills/cognitive-rubrics/` | 서브에이전트 파견 템플릿, 언제 속도를 늦출지에 대한 기준 |
 
 ## 빠른 시작
