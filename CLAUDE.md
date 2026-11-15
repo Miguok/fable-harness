@@ -39,5 +39,5 @@
 - 測試一律放 `tests/`，遵守全域 docstring 鐵則（四區塊 + 執行紀錄）。
 - hooks 腳本改動後必須重跑 `python -m pytest tests/ -v` 且綠燈才算完成。測試要在 Git Bash 下跑：PowerShell 的 PATH 沒有 `sh`，`bash` 會解析到 WSL（conftest 會直接擋下並說明）。
 - `.claude/hooks/.last_*` 是 hook 觸發 marker（e2e 測試用），不要手動改、不要進版控。
-- 佈署到全域（`C:\Users\user\.claude\`）前必須：本專案全部測試綠 + 用戶明確點頭。佈署步驟見 README.md。
+- 佈署到全域（`~/.claude/`）前必須：本專案全部測試綠 + 用戶明確點頭。佈署步驟見 README.md。
 - 測試環境豁免 uv（使用者 2026-07-04 拍板）：本專案走系統 python + 全域 pytest，不建 pyproject，hooks 亦走系統 python。
