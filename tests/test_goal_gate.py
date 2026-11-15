@@ -76,9 +76,14 @@
   cd <repo> && python -m pytest tests/test_goal_gate.py -v
 
 ══════════════════════════════════════
-執行紀錄（G82～G117，依時間由新到舊；最上面是最新一次）
+執行紀錄（G59、G82～G117，依時間由新到舊；最上面是最新一次）
 ══════════════════════════════════════
-最後執行：2026-10-25 19:01 → 全套 tests/ → 674 passed, 4 skipped（118.12s）；本檔 296 passed
+最後執行：2026-11-15 21:03 → 全套 tests/ → 685 passed, 4 skipped（148.42s）；本檔 296 passed（45.48s）
+  2026-11-15（1.8.2）G59 改成只掃主對話、不設抽樣窗、缺形狀就 skip（使用者選定）。同一組合成家目錄
+  （設 USERPROFILE 與 HOME）舊版（e9db2ef）與新版並列：只有 CLI FAILED→skipped；60 個 CLI 排在 1 個 VS Code
+  之前 FAILED→passed；list/text 只在子代理 passed→skipped；專案目錄叫 subagents passed→passed；
+  沒有主對話 skipped→skipped。真實家目錄：failed→passed。
+  （前一次）2026-10-25 19:01 → 全套 tests/ → 674 passed, 4 skipped（118.12s）；本檔 296 passed
   2026-10-25 確認輪：正確性 SURVIVED（本機真實紀錄檔重放 1,062 份、約 6,400 次 Stop，新舊差異 0）、簡潔性
   SURVIVED、安全 REFUTED（只有文件：降版再升版與新舊兩版同跑的失效未寫進已知限制）→ CHANGELOG 補兩條。
   Codex 最後審查（reports/goal_gate_identity_impl_round6_final_review_20261025*）：程式無阻擋項。
@@ -1730,18 +1735,17 @@ def test_g58_turn_boundary_is_decided_on_shapes_captured_from_production(
 
 
 def test_g59_the_golden_fixture_still_matches_what_the_product_emits():
-    """G59：golden fixture 的結構要與真實 transcript 一致，過期就要叫。
+    """G59：本機真實 transcript 裡仍看得到 golden fixture 的三種粗分類形狀。
 
     fixture 一旦凍結就會腐爛，而腐爛的 fixture 與正確的 fixture 一樣是綠的
     ——那正是 G58 要防的病換一個地方復發。這條掃本機真實 transcript，
-    確認每一種形狀都還存在；若某一種在真實資料裡消失了，代表產品換了格式，
-    fixture 必須重新擷取。
+    確認 str、list/text、list/tool_result 三種形狀都還出現（缺了怎麼處理、目前的限制，見下）。
 
     本機沒有 transcript 時 skip 而不是綠：無法驗證與驗證通過不是同一件事。
 
-    2026-11-15 改（1.8.2）：原本依路徑字母序取前 60 個 transcript，而本機紀錄混了結構上
-    不會出現某些形狀的檔——子代理紀錄（在 `<專案>/<session>/subagents/` 之下）、只用 CLI
-    或 headless 單發的主對話（使用者輸入是字串，幾乎沒有 list/text）。新增一批這種檔就把
+    2026-11-15 改（1.8.2）：原本依路徑字母序取前 60 個 transcript，而本機紀錄混了不一定
+    出現某些形狀的檔——子代理紀錄（在 `<專案>/<session>/subagents/` 之下）、headless 單發
+    與只用 CLI 的主對話。新增一批這種檔就把
     有 list/text 的主對話擠出抽樣窗，於是假紅並擋住發佈。現在：
       - 只掃主對話（`<專案>/*.jsonl` 這一層），不設抽樣窗，三種形狀都看到就提早結束；
       - 缺任何一種形狀就 skip，並列出看到的形狀與入口——「缺」分不出是產品改了格式
