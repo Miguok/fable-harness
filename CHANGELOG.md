@@ -12,6 +12,15 @@ The current version is also kept in [VERSION](VERSION).
 
 ## [Unreleased]
 
+## [1.8.2] — 2026-11-15
+
+### Fixed
+
+- **解除安裝漏刪兩個治理技能**：`INSTALL.md` 的 Uninstall 只刪 `adversarial-review`，安裝時一併複製的
+  `cognitive-rubrics` 與 `model-dispatch-rules` 會留在 `~/.claude/skills/`。現在三個都會刪；新增
+  `tests/test_install_doc.py`，解除安裝步驟漏列任何一個安裝時複製的東西就會紅。
+- **`CLAUDE.md` 不再寫死作者本機的全域目錄路徑**，改寫成 `~/.claude/`。
+
 ## [1.8.1] — 2026-11-15
 
 ### Fixed
