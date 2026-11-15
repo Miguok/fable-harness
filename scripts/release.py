@@ -32,7 +32,8 @@
 介面：
   python scripts/release.py --check            只跑前置條件，不發佈
   python scripts/release.py --attest --lenses "skeptic:REFUTED,…"
-  python scripts/release.py 1.5.0              跑完前置條件並建立 tag + Release
+  python scripts/release.py 1.5.0              跑完前置條件，在本機建 tag 並驗證，
+                                               一次 atomic 推 main＋tag，再建 Release
   python scripts/release.py 1.5.0 --override-review --reason "…"
 
 測試：tests/test_release_gate.py
@@ -178,6 +179,20 @@ def check_clean_tree():
     return "工作區不乾淨（%d 項未提交）" % len(dirty) if dirty else ""
 
 
+def check_on_main():
+    """發佈會把這個 commit 推成公開的 main，所以必須在 main 上執行。
+
+    第一版 red-team 實測：在 feature 分支上 commit 後用 SHA 推 main，會把未合併
+    的分支快轉成公開 main——那是合法快轉，不加 force 也擋不住。
+    """
+    out = run(["git", "symbolic-ref", "-q", "HEAD"])
+    branch = (out.stdout or "").strip() if out.returncode == 0 else ""
+    if branch == "refs/heads/main":
+        return ""
+    return ("請在 main 上發佈（目前：%s）——發佈會把這個 commit 推成公開的 main。"
+            % (branch or "detached HEAD"))
+
+
 def check_version_matches(version):
     try:
         with open(VERSION_FILE, encoding="utf-8") as fh:
@@ -248,7 +263,7 @@ def preflight(version, override_reason):
     if not commit:
         return ["不在 git repo 裡，或 git 不可用"], "", ""
     problems = []
-    for p in (check_clean_tree(), check_version_matches(version)):
+    for p in (check_clean_tree(), check_on_main(), check_version_matches(version)):
         if p:
             problems.append(p)
     test_problem, summary = check_tests()
@@ -273,6 +288,32 @@ def preflight(version, override_reason):
 
 
 # ── 發佈 ──────────────────────────────────────────────────────────────────
+TAG_FORMAT = ("%(refname)%09%(objectname)%09%(objecttype)%09%(object)"
+              "%09%(type)%09%(tag)")
+
+
+def read_local_tag(tag):
+    """讀本機 `refs/tags/<tag>` 一次 → (錯誤訊息, 六個欄位或 None)。
+
+    None＝不存在。只認 refname 完全相等的那一行：for-each-ref 是前綴比對，
+    `refs/tags/<tag>/x` 也會被列出來。不對整段輸出 `.strip()`：lightweight tag
+    那一行的後三欄是空的，結尾是三個 tab，strip 之後就不是六欄了。
+    """
+    ref = "refs/tags/%s" % tag
+    out = run(["git", "for-each-ref", "--format=" + TAG_FORMAT, ref])
+    if out.returncode != 0:
+        return ("無法讀取本機 tag %s（rc=%d）：%s"
+                % (tag, out.returncode, (out.stderr or "").strip())), None
+    for line in (out.stdout or "").splitlines():
+        fields = line.split("\t")
+        if fields[0] != ref:
+            continue
+        if len(fields) != 6:
+            return "無法讀取本機 tag %s：輸出格式不符（%r）" % (tag, line), None
+        return "", fields
+    return "", None
+
+
 def do_release(version, commit, override_reason):
     tag = "v%s" % version
     notes = "見 CHANGELOG.md 的 [%s] 一節。" % version
@@ -288,29 +329,88 @@ def do_release(version, commit, override_reason):
             notes += ("\n\nℹ️ 這個 commit 曾經以緊急出口發佈過一次（理由：%s），"
                       "之後補跑了完整的抗辯審查。"
                       % (prev.get("earlier_bypass_reason") or "未記錄"))
-    out = run(["git", "tag", "-a", tag, "-m", "release %s" % version])
-    if out.returncode != 0 and "already exists" not in (out.stderr or ""):
-        return "建立 tag 失敗：%s" % (out.stderr or "").strip()
-    # tag 指向的 commit 必須就是被審查的那一個，而且要在 **push 之前**驗。
-    # 第一版把這段放在 push 後面，於是不一致時「指向未審查程式的公開 tag」
-    # 已經推出去了——而最會踩到它的正是上面那條 `already exists` 分支：
-    # 一個早就存在、指向別處的舊 tag 會直接走到這裡。
-    out = run(["git", "rev-list", "-n", "1", tag])
-    pointed = (out.stdout or "").strip()
-    if pointed != commit:
-        return "tag %s 指向 %s，但審查的是 %s" % (tag, pointed[:12], commit[:12])
-    out = run(["git", "push", "origin", tag])
+    # 本機步驟（建 tag、驗 tag）全部在 push 之前：它們失敗時什麼都還沒公開。
+    # 第一版把驗證放在 push 後面，於是不一致時「指向未審查程式的公開 tag」已經
+    # 推出去了。
+    nothing = "本次沒有推送任何東西"
+    err, fields = read_local_tag(tag)
+    if err:
+        return "%s；%s，排除原因後重跑。" % (err, nothing)
+    if fields is None:
+        # 明確指定 commit：不帶時標的是執行當下的 HEAD，而跑全套測試那 20 秒
+        # 裡有人 commit，就會標到未審查的那一個。
+        out = run(["git", "tag", "-a", tag, "-m", "release %s" % version, commit])
+        if out.returncode != 0:
+            return "建立本機 tag %s 失敗（rc=%d）：%s；%s。" % (
+                tag, out.returncode, (out.stderr or "").strip(), nothing)
+        err, fields = read_local_tag(tag)
+        if err:
+            return "%s；%s，排除原因後重跑。" % (err, nothing)
+        if fields is None:
+            return "建立本機 tag %s 後仍讀不到它；%s，排除原因後重跑。" % (tag, nothing)
+    _, tag_oid, objtype, target, target_type, inner_name = fields
+    # 四個條件一起才算「本 commit 的直接 annotated tag」：lightweight（objecttype
+    # 是 commit）、巢狀（直接指向另一個 tag）、別名（物件內的名字不是這個版號）
+    # 都擋。`%(*objectname)` 會一路剝到 commit，擋不住巢狀，所以不用它。
+    if (objtype, target_type, target, inner_name) != ("tag", "commit", commit, tag):
+        return ("本機 tag %s 不是本 commit 的直接 annotated tag（實際：型態 %s，"
+                "直接指向 %s %s，物件內名字 %s；審查的是 %s）。%s。"
+                "這個版號已不能用，改發下一個版號。"
+                % (tag, objtype or "-", target_type or "-", target or "-",
+                   inner_name or "-", commit, nothing))
+    # 一次 atomic 推送：全推或全不推。不加 force、refspec 不帶 +，所以遠端 main
+    # 不能快轉或同名 tag 已被占用時整筆拒絕。推的是上面驗過的 tag 物件 OID，
+    # 不是名稱。`--no-follow-tags`：使用者設了 push.followTags 時不帶出其他 tag。
+    # `--no-recurse-submodules`：push.recurseSubmodules=only 會不推主 repo 卻回 0。
+    # 來源寫成 `<oid>^{commit}`／`<oid>^{tag}`：git 解析 push 來源時先找同名 ref，
+    # 本機若有一個名字剛好是這串 OID 的分支，裸 OID 會被它蓋過（RG30E 實測推錯
+    # commit）。`^{…}` 不可能是 ref 名，只能當物件解析，並順便驗型態。
+    out = run(["git", "push", "--atomic", "--no-follow-tags", "--no-recurse-submodules",
+               "origin", "%s^{commit}:refs/heads/main" % commit,
+               "%s^{tag}:refs/tags/%s" % (tag_oid, tag)])
     if out.returncode != 0:
-        return "推送 tag 失敗：%s" % (out.stderr or "").strip()
-    out = run(["gh", "release", "create", tag, "--title", tag, "--notes", notes])
+        # 不查遠端、不判定現況：逾時（rc 127）時遠端可能已更新，而 push 用的
+        # pushurl 與查詢用的 url 也不一定是同一個 repo。重跑本身就是驗證——
+        # 不加 force 又是 atomic，只有遠端最後等於本 commit 與本 tag 物件才會成功。
+        # 只去尾端：git 的拒絕行以空白開頭（` ! [rejected] …`），要原樣帶出。
+        return PUSH_FAILED % {"rc": out.returncode, "tag": tag, "version": version,
+                              "diag": (out.stderr or out.stdout or "").rstrip()}
+    # `--verify-tag`：遠端沒有這個 tag 就失敗，不讓 gh 自己從預設分支建一個。
+    out = run(["gh", "release", "create", tag, "--verify-tag",
+               "--title", tag, "--notes", notes])
     if out.returncode != 0:
-        # tag 已經公開了，而這是不可逆的。只說「建立 Release 失敗」會讓人以為
-        # 什麼都沒發生——檔頭稱這是一筆交易，那就得說清楚交易停在哪一步。
-        return ("建立 Release 失敗：%s\n"
-                "  ⚠ tag %s **已經推上 origin**（那一步不可逆）。要收回請自己下\n"
-                "     git push origin :refs/tags/%s && git tag -d %s"
-                % ((out.stderr or "").strip(), tag, tag, tag))
+        # main 與 tag 已經公開，而這是不可逆的。只說「建立 Release 失敗」會讓人
+        # 以為什麼都沒發生——檔頭稱這是一筆交易，那就得說清楚交易停在哪一步。
+        # 不再教人刪遠端 tag：刪 tag 收不回已公開的 main。
+        return RELEASE_FAILED % {"rc": out.returncode, "tag": tag, "version": version,
+                                 "diag": (out.stderr or out.stdout or "").strip()}
     return ""
+
+
+# 固定文字，五條指示每次都印，由使用者對照診斷：腳本不依 stderr 分支，因為
+# 那會讓「git 改了措辭」變成「走錯分支」。⚠ 這段文字刻意不含 git 拒絕行的
+# 原樣（`[rejected]`），測試才能拿 git 的實際輸出斷言診斷真的被帶出來。
+PUSH_FAILED = """\
+推送沒有確認成功（rc=%(rc)d）。
+診斷：
+%(diag)s
+本腳本不判定遠端現況（逾時或斷線時遠端可能已更新）。依診斷處理（可能同時符合好幾條，符合的都要做）——看開頭是空白加 `!` 的那幾行括號裡的字；結尾是 `(atomic push failed)` 的那行只是被連帶取消，`error: atomic push failed for ref X` 點名的是真正出錯的 ref：
+  ・`already exists`：這個版號在遠端已被別的 tag 占用，改發下一個版號。
+  ・`fetch first` 或 `non-fast-forward`：遠端 main 無法快轉到本 commit。先整合遠端變更，改發下一個版號（本機 tag %(tag)s 已指向本 commit，同一版號在新 commit 上會被擋），提交並重新審查。
+  ・`remote rejected`：遠端的規則（例如分支保護）拒絕，先處理遠端設定，再用同一組參數重跑。
+  ・本機 pre-push 守衛因內容擋下（例如偵測到私料）：修掉內容會產生新 commit，改發下一個版號並重新審查（同一版號的本機 tag 指向舊 commit，會被擋）。
+  ・其他（連線、認證、逾時）：排除原因後用同一組參數重跑 `release.py %(version)s`（含 --override-review／--reason，若有）；只有遠端最後等於本 commit 與本 tag 物件時才會成功並接著建 Release。
+不得手動建 tag 或 Release，也不要用 `git push --tags`（本機 tag 可能已作廢）。"""
+
+
+RELEASE_FAILED = """\
+main 與 tag 已推上 origin（推送當下確認，不可逆）。Release 沒有確認建立（rc=%(rc)d）。
+診斷：%(diag)s
+先跑 `gh release view %(tag)s`：
+  ・顯示已存在：發佈已完成，不要重跑。
+  ・確認不存在：排除診斷中的原因，HEAD 保持在本 commit、不動本機 tag，用同一組參數（含 --override-review／--reason，若有）重跑 `release.py %(version)s`；會重跑前置檢查，推送再次回成功後才再試建 Release。
+  ・查詢本身失敗：先處理查詢或認證問題，查詢失敗不代表不存在。
+重跑若被拒（遠端 main 已前進或遠端 tag 被換掉），依本腳本支援的流程無法再替這版補建 Release，改發下一個版號；不要手動建 Release。"""
 
 
 def main(argv=None):

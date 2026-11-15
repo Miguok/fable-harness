@@ -89,9 +89,14 @@ python scripts/release.py 1.5.0 --check
 python scripts/release.py 1.5.0
 ```
 
-It refuses unless the tree is clean, `VERSION` matches, `CHANGELOG.md` has that
-section, the suite is green, and an adversarial review is recorded **for the
-commit being released**. That last condition is why the attestation stores a
+Run it on `main`. It creates and verifies the tag locally, then pushes `main`
+and the tag in a single atomic push — both land or neither does — and only then
+creates the GitHub Release. If the push or the Release fails, follow the
+message it prints.
+
+It refuses unless you are on `main`, the tree is clean, `VERSION` matches,
+`CHANGELOG.md` has that section, the suite is green, and an adversarial review
+is recorded **for the commit being released**. That last condition is why the attestation stores a
 `reviewed_commit`: reviewing, then changing one line, then publishing would
 otherwise pass a check that only asked "does a review exist".
 

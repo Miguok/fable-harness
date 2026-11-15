@@ -85,8 +85,12 @@ python scripts/release.py 1.5.0 --check
 python scripts/release.py 1.5.0
 ```
 
-工作區不乾淨、`VERSION` 對不上、`CHANGELOG.md` 沒有該版章節、測試沒全綠，或
-**這個 commit** 沒有抗辯審查紀錄，它都會拒絕。最後一項是 attestation 要存
+請在 `main` 上執行。它會先在本機建立並驗證 tag，再用一次 atomic 推送把 `main`
+與 tag 一起推上去（全推或全不推），之後才建立 GitHub Release。推送或 Release
+失敗時，照它印出的訊息處理。
+
+不在 `main` 上、工作區不乾淨、`VERSION` 對不上、`CHANGELOG.md` 沒有該版章節、
+測試沒全綠，或**這個 commit** 沒有抗辯審查紀錄，它都會拒絕。最後一項是 attestation 要存
 `reviewed_commit` 的原因：審查完再改一行就發佈，只問「有沒有審查」的檢查會
 放行，而那一行正是沒有人看過的那一行。
 

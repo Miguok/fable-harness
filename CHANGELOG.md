@@ -12,6 +12,12 @@ The current version is also kept in [VERSION](VERSION).
 
 ## [Unreleased]
 
+### Fixed
+
+- **發佈腳本沒有推 main**：`scripts/release.py` 原本只推 tag、建 Release，`main` 要另外手動推；
+  只跑腳本的話，公開 repo 會有新版的 tag 與 Release 頁，`main` 卻停在舊版。現在它一次把 `main`
+  與 tag 推上遠端（全推或全不推），並要求在 `main` 上執行。
+
 ## [1.8.2] — 2026-11-15
 
 ### Fixed
