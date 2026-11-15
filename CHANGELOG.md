@@ -12,6 +12,14 @@ The current version is also kept in [VERSION](VERSION).
 
 ## [Unreleased]
 
+## [1.8.1] — 2026-11-15
+
+### Fixed
+
+- **兩個治理技能在沒有分工表的專案指向不存在的表**：`model-dispatch-rules` 與 `cognitive-rubrics`
+  安裝到 `~/.claude/skills/` 後在每個專案都會載入，但模型分工表只在本 repo 的 `CLAUDE.md`。
+  現在兩者寫明：以 `CLAUDE.md` 分工表為準；所在專案沒有這張表時，以 FABLE-PROTOCOL §5「模型分工」為準。
+
 ## [1.8.0] — 2026-10-26
 
 ### Fixed
