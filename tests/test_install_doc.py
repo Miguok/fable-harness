@@ -2,14 +2,14 @@
 
 一句話目的：安裝清單與解除安裝清單是兩份手寫文字，沒有守衛就會漂移。從 2026-08-26（d1f0489）
   INSTALL.md 步驟 8 開始複製三個 skill，到 1.8.1 為止 Uninstall 都只刪 adversarial-review，另外兩個
-  留在 ~/.claude/skills/ 繼續載入、繼續指向一個已不再注入的協議。
+  留在 ~/.claude/skills/ 繼續可用、繼續指向一個已不再注入的協議。
 
 驗收項目清單：
   U1 scripts/fable_doctor.py 的 COPIED_ARTIFACTS（複製到 ~/.claude 的唯一清單）裡每一項，
      它在 ~/.claude 下的位置（skill 取目錄、agent 取檔名）都出現在 INSTALL.md 的 Uninstall 一節
   U2 repo 裡 .claude/skills/ 下的每個 skill 目錄與 .claude/agents/ 下的每個 agent，
      都在 COPIED_ARTIFACTS 裡（否則 U1 的清單本身就漏了，doctor 的漂移檢查也看不到）
-  U3 配對：Uninstall 一節找得到（標題改名會讓 U1 讀到空字串而假綠）
+  U3 配對：Uninstall 一節找得到（標題改名時 U1 會全紅，U3 多給一句明確的原因）
 
 本檔為公開可攜測試：只讀 repo 內相對路徑，不含本機絕對路徑或私有檔假設。
 
@@ -17,11 +17,11 @@
   python -m pytest tests/test_install_doc.py -v
 
 ══════════════════════════════════════
-驗收邊界說明 + 執行紀錄（2026-11-15 18:47 GMT+8）
+驗收邊界說明 + 執行紀錄（2026-11-15 18:56 GMT+8）
 ══════════════════════════════════════
 對應：1.8.2 Fixed「解除安裝漏刪兩個治理 skill」
 執行命令：python -m pytest tests/test_install_doc.py -v
-最後執行：2026-11-15 18:47 → 8 passed ✅（8 passed in 0.04s）
+最後執行：2026-11-15 18:56 → 8 passed ✅（8 passed in 0.05s；耗時隨機器負載在 0.04～0.2 秒之間）
 
 先紅後綠（guard 是否正確觸發）：
   修 INSTALL.md 之前（v1.8.1 的 Uninstall 寫法）→ 2 failed, 6 passed；紅的兩案正是

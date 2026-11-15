@@ -81,7 +81,7 @@ Claude should then carry out the following steps, in order. If you're Claude rea
      A personal skill is available across all your projects, and a skill's body loads only when it's used — so the two governance skills (99 and 83 lines) cost nothing until the model actually needs them.
    - Copy `<repo>/.claude/agents/skeptic.md`, `red-team.md`, and `simplifier.md` to `~/.claude/agents/`.
    - If any destination already exists, don't overwrite it — stop and ask the user first.
-   - **Then write an install marker** at `~/.claude/fable-harness-install.json` containing the repo's absolute path, the contents of `<repo>/VERSION`, and the install date. The hooks are referenced by path and update themselves when you `git pull`; the skill and agents are **copies** and do not. This marker is the only thing that makes that drift detectable — see [Upgrade](#upgrade).
+   - **Then write an install marker** at `~/.claude/fable-harness-install.json` containing the repo's absolute path, the contents of `<repo>/VERSION`, and the install date. The hooks are referenced by path and update themselves when you `git pull`; the three skills and the three agents are **copies** and do not. This marker is the only thing that makes that drift detectable — see [Upgrade](#upgrade).
 
 9. **Verify the three always-on hooks — not just one.** Each hook fails silently and independently, so one passing check proves nothing about the others. (`wiring_gate.py` does nothing until a repo opts in and `goal_gate.py` needs two consecutive red test runs, so they are verified in steps 10 and 11 instead.)
 
@@ -133,7 +133,7 @@ Claude should then carry out the following steps, in order. If you're Claude rea
 
 ## Upgrade
 
-**This kit updates itself only halfway, and the half that doesn't is invisible.** The hooks are registered by *path*, so `git pull` in the cloned repo updates them immediately. The skill and the three agents were **copied** into `~/.claude/` at install time, so they stay on whatever version you first installed — including the wording of the adversarial-review procedure the model actually follows.
+**This kit updates itself only halfway, and the half that doesn't is invisible.** The hooks are registered by *path*, so `git pull` in the cloned repo updates them immediately. The three skills and the three agents were **copied** into `~/.claude/` at install time, so they stay on whatever version you first installed — including the wording of the adversarial-review procedure the model actually follows.
 
 To upgrade:
 
@@ -149,7 +149,7 @@ To upgrade:
 python <repo>/scripts/fable_doctor.py --home ~ --repo <repo>
 ```
 
-It reports, for each registered hook, **which interpreter the registered command actually resolves to** and when that hook last fired — plus whether your copied skill and agents still match the repo, and whether the recorded version is behind. It exits `1` if it found anything.
+It reports, for each registered hook, **which interpreter the registered command actually resolves to** and when that hook last fired — plus whether your copied skills and agents still match the repo, and whether the recorded version is behind. It exits `1` if it found anything.
 
 This is the only place several of these failures are visible at all: every hook command ends with `|| exit 0`, so a missing or wrong interpreter produces no error, no log line, and no difference you could notice from inside a session.
 
