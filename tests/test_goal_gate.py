@@ -1738,15 +1738,28 @@ def test_g59_the_golden_fixture_still_matches_what_the_product_emits():
     fixture 必須重新擷取。
 
     本機沒有 transcript 時 skip 而不是綠：無法驗證與驗證通過不是同一件事。
+
+    2026-11-15 改（1.8.2）：原本依路徑字母序取前 60 個 transcript，而本機紀錄混了結構上
+    不會出現某些形狀的檔——子代理紀錄（在 `<專案>/<session>/subagents/` 之下）、只用 CLI
+    或 headless 單發的主對話（使用者輸入是字串，幾乎沒有 list/text）。新增一批這種檔就把
+    有 list/text 的主對話擠出抽樣窗，於是假紅並擋住發佈。現在：
+      - 只掃主對話（`<專案>/*.jsonl` 這一層），不設抽樣窗，三種形狀都看到就提早結束；
+      - 缺任何一種形狀就 skip，並列出看到的形狀與入口——「缺」分不出是產品改了格式
+        還是本機用法沒產生它（使用者選定：寧可 skip 也不假紅）。
+    已知限制（待 G59 重設計）：這條目前只在三種形狀都出現時給綠，抓不到「產品改格式」；
+    沒有逐一比對 golden fixture 的各種形狀；不分 isMeta／中斷訊息這類注入條目。
     """
     import glob
     base = os.path.expanduser("~/.claude/projects")
-    files = sorted(glob.glob(os.path.join(base, "**", "*.jsonl"), recursive=True))
+    files = sorted(glob.glob(os.path.join(glob.escape(base), "*", "*.jsonl")))
     if not files:
-        pytest.skip("本機沒有真實 transcript，無法比對 fixture 是否過期")
+        pytest.skip("本機沒有主對話 transcript，無法比對 fixture 是否過期")
 
-    seen = set()
-    for f in files[:60]:
+    want = {"str", "list/text", "list/tool_result"}
+    seen, entrypoints = set(), set()
+    for f in files:
+        if want <= seen:
+            break
         try:
             with open(f, encoding="utf-8", errors="replace") as fh:
                 for line in fh:
@@ -1756,6 +1769,7 @@ def test_g59_the_golden_fixture_still_matches_what_the_product_emits():
                         continue
                     if e.get("type") != "user":
                         continue
+                    entrypoints.add(str(e.get("entrypoint")))
                     c = e.get("message", {}).get("content")
                     if isinstance(c, str):
                         seen.add("str")
@@ -1768,10 +1782,11 @@ def test_g59_the_golden_fixture_still_matches_what_the_product_emits():
         except OSError:
             pass
 
-    assert {"str", "list/text", "list/tool_result"} <= seen, (
-        f"真實 transcript 裡只看到 {sorted(seen)}——產品的格式可能變了，"
-        f"{GOLDEN} 需要重新擷取"
-    )
+    if not want <= seen:
+        pytest.skip(
+            f"本機 {len(files)} 個主對話只看到 {sorted(seen)}（入口 {sorted(entrypoints)}）："
+            f"分不出是產品改了格式還是本機用法沒產生它；格式回歸偵測待 G59 重設計（{GOLDEN}）"
+        )
 
 
 @pytest.mark.parametrize("kind", ["harness_meta_skill", "harness_compact_summary"])
