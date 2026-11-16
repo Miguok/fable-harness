@@ -12,6 +12,8 @@ The current version is also kept in [VERSION](VERSION).
 
 ## [Unreleased]
 
+## [1.8.4] — 2026-11-16
+
 ### Fixed
 
 - **Stop hook 擋下之後，目標閘不讀那段測試結果**：任一 Stop hook（包括目標閘自己）擋下、同回合繼續後
