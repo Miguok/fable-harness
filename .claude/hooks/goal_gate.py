@@ -1257,8 +1257,12 @@ def save_state(root, state):
     return True
 
 
-def save_or_complain(root, state):
+def save_or_complain(root, state, complain=True):
     """寫入狀態；寫不進去就出聲，不要靜靜停機。
+
+    `complain=False`（帶 `stop_hook_active` 的 Stop）：照樣嘗試存檔，失敗時不出聲、
+    仍回 False——存檔失敗是持續狀態，帶旗標時出聲會讓之後每一次帶旗標的 Stop 都再擋；
+    有新紅時 `counted` 也沒落地，同一筆紅會被重算成新紅。
 
     與 `load_state` 讀不到時會 block 對稱：`.fable` 是檔案／symlink、目錄唯讀
     時，原本 `makedirs` 的例外會被 main 的 fail-open 吞掉，整道閘從此不作用
@@ -1266,6 +1270,8 @@ def save_or_complain(root, state):
     """
     if save_state(root, state):
         return True
+    if not complain:
+        return False
     block(
         f"⛔ FABLE goal gate: cannot write {STATE_REL}.\n\n"
         "Usual causes: `.fable` is a file or a symlink, or the directory is "
@@ -1281,7 +1287,7 @@ def block(reason):
 
 
 # ── the two entry points ──────────────────────────────────────────────────
-def run_stop(data, root):
+def run_stop(data, root, flagged=False):
     entries = load_entries(data["transcript_path"])
     turn = current_turn(entries)
     last_ids = {}
@@ -1298,14 +1304,16 @@ def run_stop(data, root):
         # Say so. Refusing to overwrite protects the data, but staying silent
         # about it would leave the whole component switched off with nobody
         # aware — the exact silent failure this ladder exists to remove.
-        block(
-            f"⛔ FABLE goal gate: {STATE_REL} exists but cannot be read as JSON.\n\n"
-            "Nothing was written — the file is left exactly as it is, in case it still "
-            "holds shelved items with notes. Until it parses, this gate is doing nothing "
-            "at all: no counting, no shelving, no reminders.\n\n"
-            "Repair the JSON, or delete the file to start a fresh streak (deleting loses "
-            "any shelved items it still holds)."
-        )
+        # 帶旗標的 Stop 不出聲：讀不到就沒有東西可記帳，等下一次不帶旗標的 Stop 再說。
+        if not flagged:
+            block(
+                f"⛔ FABLE goal gate: {STATE_REL} exists but cannot be read as JSON.\n\n"
+                "Nothing was written — the file is left exactly as it is, in case it still "
+                "holds shelved items with notes. Until it parses, this gate is doing nothing "
+                "at all: no counting, no shelving, no reminders.\n\n"
+                "Repair the JSON, or delete the file to start a fresh streak (deleting loses "
+                "any shelved items it still holds)."
+            )
         return 0
 
     # ── 解除（協議 §4b-1 第 5 條）────────────────────────────────────────
@@ -1458,8 +1466,8 @@ def run_stop(data, root):
             state["streak"] = 0
         if (dropped or (dict(red), state["streak"]) != before
                 or state["counted"] != before_counted):
-            save_or_complain(root, state)
-        return block_unexplained_shelf(state)
+            save_or_complain(root, state, complain=not flagged)
+        return 0 if flagged else block_unexplained_shelf(state)
 
     # ── 每個目標各自計數（協議 §4b-1 第 1、4 條）──────────────────────────
     #
@@ -1541,7 +1549,7 @@ def run_stop(data, root):
             state.get(RED_SEEN, {}).pop(k, None)
 
     if streak == ADVERSARIAL_AT:
-        if not save_or_complain(root, state):
+        if not save_or_complain(root, state, complain=not flagged):
             return 0
         block(
             f"⛔ FABLE goal gate: this goal has now failed {streak} times in a row.\n\n"
@@ -1574,7 +1582,7 @@ def run_stop(data, root):
         # 那種串接」——但逐鍵計數之後那個形態在結構上不可能發生，而清空會把
         # 無關目標累積的進度一併抹掉，違反 §4b-1 第 4 條「各自爬各自的梯」。
         red.pop(key, None)
-        if not save_or_complain(root, state):
+        if not save_or_complain(root, state, complain=not flagged):
             return 0
         block(
             f"⛔ FABLE goal gate: {streak} consecutive failures on this goal — shelving it.\n\n"
@@ -1593,7 +1601,7 @@ def run_stop(data, root):
         )
         return 0
 
-    save_or_complain(root, state)
+    save_or_complain(root, state, complain=not flagged)
     return 0
 
 
@@ -1705,12 +1713,19 @@ def main():
         if event == "UserPromptSubmit" or "--prompt" in sys.argv:
             with state_lock(root):
                 return run_prompt(root)
-        if data.get("stop_hook_active"):
-            return 0  # never deadlock: the second attempt always goes through
         if not data.get("transcript_path"):
             return 0
+        # 帶 `stop_hook_active` 的 Stop（任一 Stop hook——包括本閘自己——擋下後同回合繼續）照常讀 transcript
+        # 記帳。原本這裡直接放行，於是擋下之後那段紅綠永遠不被讀：漏綠＝修好的目標下次再紅
+        # 被當連敗，漏紅＝漏計。為什麼不會因此無限擋：帶旗標時只擋「存檔成功」的門檻事件，
+        # 門檻事件只由本次新計入的紅觸發；存檔成功表示那筆紅的 tool_use id 已在磁碟的
+        # `counted`，下一次重讀不再計入——所以**沒有新的失敗測試，帶旗標的 Stop 就不再擋**。
+        # 存檔失敗、狀態讀不到、擱置 note 空白時帶旗標一律不擋：三者都是持續狀態，不受「新紅」
+        # 限制，帶旗標時出聲會每次都擋；存檔失敗時 `counted` 也沒落地，同一筆紅會被當新紅。
+        # 這個上限依賴「紅有 tool_use id」與「存檔成功」；
+        # 缺 id 的紅不被去重，那是既有邊界。
         with state_lock(root):
-            return run_stop(data, root)
+            return run_stop(data, root, flagged=bool(data.get("stop_hook_active")))
     except Exception as _q:
         note_quiet("main", _q)
         return 0  # fail-open

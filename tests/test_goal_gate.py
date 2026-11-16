@@ -7,7 +7,13 @@
   G3  連敗第 1 次 → 不介入（找根因、修、重測是正常工作）
   G4  連敗第 2 次 → 擋一次，要求下一次動手前先跑抗辯
   G5  連敗第 3 次 → 擋一次、自動寫入擱置清單、連敗數歸零
-  G6  `stop_hook_active` → 一律放行（第二次結束必過，永不死鎖）
+  G6  帶 `stop_hook_active` 的 Stop 照常記帳：本次新計入的紅到第 2 格 → 當場擋（2026-11-16 改寫；原「一律放行」）
+  G6b 被擋後同回合的綠，帶旗標的 Stop 也讀到（不被當連敗）
+  G6c 帶旗標 Stop 計入的紅不漏計，下一回合再紅 → 第 2 格
+  G6d 背景通知接續：第 2 格當場擋，先於第 3 格擱置
+  G6e 第 1 格帶旗標重讀同一份 transcript → 只計一次
+  G6f 帶旗標且狀態讀不到／任何存檔失敗（四個呼叫點）／擱置 note 空白 → 不擋（配對：同行程不帶旗標照擋）
+  G6g 同一份 transcript、無新紅連兩次帶旗標 → 第二次無輸出（類別守衛；含存檔成功的第 2、3 格）
   G7  擱置項的 note 還空著 → 擋一次要求寫下擱置原因
   G8  note 填好之後 → 不再擋（一次性動作，不變成嘮叨）
   G9  這一輪文字提到擱置項 id → **仍要擋**（只有填 note 才解除；見下方修復記錄）
@@ -78,7 +84,19 @@
 ══════════════════════════════════════
 執行紀錄（G59、G82～G117，依時間由新到舊；最上面是最新一次）
 ══════════════════════════════════════
-最後執行：2026-11-15 21:03 → 全套 tests/ → 685 passed, 4 skipped（148.42s）；本檔 296 passed（45.48s）
+最後執行：2026-11-16 02:44 → 全套 tests/ → 736 passed, 4 skipped（173.57s）；本檔 314 passed（52.15s）（程式碼審查後補強 G6d／G6g 前置、措辭）
+  2026-11-16 G6 改寫＋G6b～G6g（契約 reports/goal_gate_stop_hook_active_contract_v4_20261116.md）：
+  先紅（HEAD 0524e18 的 goal_gate.py）：G6／G6b／G6c／G6d／G6e 5 條與 G6g 的 g、h 兩例紅，原因＝帶旗標早退、不讀
+  transcript（FileNotFoundError：狀態檔沒建／帶旗標沒擋）；G6f、G6g 的 a～f 在 HEAD 本來就綠（HEAD 帶旗標一律不出聲），
+  只拿掉早退時它們翻紅（13 failed），再加上「帶旗標不出聲」後 52 passed（-k g6）。
+  突變（各自還原位元組，-k 'g6 or g25'）：還原早退 7 failed；四個存檔呼叫點各自帶旗標仍出聲 各 2 failed
+  （f 與 g 對應例）；帶旗標跳過存檔 7 failed；帶旗標門檻事件不擋 4 failed；:1301（HEAD 行號，現 :1307）帶旗標仍擋
+  2 failed；:1462（HEAD 行號，現 :1469）帶旗標仍擋 3 failed；拿掉 id 去重 4 failed（含 G6e、G6g-g）；模組層級旗標 6 failed（G6f 同行程配對）。
+  新測試的存檔失敗：b 用「`.fable` 是檔案」的自然失敗（走 `:1603`），c～e 用 monkeypatch `gg.save_state`
+  回 False 注入（不加產品碼接縫）。程式碼審查後補：G6g 的 a～f 第一次以存檔嘗試次數證明走到該分支
+  （a、f＝0 次，b～e＝1 次）；突變「帶旗標時 run_stop 一進來就放行」→ G6g 的 b～e、g、h 紅（6 failed），
+  a、f 不紅——帶旗標時它們本來就沒有可觀察的效果，守衛靠 G6f 的不帶旗標配對。G6d 改成 feedback 在新紅之前。
+  （前一次）最後執行：2026-11-15 21:03 → 全套 tests/ → 685 passed, 4 skipped（148.42s）；本檔 296 passed（45.48s）
   2026-11-15（1.8.2）G59 改成只掃主對話、不設抽樣窗、缺形狀就 skip（使用者選定）。同一組合成家目錄
   （設 USERPROFILE 與 HOME）舊版（e9db2ef）與新版並列：只有 CLI FAILED→skipped；60 個 CLI 排在 1 個 VS Code
   之前 FAILED→passed；list/text 只在子代理 passed→skipped；專案目錄叫 subagents passed→passed；
@@ -308,6 +326,14 @@ G9 的期望隨之反轉（提 id 仍要擋）。文件與程式不一致時，�
   Claude Code 真的把 decision:block 當成擋下收工：與 verify_gate 用的是同一個
   block 封包格式（該機制已由 verify_gate 在真實 session 驗證過），但本 gate 的
   兩種 block 尚未在真實 session 觸發過。解鎖條件＝連續兩次紅燈後觀察它是否擋下收工。
+⏳ 待驗收（G6 改寫，契約 §6 不在範圍）：
+  缺 tool_use id 的紅重讀會重複計數、重複觸發門檻事件：本修法增加重讀次數所以後果比 HEAD 重——另一支
+    Stop hook 持續擋時沒有上限，每三次重讀循環一次（擋→擱置→從 1 起算；程式碼審查實測）；
+    本機 77 份主 transcript、13,100 筆 Bash tool_use 缺 id 為 0（契約的量測）；解鎖＝transcript 格式出現缺 id。
+  多目標同時到門檻只處理勝出鍵（HEAD 既有）；不帶旗標時寫入失敗＋空白 note 連印兩個 block（HEAD 既有）；
+    鎖逾時無鎖繼續、狀態檔多 session 共用（HEAD 既有）；解鎖＝另開設計。
+  背景通知接續的 Stop 是否帶旗標、子代理工具呼叫是否寫進主 transcript：UNVERIFIED，只有 CHANGELOG 的陳述；
+    本修法兩種情況都正確。解鎖＝在真實 session 抓一次 Stop 的 payload。
 """
 import atexit
 import io
@@ -909,14 +935,213 @@ def test_g17_state_dir_ignores_itself(tmp_path):
     assert ".fable" not in out, f"狀態檔仍會被 git 看到：{out}"
 
 
-def test_g6_stop_hook_active_never_blocks(tmp_path):
-    """第二次結束一律放行——gate 不得把 session 卡死。"""
-    repo = _repo(tmp_path, {"streak": 1, "shelved": []})
+_REAL_SAVE_STATE = gg.save_state
+
+
+def _stop_inproc(repo, entries, monkeypatch, capsys, flagged, fail_save=False, saves=None):
+    """同行程跑一次 Stop（可帶 `stop_hook_active`、可注入存檔失敗），回傳 stdout。
+
+    `fail_save` 用 monkeypatch `gg.save_state` 回 False 注入——不為測試在產品碼加接縫。
+    `saves`（list）：每次嘗試存檔就 append 一筆，用來證明這一次確實走到了存檔點。
+    同一個測試內先帶旗標、再不帶旗標連呼叫 `gg.main()`，順便盯旗標有沒有殘留。
+    """
     tp = repo / "transcript.jsonl"
-    tp.write_text("".join(json.dumps(e) + "\n" for e in _turn("pytest -q", FAIL_OUT)),
+    tp.write_text("".join(json.dumps(e, ensure_ascii=False) + "\n" for e in entries),
                   encoding="utf-8", newline="")
-    assert _run(repo, payload={"transcript_path": str(tp),
-                               "stop_hook_active": True}) == ""
+    monkeypatch.chdir(repo)
+    payload = {"transcript_path": str(tp)}
+    if flagged:
+        payload["stop_hook_active"] = True
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(payload)))
+    def _save(root, state):
+        if saves is not None:
+            saves.append(1)
+        return False if fail_save else _REAL_SAVE_STATE(root, state)
+
+    monkeypatch.setattr(gg, "save_state", _save)
+    assert gg.main() == 0
+    return capsys.readouterr().out.strip()
+
+
+def _feedback():
+    """被 Stop hook 擋下之後，harness 塞進同一回合的那一筆（不是真使用者輸入）。"""
+    return _user_prompt("Stop hook feedback:\nsome other hook blocked the stop")
+
+
+def test_g6_stop_hook_active_still_reads_the_turn_and_blocks_a_new_threshold(tmp_path):
+    """G6（2026-11-16 改寫）：帶 `stop_hook_active` 的 Stop 照常記帳，
+    本次新計入的紅讓階梯到第 2 格時，當場擋下。
+
+    原版（「一律放行、不讀」）的根因：任一 Stop hook 擋下後同回合繼續，帶旗標的
+    Stop 本閘不讀 transcript，那段紅綠永遠不被計（漏綠＝修好的目標被當連敗，
+    漏紅＝漏計）。契約 reports/goal_gate_stop_hook_active_contract_v4_20261116.md。
+    """
+    cmd = "pytest -q"
+    repo = _repo(tmp_path, _ladder(cmd, gg.ADVERSARIAL_AT - 1))
+    tp = repo / "transcript.jsonl"
+    tp.write_text("".join(json.dumps(e) + "\n" for e in _turn(cmd, FAIL_OUT)),
+                  encoding="utf-8", newline="")
+    out = _run(repo, payload={"transcript_path": str(tp), "stop_hook_active": True})
+    assert _blocked(out), "帶旗標的 Stop 沒讀 transcript，新紅沒計入"
+    assert _state(repo)["red"][gg.test_key(cmd)] == gg.ADVERSARIAL_AT
+
+
+def test_g6b_a_green_after_a_block_is_not_lost(tmp_path, monkeypatch, capsys):
+    """T-lost-green：被擋之後同回合的綠，帶旗標的 Stop 也要讀到。
+
+    缺陷①（漏掉綠）：不讀的話，修好的目標下一回合再紅被當連敗，直接擱置。
+    配對：下一回合新紅只計 1、不擋、沒擱置。
+    """
+    cmd = "pytest tests/test_x.py -q"
+    repo = _repo(tmp_path, _ladder(cmd, 1))
+    e = _turn(cmd, FAIL_OUT)
+    out = _stop_inproc(repo, e, monkeypatch, capsys, flagged=False)
+    assert _blocked(out) and _state(repo)["red"][gg.test_key(cmd)] == 2
+    e = e + [_feedback()] + _exec(cmd, PASS_OUT)
+    assert _stop_inproc(repo, e, monkeypatch, capsys, flagged=True) == ""
+    assert gg.test_key(cmd) not in _state(repo)["red"], "同回合的綠沒被帶旗標的 Stop 讀到"
+    e2 = e + [_user_prompt("next")] + _exec(cmd, FAIL_OUT)
+    out = _stop_inproc(repo, e2, monkeypatch, capsys, flagged=False)
+    st = _state(repo)
+    assert st["red"][gg.test_key(cmd)] == 1 and not st["shelved"], st
+    assert not _blocked(out)
+
+
+def test_g6c_a_red_during_a_flagged_stop_is_not_lost(tmp_path, monkeypatch, capsys):
+    """T-lost-red：缺陷②（漏掉紅）。帶旗標的 Stop 先計 1，下一回合再紅 → 第 2 格。"""
+    cmd = "pytest tests/test_x.py -q"
+    repo = _repo(tmp_path)
+    e = _turn(cmd, FAIL_OUT)
+    out = _stop_inproc(repo, e, monkeypatch, capsys, flagged=True)
+    assert out == "" and _state(repo)["red"][gg.test_key(cmd)] == 1, "帶旗標的紅沒計"
+    e2 = e + [_user_prompt("next")] + _exec(cmd, FAIL_OUT)
+    out = _stop_inproc(repo, e2, monkeypatch, capsys, flagged=False)
+    assert _blocked(out) and "failed 2 times" in _reason(out)
+
+
+def test_g6d_background_continuation_gets_the_adversarial_block_first(
+        tmp_path, monkeypatch, capsys):
+    """T-background-continuation：背景通知接續時，第 2 格當場擋、先於第 3 格擱置。"""
+    cmd = "pytest tests/test_x.py -q"
+    repo = _repo(tmp_path, _ladder(cmd, 1))
+    # 先被某個 Stop hook 擋下（feedback），之後才出現新紅：盯的是「擋下之後」那段有被讀到。
+    e = _turn(assistant_text="did some work") + [_feedback()] + _exec(cmd, FAIL_OUT)
+    first = _stop_inproc(repo, e, monkeypatch, capsys, flagged=True)
+    assert _blocked(first) and "failed 2 times" in _reason(first), "第 2 格沒有當場擋"
+    e = e + [_feedback(), _user_prompt("<task-notification>done</task-notification>")]
+    e = e + _exec(cmd, FAIL_OUT)
+    second = _stop_inproc(repo, e, monkeypatch, capsys, flagged=False)
+    assert _blocked(second) and "shelving" in _reason(second)
+    assert len(_state(repo)["shelved"]) == 1
+
+
+def test_g6e_a_reread_counts_once_below_the_threshold(tmp_path, monkeypatch, capsys):
+    """T-reread-count-once：第 1 格（未到門檻）帶旗標重讀同一份 transcript → 只計一次。"""
+    cmd = "pytest tests/test_x.py -q"
+    repo = _repo(tmp_path)
+    e = _turn(cmd, FAIL_OUT)
+    for _ in range(2):
+        assert _stop_inproc(repo, e, monkeypatch, capsys, flagged=True) == ""
+    assert _state(repo)["red"][gg.test_key(cmd)] == 1
+
+
+# 帶旗標時的各個出聲路徑。每例回傳 (repo, entries, fail_save, 不帶旗標時應出現的字)。
+_FLAG_CMD = "pytest tests/test_x.py -q"
+
+
+def _case_a(tmp_path):
+    repo = _repo(tmp_path)
+    (repo / ".fable").mkdir()
+    (repo / STATE_REL).write_text("{not json", encoding="utf-8", newline="")
+    return repo, _turn(_FLAG_CMD, FAIL_OUT), False, "cannot be read"
+
+
+def _case_b(tmp_path):
+    repo = _repo(tmp_path)
+    (repo / ".fable").write_text("not a directory\n", encoding="utf-8", newline="")
+    return repo, _turn(_FLAG_CMD, FAIL_OUT), False, "cannot write"
+
+
+def _case_c(tmp_path):
+    repo = _repo(tmp_path, _ladder("pytest -q --tb=no", 1))
+    entries = _runs(("pytest -q --tb=no", FAIL_OUT), ("pytest -q --tb=short", PASS_OUT))
+    return repo, entries, True, "cannot write"
+
+
+def _case_d(tmp_path):
+    repo = _repo(tmp_path, _ladder(_FLAG_CMD, gg.ADVERSARIAL_AT - 1))
+    return repo, _turn(_FLAG_CMD, FAIL_OUT), True, "cannot write"
+
+
+def _case_e(tmp_path):
+    repo = _repo(tmp_path, _ladder(_FLAG_CMD, gg.SHELVE_AT - 1))
+    return repo, _turn(_FLAG_CMD, FAIL_OUT), True, "cannot write"
+
+
+def _case_f(tmp_path):
+    repo = _repo(tmp_path, SHELF)
+    return repo, _turn(assistant_text="did some unrelated work"), False, "goal-111"
+
+
+def _case_g(tmp_path):
+    """存檔成功的第 2 格：帶旗標也要擋（第一次），第二次不再擋。"""
+    repo = _repo(tmp_path, _ladder(_FLAG_CMD, gg.ADVERSARIAL_AT - 1))
+    return repo, _turn(_FLAG_CMD, FAIL_OUT), False, "failed %d times" % gg.ADVERSARIAL_AT
+
+
+def _case_h(tmp_path):
+    """存檔成功的第 3 格：帶旗標也要擋並擱置（第一次），第二次不再擋、擱置仍一筆。"""
+    repo = _repo(tmp_path, _ladder(_FLAG_CMD, gg.SHELVE_AT - 1))
+    return repo, _turn(_FLAG_CMD, FAIL_OUT), False, "shelving"
+
+
+_FAIL_CASES = [_case_a, _case_b, _case_c, _case_d, _case_e, _case_f]
+_SAVED_CASES = [_case_g, _case_h]
+
+
+@pytest.mark.parametrize("case", _FAIL_CASES, ids=lambda f: f.__name__)
+def test_g6f_flagged_stop_is_silent_when_it_cannot_save_or_read(
+        tmp_path, monkeypatch, capsys, case):
+    """T-flag-not-blocked：狀態讀不到、任何存檔失敗、空白 note，帶旗標都不擋。
+
+    配對（同一行程、同一份輸入）：不帶旗標照 HEAD 擋——證明「不擋」不是因為
+    什麼都擋不到，也順便盯旗標沒有殘留成模組狀態。
+    """
+    repo, entries, fail_save, expect = case(tmp_path)
+    assert _stop_inproc(repo, entries, monkeypatch, capsys, True, fail_save) == ""
+    out = _stop_inproc(repo, entries, monkeypatch, capsys, False, fail_save)
+    assert _blocked(out) and expect in _reason(out), out
+
+
+@pytest.mark.parametrize("case", _FAIL_CASES + _SAVED_CASES, ids=lambda f: f.__name__)
+def test_g6g_flagged_stop_does_not_repeat_without_a_new_red(
+        tmp_path, monkeypatch, capsys, case):
+    """T-flag-no-repeat（類別守衛）：同一份 transcript、沒有新的工具執行，
+    連跑兩次帶旗標的 Stop，第二次一定沒有輸出。
+
+    前置（每例都要，否則第二次「沒輸出」可能只是因為第一次就提早放行）：
+      a～f 第一次確實走到該分支——用存檔嘗試次數證明：a（讀不到）、f（沒有變動）
+      不存檔＝0 次；b～e 走到 `:1603`／`:1468`／`:1551`／`:1584` 各存檔 1 次。
+      g、h 第一次確實擋了且狀態改變；h 之後擱置清單仍一筆。
+    """
+    repo, entries, fail_save, expect = case(tmp_path)
+    saves = []
+    first = _stop_inproc(repo, entries, monkeypatch, capsys, True, fail_save, saves)
+    if case in _FAIL_CASES:
+        want = 0 if case in (_case_a, _case_f) else 1
+        assert first == "" and len(saves) == want, (
+            "第一次沒走到該分支：存檔嘗試 %d 次（應 %d）" % (len(saves), want))
+    if case in _SAVED_CASES:
+        assert _blocked(first) and expect in _reason(first), first
+        st = _state(repo)
+        if case is _case_g:
+            assert st["red"][gg.test_key(_FLAG_CMD)] == gg.ADVERSARIAL_AT
+        else:
+            assert len(st["shelved"]) == 1
+    second = _stop_inproc(repo, entries, monkeypatch, capsys, True, fail_save)
+    assert second == "", "沒有新紅卻又擋了：%s" % second
+    if case is _case_h:
+        assert len(_state(repo)["shelved"]) == 1
 
 
 # ── 擱置清單 ──────────────────────────────────────────────────────────────
